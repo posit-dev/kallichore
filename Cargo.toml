@@ -2,8 +2,11 @@
 
 
 members = [
-    "crates/openapi",
+    "crates/kcclient",
+    "crates/kcserver",
+    "crates/openapi"
 ]
+resolver = "2"
 
 [workspace.package]
 rust-version = "1.75"
