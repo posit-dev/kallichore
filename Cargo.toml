@@ -4,7 +4,7 @@
 members = [
     "crates/kcclient",
     "crates/kcserver",
-    "crates/openapi"
+    "crates/openapi_client"
 ]
 resolver = "2"
 
