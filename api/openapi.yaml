@@ -1,0 +1,62 @@
+openapi: 3.0.1
+info:
+  contact:
+    email: info@posit.co
+    name: "Posit Software, PBC"
+    url: https://posit.co
+  description: Kallichore is a Jupyter kernel gateway and supervisor
+  title: Kallichore API
+  version: 1.0.0
+servers:
+- url: /
+paths:
+  /sessions:
+    get:
+      operationId: list-sessions
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/sessionList'
+          description: Returns a list of active sessions
+      summary: List active sessions
+components:
+  schemas:
+    sessionList:
+      example:
+        total: 0
+        sessions:
+        - id: id
+          argv:
+          - argv
+          - argv
+        - id: id
+          argv:
+          - argv
+          - argv
+      properties:
+        total:
+          type: integer
+        sessions:
+          items:
+            $ref: '#/components/schemas/sessionList_sessions_inner'
+          type: array
+      type: object
+    sessionList_sessions_inner:
+      example:
+        id: id
+        argv:
+        - argv
+        - argv
+      properties:
+        id:
+          description: A unique identifier for the session
+          type: string
+        argv:
+          description: The program and command-line parameters for the session
+          items:
+            type: string
+          type: array
+      type: object
+
