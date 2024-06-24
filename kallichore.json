@@ -1,0 +1,64 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "description": "Kallichore is a Jupyter kernel gateway and supervisor",
+    "version": "1.0.0",
+    "title": "Kallichore API",
+    "contact": {
+      "name": "Posit Software, PBC",
+      "url": "https://posit.co",
+      "email": "info@posit.co"
+    }
+  },
+  "paths": {
+    "/sessions": {
+      "get": {
+        "operationId": "list-sessions",
+        "summary": "List active sessions",
+        "responses": {
+          "200": {
+            "description": "Returns a list of active sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sessionList"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "sessionList": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "A unique identifier for the session"
+                },
+                "argv": {
+                  "type": "array",
+                  "description": "The program and command-line parameters for the session",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
