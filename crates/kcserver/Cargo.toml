@@ -12,4 +12,8 @@ authors.workspace = true
 hyper = { version = "0.14", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 openapi_client = { path = "../openapi_client" }
+serde = { version = "1.0.203", features = ["derive"] }
+swagger = "6.5.0"
+futures = "0.3.30"
+async-trait = "0.1.80"
 
