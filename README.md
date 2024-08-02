@@ -64,3 +64,8 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
       |
       +-- kcclient -- Command-line client (for testing), using the kallichore_api crate
 ```
+
+## Adjacent Projects/Links
+
+[Jupyter Kernel Gateway](https://jupyter-kernel-gateway.readthedocs.io/en/latest/): a headless Jupyter server that uses WebSockets to deliver Jupyter messages.
+
