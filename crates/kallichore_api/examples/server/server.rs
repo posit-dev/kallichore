@@ -1,4 +1,4 @@
-//! Main library entry point for openapi_client implementation.
+//! Main library entry point for kallichore_api implementation.
 
 #![allow(unused_imports)]
 
@@ -20,7 +20,7 @@ use tokio::net::TcpListener;
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
 use openssl::ssl::{Ssl, SslAcceptor, SslAcceptorBuilder, SslFiletype, SslMethod};
 
-use openapi_client::models;
+use kallichore_api::models;
 
 /// Builds an SSL implementation for Simple HTTPS from some hard-coded file names
 pub async fn create(addr: &str, https: bool) {
@@ -34,7 +34,7 @@ pub async fn create(addr: &str, https: bool) {
 
     #[allow(unused_mut)]
     let mut service =
-        openapi_client::server::context::MakeAddContext::<_, EmptyContext>::new(
+        kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(
             service
         );
 
@@ -92,11 +92,11 @@ impl<C> Server<C> {
 }
 
 
-use openapi_client::{
+use kallichore_api::{
     Api,
     ListSessionsResponse,
 };
-use openapi_client::server::MakeService;
+use kallichore_api::server::MakeService;
 use std::error::Error;
 use swagger::ApiError;
 

@@ -4,7 +4,7 @@
 #[allow(unused_imports)]
 use futures::{future, Stream, stream};
 #[allow(unused_imports)]
-use openapi_client::{Api, ApiNoContext, Client, ContextWrapperExt, models,
+use kallichore_api::{Api, ApiNoContext, Client, ContextWrapperExt, models,
                       ListSessionsResponse,
                      };
 use clap::{App, Arg};

@@ -1,11 +1,11 @@
 [package]
-name = "openapi_client"
+name = "kallichore_api"
 version = "1.0.0"
 authors = ["info@posit.co"]
 description = "Kallichore is a Jupyter kernel gateway and supervisor"
 # Override this license by providing a License Object in the OpenAPI.
 license = "Unlicense"
-edition = "2018"
+edition = "2021"
 
 [features]
 default = ["client", "server"]
