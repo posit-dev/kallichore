@@ -19,6 +19,6 @@ async fn main() {
 
     let addr = "127.0.0.1:8080";
 
+    log::info!("Starting Kallichore server at {}", addr);
     server::create(addr).await;
 }
-

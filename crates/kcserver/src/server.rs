@@ -72,6 +72,9 @@ where
     /// List active sessions
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError> {
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
-        Err(ApiError("Generic failure".into()))
+
+        Ok(ListSessionsResponse::ReturnsAListOfActiveSessions(
+            models::SessionList::new(),
+        ))
     }
 }
