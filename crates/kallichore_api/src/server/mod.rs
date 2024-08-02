@@ -22,7 +22,8 @@ pub use crate::context;
 type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
 
 use crate::{Api,
-     ListSessionsResponse
+     ListSessionsResponse,
+     NewSessionResponse
 };
 
 mod paths {
@@ -175,6 +176,87 @@ impl<T, C> hyper::service::Service<(Request<Body>, C)> for Service<T, C> where
                                         Ok(response)
             },
 
+            // NewSession - PUT /sessions
+            hyper::Method::PUT if path.matched(paths::ID_SESSIONS) => {
+                // Body parameters (note that non-required body parameters will ignore garbage
+                // values, rather than causing a 400 response). Produce warning header and logs for
+                // any unused fields.
+                let result = body.into_raw().await;
+                match result {
+                            Ok(body) => {
+                                let mut unused_elements = Vec::new();
+                                let param_session: Option<models::Session> = if !body.is_empty() {
+                                    let deserializer = &mut serde_json::Deserializer::from_slice(&body);
+                                    let handle_unknown_field = |path: serde_ignored::Path<'_>| {
+                                        warn!("Ignoring unknown field in body: {}", path);
+                                        unused_elements.push(path.to_string());
+                                    };
+                                    match serde_ignored::deserialize(deserializer, handle_unknown_field) {
+                                        Ok(param_session) => param_session,
+                                        Err(e) => return Ok(Response::builder()
+                                                        .status(StatusCode::BAD_REQUEST)
+                                                        .body(Body::from(format!("Couldn't parse body parameter Session - doesn't match schema: {}", e)))
+                                                        .expect("Unable to create Bad Request response for invalid body parameter Session due to schema")),
+                                    }
+                                } else {
+                                    None
+                                };
+                                let param_session = match param_session {
+                                    Some(param_session) => param_session,
+                                    None => return Ok(Response::builder()
+                                                        .status(StatusCode::BAD_REQUEST)
+                                                        .body(Body::from("Missing required body parameter Session"))
+                                                        .expect("Unable to create Bad Request response for missing body parameter Session")),
+                                };
+
+                                let result = api_impl.new_session(
+                                            param_session,
+                                        &context
+                                    ).await;
+                                let mut response = Response::new(Body::empty());
+                                response.headers_mut().insert(
+                                            HeaderName::from_static("x-span-id"),
+                                            HeaderValue::from_str((&context as &dyn Has<XSpanIdString>).get().0.clone().as_str())
+                                                .expect("Unable to create X-Span-ID header value"));
+
+                                        if !unused_elements.is_empty() {
+                                            response.headers_mut().insert(
+                                                HeaderName::from_static("warning"),
+                                                HeaderValue::from_str(format!("Ignoring unknown fields in body: {:?}", unused_elements).as_str())
+                                                    .expect("Unable to create Warning header value"));
+                                        }
+
+                                        match result {
+                                            Ok(rsp) => match rsp {
+                                                NewSessionResponse::ReturnsTheSessionID
+                                                    (body)
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(200).expect("Unable to turn 200 into a StatusCode");
+                                                    response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for NEW_SESSION_RETURNS_THE_SESSION_ID"));
+                                                    let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
+                                                    *response.body_mut() = Body::from(body_content);
+                                                },
+                                            },
+                                            Err(_) => {
+                                                // Application code returned an error. This should not happen, as the implementation should
+                                                // return a valid response.
+                                                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                                                *response.body_mut() = Body::from("An internal error occurred");
+                                            },
+                                        }
+
+                                        Ok(response)
+                            },
+                            Err(e) => Ok(Response::builder()
+                                                .status(StatusCode::BAD_REQUEST)
+                                                .body(Body::from(format!("Couldn't read body parameter Session: {}", e)))
+                                                .expect("Unable to create Bad Request response due to unable to read body parameter Session")),
+                        }
+            },
+
             _ if path.matched(paths::ID_SESSIONS) => method_not_allowed(),
             _ => Ok(Response::builder().status(StatusCode::NOT_FOUND)
                     .body(Body::empty())
@@ -191,6 +273,8 @@ impl<T> RequestParser<T> for ApiRequestParser {
         match *request.method() {
             // ListSessions - GET /sessions
             hyper::Method::GET if path.matched(paths::ID_SESSIONS) => Some("ListSessions"),
+            // NewSession - PUT /sessions
+            hyper::Method::PUT if path.matched(paths::ID_SESSIONS) => Some("NewSession"),
             _ => None,
         }
     }

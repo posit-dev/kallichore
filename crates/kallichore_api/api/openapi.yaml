@@ -21,8 +21,35 @@ paths:
                 $ref: '#/components/schemas/sessionList'
           description: Returns a list of active sessions
       summary: List active sessions
+    put:
+      operationId: new-session
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/session'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/new_session_200_response'
+          description: Returns the session ID
+      summary: Create a new session
 components:
   schemas:
+    session:
+      properties:
+        id:
+          description: A unique identifier for the session
+          type: string
+        argv:
+          description: The program and command-line parameters for the session
+          items:
+            type: string
+          type: array
+      type: object
     sessionList:
       example:
         total: 0
@@ -42,6 +69,14 @@ components:
           items:
             $ref: '#/components/schemas/sessionList_sessions_inner'
           type: array
+      type: object
+    new_session_200_response:
+      example:
+        id: id
+      properties:
+        id:
+          description: A unique identifier for the session
+          type: string
       type: object
     sessionList_sessions_inner:
       example:

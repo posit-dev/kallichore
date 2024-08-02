@@ -21,6 +21,13 @@ pub enum ListSessionsResponse {
     (models::SessionList)
 }
 
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum NewSessionResponse {
+    /// Returns the session ID
+    ReturnsTheSessionID
+    (models::NewSession200Response)
+}
+
 /// API
 #[async_trait]
 #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
@@ -33,6 +40,12 @@ pub trait Api<C: Send + Sync> {
     async fn list_sessions(
         &self,
         context: &C) -> Result<ListSessionsResponse, ApiError>;
+
+    /// Create a new session
+    async fn new_session(
+        &self,
+        session: models::Session,
+        context: &C) -> Result<NewSessionResponse, ApiError>;
 
 }
 
@@ -49,6 +62,12 @@ pub trait ApiNoContext<C: Send + Sync> {
     async fn list_sessions(
         &self,
         ) -> Result<ListSessionsResponse, ApiError>;
+
+    /// Create a new session
+    async fn new_session(
+        &self,
+        session: models::Session,
+        ) -> Result<NewSessionResponse, ApiError>;
 
 }
 
@@ -82,6 +101,16 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     {
         let context = self.context().clone();
         self.api().list_sessions(&context).await
+    }
+
+    /// Create a new session
+    async fn new_session(
+        &self,
+        session: models::Session,
+        ) -> Result<NewSessionResponse, ApiError>
+    {
+        let context = self.context().clone();
+        self.api().new_session(session, &context).await
     }
 
 }

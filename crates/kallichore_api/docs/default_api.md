@@ -5,6 +5,7 @@ All URIs are relative to *http://localhost*
 Method | HTTP request | Description
 ------------- | ------------- | -------------
 **list-sessions**](default_api.md#list-sessions) | **GET** /sessions | List active sessions
+**new-session**](default_api.md#new-session) | **PUT** /sessions | Create a new session
 
 
 # **list-sessions**
@@ -25,6 +26,31 @@ No authorization required
 ### HTTP request headers
 
  - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **new-session**
+> models::NewSession200Response new-session(session)
+Create a new session
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **session** | [**Session**](Session.md)|  | 
+
+### Return type
+
+[**models::NewSession200Response**](new_session_200_response.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: application/json
  - **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)

@@ -95,6 +95,7 @@ impl<C> Server<C> {
 use kallichore_api::{
     Api,
     ListSessionsResponse,
+    NewSessionResponse,
 };
 use kallichore_api::server::MakeService;
 use std::error::Error;
@@ -109,6 +110,16 @@ impl<C> Api<C> for Server<C> where C: Has<XSpanIdString> + Send + Sync
         context: &C) -> Result<ListSessionsResponse, ApiError>
     {
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
+        Err(ApiError("Generic failure".into()))
+    }
+
+    /// Create a new session
+    async fn new_session(
+        &self,
+        session: models::Session,
+        context: &C) -> Result<NewSessionResponse, ApiError>
+    {
+        info!("new_session({:?}) - X-Span-ID: {:?}", session, context.get().0.clone());
         Err(ApiError("Generic failure".into()))
     }
 

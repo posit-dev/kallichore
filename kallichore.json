@@ -27,11 +27,59 @@
             }
           }
         }
+      },
+      "put": {
+        "operationId": "new-session",
+        "summary": "Create a new session",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/session"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Returns the session ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "A unique identifier for the session"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
   "components": {
     "schemas": {
+      "session": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "A unique identifier for the session"
+          },
+          "argv": {
+            "type": "array",
+            "description": "The program and command-line parameters for the session",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "sessionList": {
         "type": "object",
         "properties": {

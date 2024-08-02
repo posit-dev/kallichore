@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-08-02T12:49:45.761153-07:00[America/Los_Angeles]
+- Build date: 2024-08-02T14:28:47.934366-07:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -97,10 +97,13 @@ All URIs are relative to *http://localhost*
 Method | HTTP request | Description
 ------------- | ------------- | -------------
 [**list-sessions**](docs/default_api.md#list-sessions) | **GET** /sessions | List active sessions
+[**new-session**](docs/default_api.md#new-session) | **PUT** /sessions | Create a new session
 
 
 ## Documentation For Models
 
+ - [NewSession200Response](docs/NewSession200Response.md)
+ - [Session](docs/Session.md)
  - [SessionList](docs/SessionList.md)
  - [SessionListSessionsInner](docs/SessionListSessionsInner.md)
 
