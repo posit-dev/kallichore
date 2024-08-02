@@ -24,7 +24,7 @@ use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
 use tokio::net::TcpListener;
 
-use kallichore_api::models;
+use kallichore_api::{models, NewSessionResponse};
 
 pub async fn create(addr: &str) {
     let addr = addr.parse().expect("Failed to parse bind address");
@@ -46,15 +46,17 @@ pub async fn create(addr: &str) {
         .unwrap()
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Server<C> {
     marker: PhantomData<C>,
+    sessions: Vec<models::Session>,
 }
 
 impl<C> Server<C> {
     pub fn new() -> Self {
         Server {
             marker: PhantomData,
+            sessions: Vec::new(),
         }
     }
 }
@@ -73,8 +75,26 @@ where
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError> {
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
 
+        let session_list = models::SessionList {
+            total: Some(self.sessions.len() as i32),
+            sessions: Some(vec![]),
+        };
         Ok(ListSessionsResponse::ReturnsAListOfActiveSessions(
-            models::SessionList::new(),
+            session_list,
         ))
+    }
+    /// Create a new session
+
+    async fn new_session(
+        &self,
+        session: models::Session,
+        context: &C,
+    ) -> Result<NewSessionResponse, ApiError> {
+        info!(
+            "new_session({:?}) - X-Span-ID: {:?}",
+            session,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
     }
 }
