@@ -3,8 +3,8 @@
 ## Properties
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
-**total** | **i32** |  | [optional] [default to None]
-**sessions** | [**Vec<models::SessionListSessionsInner>**](sessionList_sessions_inner.md) |  | [optional] [default to None]
+**total** | **i32** |  | 
+**sessions** | [**Vec<models::SessionListSessionsInner>**](sessionList_sessions_inner.md) |  | 
 
 [[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)
 

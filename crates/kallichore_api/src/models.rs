@@ -136,23 +136,21 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 pub struct Session {
     /// A unique identifier for the session
     #[serde(rename = "id")]
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub id: Option<String>,
+    pub id: String,
 
     /// The program and command-line parameters for the session
     #[serde(rename = "argv")]
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub argv: Option<Vec<String>>,
+    pub argv: Vec<String>,
 
 }
 
 
 impl Session {
     #[allow(clippy::new_without_default)]
-    pub fn new() -> Session {
+    pub fn new(id: String, argv: Vec<String>, ) -> Session {
         Session {
-            id: None,
-            argv: None,
+            id,
+            argv,
         }
     }
 }
@@ -164,20 +162,12 @@ impl std::string::ToString for Session {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
 
-            self.id.as_ref().map(|id| {
-                [
-                    "id".to_string(),
-                    id.to_string(),
-                ].join(",")
-            }),
+            Some("id".to_string()),
+            Some(self.id.to_string()),
 
 
-            self.argv.as_ref().map(|argv| {
-                [
-                    "argv".to_string(),
-                    argv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
-                ].join(",")
-            }),
+            Some("argv".to_string()),
+            Some(self.argv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
 
         ];
 
@@ -228,8 +218,8 @@ impl std::str::FromStr for Session {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(Session {
-            id: intermediate_rep.id.into_iter().next(),
-            argv: intermediate_rep.argv.into_iter().next(),
+            id: intermediate_rep.id.into_iter().next().ok_or_else(|| "id missing in Session".to_string())?,
+            argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in Session".to_string())?,
         })
     }
 }
@@ -277,22 +267,20 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct SessionList {
     #[serde(rename = "total")]
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub total: Option<i32>,
+    pub total: i32,
 
     #[serde(rename = "sessions")]
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub sessions: Option<Vec<models::SessionListSessionsInner>>,
+    pub sessions: Vec<models::SessionListSessionsInner>,
 
 }
 
 
 impl SessionList {
     #[allow(clippy::new_without_default)]
-    pub fn new() -> SessionList {
+    pub fn new(total: i32, sessions: Vec<models::SessionListSessionsInner>, ) -> SessionList {
         SessionList {
-            total: None,
-            sessions: None,
+            total,
+            sessions,
         }
     }
 }
@@ -304,12 +292,8 @@ impl std::string::ToString for SessionList {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
 
-            self.total.as_ref().map(|total| {
-                [
-                    "total".to_string(),
-                    total.to_string(),
-                ].join(",")
-            }),
+            Some("total".to_string()),
+            Some(self.total.to_string()),
 
             // Skipping sessions in query parameter serialization
 
@@ -362,8 +346,8 @@ impl std::str::FromStr for SessionList {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(SessionList {
-            total: intermediate_rep.total.into_iter().next(),
-            sessions: intermediate_rep.sessions.into_iter().next(),
+            total: intermediate_rep.total.into_iter().next().ok_or_else(|| "total missing in SessionList".to_string())?,
+            sessions: intermediate_rep.sessions.into_iter().next().ok_or_else(|| "sessions missing in SessionList".to_string())?,
         })
     }
 }

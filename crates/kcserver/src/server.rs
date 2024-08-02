@@ -76,8 +76,8 @@ where
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
 
         let session_list = models::SessionList {
-            total: Some(self.sessions.len() as i32),
-            sessions: Some(vec![]),
+            total: self.sessions.len() as i32,
+            sessions: vec![],
         };
         Ok(ListSessionsResponse::ReturnsAListOfActiveSessions(
             session_list,
