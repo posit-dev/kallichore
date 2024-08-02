@@ -11,7 +11,7 @@ authors.workspace = true
 [dependencies]
 hyper = { version = "0.14", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
-openapi_client = { path = "../openapi_client" }
+kallichore_api = { path = "../kallichore_api" }
 serde = { version = "1.0.203", features = ["derive"] }
 swagger = "6.5.0"
 futures = "0.3.30"
@@ -19,4 +19,3 @@ async-trait = "0.1.80"
 clap = "4.5.7"
 env_logger = "0.11.3"
 log = "0.4.21"
-

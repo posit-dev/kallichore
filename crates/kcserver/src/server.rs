@@ -5,7 +5,7 @@
 //
 //
 
-//! Main library entry point for openapi_client implementation.
+//! Main library entry point for kallichore_api implementation.
 
 #![allow(unused_imports)]
 
@@ -24,7 +24,7 @@ use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
 use tokio::net::TcpListener;
 
-use openapi_client::models;
+use kallichore_api::models;
 
 pub async fn create(addr: &str) {
     let addr = addr.parse().expect("Failed to parse bind address");
@@ -37,7 +37,7 @@ pub async fn create(addr: &str) {
 
     #[allow(unused_mut)]
     let mut service =
-        openapi_client::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+        kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
 
     // Using HTTP
     hyper::server::Server::bind(&addr)
@@ -59,8 +59,8 @@ impl<C> Server<C> {
     }
 }
 
-use openapi_client::server::MakeService;
-use openapi_client::{Api, ListSessionsResponse};
+use kallichore_api::server::MakeService;
+use kallichore_api::{Api, ListSessionsResponse};
 use std::error::Error;
 use swagger::ApiError;
 

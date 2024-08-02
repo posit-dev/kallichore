@@ -1,11 +1,7 @@
 [workspace]
 
 
-members = [
-    "crates/kcclient",
-    "crates/kcserver",
-    "crates/openapi_client"
-]
+members = ["crates/kcclient", "crates/kcserver", "crates/kallichore_api"]
 resolver = "2"
 
 [workspace.package]
