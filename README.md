@@ -45,3 +45,22 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
 
 > [!NOTE]
 > The regenerator script requires the [OpenAPI Generator](https://openapi-generator.tech/docs/installation).
+
+## Repository Structure
+
+```
+ .
+ +-- kallichore.json -- OpenAPI description of the Kallichore API
+ |
+ +-- crates
+      |
+      +-- kallichore_api -- Code-generated Rust client/server
+      |    |
+      |    +-- examples/client -- Example client
+      |    |
+      |    +-- examples/server -- Example server
+      |
+      +-- kcserver -- Main Kallichore server, using the kallichore_api crate
+      |
+      +-- kcclient -- Command-line client (for testing), using the kallichore_api crate
+```
