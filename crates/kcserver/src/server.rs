@@ -95,6 +95,7 @@ where
             session,
             context.get().0.clone()
         );
-        Err(ApiError("Generic failure".into()))
+        let session_id = models::NewSession200Response { id: session.id };
+        Ok(NewSessionResponse::ReturnsTheSessionID(session_id))
     }
 }

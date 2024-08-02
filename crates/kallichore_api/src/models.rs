@@ -11,17 +11,16 @@ use crate::header;
 pub struct NewSession200Response {
     /// A unique identifier for the session
     #[serde(rename = "id")]
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub id: Option<String>,
+    pub id: String,
 
 }
 
 
 impl NewSession200Response {
     #[allow(clippy::new_without_default)]
-    pub fn new() -> NewSession200Response {
+    pub fn new(id: String, ) -> NewSession200Response {
         NewSession200Response {
-            id: None,
+            id,
         }
     }
 }
@@ -33,12 +32,8 @@ impl std::string::ToString for NewSession200Response {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
 
-            self.id.as_ref().map(|id| {
-                [
-                    "id".to_string(),
-                    id.to_string(),
-                ].join(",")
-            }),
+            Some("id".to_string()),
+            Some(self.id.to_string()),
 
         ];
 
@@ -87,7 +82,7 @@ impl std::str::FromStr for NewSession200Response {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(NewSession200Response {
-            id: intermediate_rep.id.into_iter().next(),
+            id: intermediate_rep.id.into_iter().next().ok_or_else(|| "id missing in NewSession200Response".to_string())?,
         })
     }
 }

@@ -53,7 +53,8 @@
                       "type": "string",
                       "description": "A unique identifier for the session"
                     }
-                  }
+                  },
+                  "required": ["id"]
                 }
               }
             }

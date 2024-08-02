@@ -83,6 +83,8 @@ components:
         id:
           description: A unique identifier for the session
           type: string
+      required:
+      - id
       type: object
     sessionList_sessions_inner:
       example:
