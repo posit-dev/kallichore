@@ -16,15 +16,15 @@ pub const API_VERSION: &str = "1.0.0";
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum ListSessionsResponse {
-    /// Returns a list of active sessions
-    ReturnsAListOfActiveSessions
+    /// List of active sessions
+    ListOfActiveSessions
     (models::SessionList)
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum NewSessionResponse {
-    /// Returns the session ID
-    ReturnsTheSessionID
+    /// The session ID
+    TheSessionID
     (models::NewSession200Response)
 }
 

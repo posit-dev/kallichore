@@ -88,9 +88,7 @@ where
             total: sessions.len() as i32,
             sessions: sessions.clone(),
         };
-        Ok(ListSessionsResponse::ReturnsAListOfActiveSessions(
-            session_list,
-        ))
+        Ok(ListSessionsResponse::ListOfActiveSessions(session_list))
     }
     /// Create a new session
 
@@ -108,6 +106,6 @@ where
         let session_id = models::NewSession200Response { id };
         let mut sessions = self.sessions.write().unwrap();
         sessions.push(session);
-        Ok(NewSessionResponse::ReturnsTheSessionID(session_id))
+        Ok(NewSessionResponse::TheSessionID(session_id))
     }
 }

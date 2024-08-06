@@ -434,7 +434,7 @@ impl<S, C> Api<C> for Client<S, C> where
                 let body = serde_json::from_str::<models::SessionList>(body).map_err(|e| {
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
-                Ok(ListSessionsResponse::ReturnsAListOfActiveSessions
+                Ok(ListSessionsResponse::ListOfActiveSessions
                     (body)
                 )
             }
@@ -522,7 +522,7 @@ impl<S, C> Api<C> for Client<S, C> where
                 let body = serde_json::from_str::<models::NewSession200Response>(body).map_err(|e| {
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
-                Ok(NewSessionResponse::ReturnsTheSessionID
+                Ok(NewSessionResponse::TheSessionID
                     (body)
                 )
             }

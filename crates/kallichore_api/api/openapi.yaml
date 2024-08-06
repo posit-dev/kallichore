@@ -19,7 +19,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/sessionList'
-          description: Returns a list of active sessions
+          description: List of active sessions
       summary: List active sessions
     put:
       operationId: new-session
@@ -35,7 +35,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/new_session_200_response'
-          description: Returns the session ID
+          description: The session ID
       summary: Create a new session
 components:
   schemas:

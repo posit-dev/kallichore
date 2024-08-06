@@ -17,7 +17,7 @@
         "summary": "List active sessions",
         "responses": {
           "200": {
-            "description": "Returns a list of active sessions",
+            "description": "List of active sessions",
             "content": {
               "application/json": {
                 "schema": {
@@ -43,7 +43,7 @@
         },
         "responses": {
           "200": {
-            "description": "Returns the session ID",
+            "description": "The session ID",
             "content": {
               "application/json": {
                 "schema": {
