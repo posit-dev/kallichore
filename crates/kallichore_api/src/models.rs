@@ -391,23 +391,21 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 pub struct SessionListSessionsInner {
     /// A unique identifier for the session
     #[serde(rename = "id")]
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub id: Option<String>,
+    pub id: String,
 
     /// The program and command-line parameters for the session
     #[serde(rename = "argv")]
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub argv: Option<Vec<String>>,
+    pub argv: Vec<String>,
 
 }
 
 
 impl SessionListSessionsInner {
     #[allow(clippy::new_without_default)]
-    pub fn new() -> SessionListSessionsInner {
+    pub fn new(id: String, argv: Vec<String>, ) -> SessionListSessionsInner {
         SessionListSessionsInner {
-            id: None,
-            argv: None,
+            id,
+            argv,
         }
     }
 }
@@ -419,20 +417,12 @@ impl std::string::ToString for SessionListSessionsInner {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
 
-            self.id.as_ref().map(|id| {
-                [
-                    "id".to_string(),
-                    id.to_string(),
-                ].join(",")
-            }),
+            Some("id".to_string()),
+            Some(self.id.to_string()),
 
 
-            self.argv.as_ref().map(|argv| {
-                [
-                    "argv".to_string(),
-                    argv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
-                ].join(",")
-            }),
+            Some("argv".to_string()),
+            Some(self.argv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
 
         ];
 
@@ -483,8 +473,8 @@ impl std::str::FromStr for SessionListSessionsInner {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(SessionListSessionsInner {
-            id: intermediate_rep.id.into_iter().next(),
-            argv: intermediate_rep.argv.into_iter().next(),
+            id: intermediate_rep.id.into_iter().next().ok_or_else(|| "id missing in SessionListSessionsInner".to_string())?,
+            argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in SessionListSessionsInner".to_string())?,
         })
     }
 }

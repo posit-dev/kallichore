@@ -101,5 +101,8 @@ components:
           items:
             type: string
           type: array
+      required:
+      - argv
+      - id
       type: object
 

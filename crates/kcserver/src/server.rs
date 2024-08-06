@@ -17,7 +17,7 @@ use log::info;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::EmptyContext;
@@ -49,14 +49,14 @@ pub async fn create(addr: &str) {
 #[derive(Clone)]
 pub struct Server<C> {
     marker: PhantomData<C>,
-    sessions: Vec<models::Session>,
+    sessions: Arc<RwLock<Vec<models::Session>>>,
 }
 
 impl<C> Server<C> {
     pub fn new() -> Self {
         Server {
             marker: PhantomData,
-            sessions: Vec::new(),
+            sessions: Arc::new(RwLock::new(vec![])),
         }
     }
 }
@@ -75,9 +75,18 @@ where
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError> {
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
 
+        let sessions = self.sessions.read().unwrap();
+        // Convert the vector of sessions to a vector of SessionsListSessionsInner
+        let sessions: Vec<models::SessionListSessionsInner> = sessions
+            .iter()
+            .map(|s| models::SessionListSessionsInner {
+                id: s.id.clone(),
+                argv: s.argv.clone(),
+            })
+            .collect();
         let session_list = models::SessionList {
-            total: self.sessions.len() as i32,
-            sessions: vec![],
+            total: sessions.len() as i32,
+            sessions: sessions.clone(),
         };
         Ok(ListSessionsResponse::ReturnsAListOfActiveSessions(
             session_list,
@@ -95,7 +104,10 @@ where
             session,
             context.get().0.clone()
         );
-        let session_id = models::NewSession200Response { id: session.id };
+        let id = session.id.clone();
+        let session_id = models::NewSession200Response { id };
+        let mut sessions = self.sessions.write().unwrap();
+        sessions.push(session);
         Ok(NewSessionResponse::ReturnsTheSessionID(session_id))
     }
 }
