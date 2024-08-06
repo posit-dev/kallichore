@@ -41,6 +41,16 @@ fn main() {
 
     let mut rt = tokio::runtime::Runtime::new().unwrap();
 
+    let session = models::Session {
+        id: String::from("1"),
+        argv: vec![],
+    };
+    let result = rt.block_on(client.new_session(session));
+    info!(
+        "{:?} (X-Span-ID: {:?})",
+        result,
+        (client.context() as &dyn Has<XSpanIdString>).get().clone()
+    );
     let result = rt.block_on(client.list_sessions());
     info!(
         "{:?} (X-Span-ID: {:?})",
