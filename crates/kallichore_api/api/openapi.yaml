@@ -41,7 +41,7 @@ components:
   schemas:
     session:
       properties:
-        id:
+        session_id:
           description: A unique identifier for the session
           type: string
         argv:
@@ -51,17 +51,19 @@ components:
           type: array
       required:
       - argv
-      - id
+      - session_id
       type: object
     sessionList:
       example:
         total: 0
         sessions:
-        - id: id
+        - process_id: 6
+          session_id: session_id
           argv:
           - argv
           - argv
-        - id: id
+        - process_id: 6
+          session_id: session_id
           argv:
           - argv
           - argv
@@ -78,22 +80,23 @@ components:
       type: object
     new_session_200_response:
       example:
-        id: id
+        session_id: session_id
       properties:
-        id:
+        session_id:
           description: A unique identifier for the session
           type: string
       required:
-      - id
+      - session_id
       type: object
     sessionList_sessions_inner:
       example:
-        id: id
+        process_id: 6
+        session_id: session_id
         argv:
         - argv
         - argv
       properties:
-        id:
+        session_id:
           description: A unique identifier for the session
           type: string
         argv:
@@ -101,8 +104,12 @@ components:
           items:
             type: string
           type: array
+        process_id:
+          description: "The underlying process ID of the session, if the session is\
+            \ running."
+          type: integer
       required:
       - argv
-      - id
+      - session_id
       type: object
 

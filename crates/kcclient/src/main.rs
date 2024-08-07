@@ -42,8 +42,8 @@ fn main() {
     let mut rt = tokio::runtime::Runtime::new().unwrap();
 
     let session = models::Session {
-        id: String::from("1"),
-        argv: vec![],
+        session_id: String::from("1"),
+        argv: vec![String::from("sleep"), String::from("10")],
     };
     let result = rt.block_on(client.new_session(session));
     info!(

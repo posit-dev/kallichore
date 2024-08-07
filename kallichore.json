@@ -49,12 +49,12 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "id": {
+                    "session_id": {
                       "type": "string",
                       "description": "A unique identifier for the session"
                     }
                   },
-                  "required": ["id"]
+                  "required": ["session_id"]
                 }
               }
             }
@@ -68,7 +68,7 @@
       "session": {
         "type": "object",
         "properties": {
-          "id": {
+          "session_id": {
             "type": "string",
             "description": "A unique identifier for the session"
           },
@@ -80,7 +80,7 @@
             }
           }
         },
-        "required": ["id", "argv"]
+        "required": ["session_id", "argv"]
       },
       "sessionList": {
         "type": "object",
@@ -93,7 +93,7 @@
             "items": {
               "type": "object",
               "properties": {
-                "id": {
+                "session_id": {
                   "type": "string",
                   "description": "A unique identifier for the session"
                 },
@@ -103,9 +103,13 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "process_id": {
+                  "type": "integer",
+                  "description": "The underlying process ID of the session, if the session is running."
                 }
               },
-              "required": ["id", "argv"]
+              "required": ["session_id", "argv"]
             }
           }
         },

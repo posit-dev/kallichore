@@ -49,7 +49,7 @@ pub async fn create(addr: &str) {
 #[derive(Clone)]
 pub struct Server<C> {
     marker: PhantomData<C>,
-    sessions: Arc<RwLock<Vec<models::Session>>>,
+    sessions: Arc<RwLock<Vec<KernelSession>>>,
 }
 
 impl<C> Server<C> {
@@ -66,6 +66,8 @@ use kallichore_api::{Api, ListSessionsResponse};
 use std::error::Error;
 use swagger::ApiError;
 
+use crate::session::KernelSession;
+
 #[async_trait]
 impl<C> Api<C> for Server<C>
 where
@@ -80,8 +82,12 @@ where
         let sessions: Vec<models::SessionListSessionsInner> = sessions
             .iter()
             .map(|s| models::SessionListSessionsInner {
-                id: s.id.clone(),
+                session_id: s.session_id.clone(),
                 argv: s.argv.clone(),
+                process_id: match s.process_id {
+                    Some(pid) => Some(pid as i32),
+                    None => None,
+                },
             })
             .collect();
         let session_list = models::SessionList {
@@ -102,10 +108,11 @@ where
             session,
             context.get().0.clone()
         );
-        let id = session.id.clone();
-        let session_id = models::NewSession200Response { id };
+        let session_id = session.session_id.clone();
+        let session_id = models::NewSession200Response { session_id };
+        let kernel_session = KernelSession::new(session);
         let mut sessions = self.sessions.write().unwrap();
-        sessions.push(session);
+        sessions.push(kernel_session);
         Ok(NewSessionResponse::TheSessionID(session_id))
     }
 }

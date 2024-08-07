@@ -10,17 +10,17 @@ use crate::header;
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct NewSession200Response {
     /// A unique identifier for the session
-    #[serde(rename = "id")]
-    pub id: String,
+    #[serde(rename = "session_id")]
+    pub session_id: String,
 
 }
 
 
 impl NewSession200Response {
     #[allow(clippy::new_without_default)]
-    pub fn new(id: String, ) -> NewSession200Response {
+    pub fn new(session_id: String, ) -> NewSession200Response {
         NewSession200Response {
-            id,
+            session_id,
         }
     }
 }
@@ -32,8 +32,8 @@ impl std::string::ToString for NewSession200Response {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
 
-            Some("id".to_string()),
-            Some(self.id.to_string()),
+            Some("session_id".to_string()),
+            Some(self.session_id.to_string()),
 
         ];
 
@@ -52,7 +52,7 @@ impl std::str::FromStr for NewSession200Response {
         #[derive(Default)]
         #[allow(dead_code)]
         struct IntermediateRep {
-            pub id: Vec<String>,
+            pub session_id: Vec<String>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -71,7 +71,7 @@ impl std::str::FromStr for NewSession200Response {
                 #[allow(clippy::match_single_binding)]
                 match key {
                     #[allow(clippy::redundant_clone)]
-                    "id" => intermediate_rep.id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    "session_id" => intermediate_rep.session_id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     _ => return std::result::Result::Err("Unexpected key while parsing NewSession200Response".to_string())
                 }
             }
@@ -82,7 +82,7 @@ impl std::str::FromStr for NewSession200Response {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(NewSession200Response {
-            id: intermediate_rep.id.into_iter().next().ok_or_else(|| "id missing in NewSession200Response".to_string())?,
+            session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in NewSession200Response".to_string())?,
         })
     }
 }
@@ -130,8 +130,8 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct Session {
     /// A unique identifier for the session
-    #[serde(rename = "id")]
-    pub id: String,
+    #[serde(rename = "session_id")]
+    pub session_id: String,
 
     /// The program and command-line parameters for the session
     #[serde(rename = "argv")]
@@ -142,9 +142,9 @@ pub struct Session {
 
 impl Session {
     #[allow(clippy::new_without_default)]
-    pub fn new(id: String, argv: Vec<String>, ) -> Session {
+    pub fn new(session_id: String, argv: Vec<String>, ) -> Session {
         Session {
-            id,
+            session_id,
             argv,
         }
     }
@@ -157,8 +157,8 @@ impl std::string::ToString for Session {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
 
-            Some("id".to_string()),
-            Some(self.id.to_string()),
+            Some("session_id".to_string()),
+            Some(self.session_id.to_string()),
 
 
             Some("argv".to_string()),
@@ -181,7 +181,7 @@ impl std::str::FromStr for Session {
         #[derive(Default)]
         #[allow(dead_code)]
         struct IntermediateRep {
-            pub id: Vec<String>,
+            pub session_id: Vec<String>,
             pub argv: Vec<Vec<String>>,
         }
 
@@ -201,7 +201,7 @@ impl std::str::FromStr for Session {
                 #[allow(clippy::match_single_binding)]
                 match key {
                     #[allow(clippy::redundant_clone)]
-                    "id" => intermediate_rep.id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    "session_id" => intermediate_rep.session_id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     "argv" => return std::result::Result::Err("Parsing a container in this style is not supported in Session".to_string()),
                     _ => return std::result::Result::Err("Unexpected key while parsing Session".to_string())
                 }
@@ -213,7 +213,7 @@ impl std::str::FromStr for Session {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(Session {
-            id: intermediate_rep.id.into_iter().next().ok_or_else(|| "id missing in Session".to_string())?,
+            session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in Session".to_string())?,
             argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in Session".to_string())?,
         })
     }
@@ -390,22 +390,28 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct SessionListSessionsInner {
     /// A unique identifier for the session
-    #[serde(rename = "id")]
-    pub id: String,
+    #[serde(rename = "session_id")]
+    pub session_id: String,
 
     /// The program and command-line parameters for the session
     #[serde(rename = "argv")]
     pub argv: Vec<String>,
+
+    /// The underlying process ID of the session, if the session is running.
+    #[serde(rename = "process_id")]
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub process_id: Option<i32>,
 
 }
 
 
 impl SessionListSessionsInner {
     #[allow(clippy::new_without_default)]
-    pub fn new(id: String, argv: Vec<String>, ) -> SessionListSessionsInner {
+    pub fn new(session_id: String, argv: Vec<String>, ) -> SessionListSessionsInner {
         SessionListSessionsInner {
-            id,
+            session_id,
             argv,
+            process_id: None,
         }
     }
 }
@@ -417,12 +423,20 @@ impl std::string::ToString for SessionListSessionsInner {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
 
-            Some("id".to_string()),
-            Some(self.id.to_string()),
+            Some("session_id".to_string()),
+            Some(self.session_id.to_string()),
 
 
             Some("argv".to_string()),
             Some(self.argv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
+
+
+            self.process_id.as_ref().map(|process_id| {
+                [
+                    "process_id".to_string(),
+                    process_id.to_string(),
+                ].join(",")
+            }),
 
         ];
 
@@ -441,8 +455,9 @@ impl std::str::FromStr for SessionListSessionsInner {
         #[derive(Default)]
         #[allow(dead_code)]
         struct IntermediateRep {
-            pub id: Vec<String>,
+            pub session_id: Vec<String>,
             pub argv: Vec<Vec<String>>,
+            pub process_id: Vec<i32>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -461,8 +476,10 @@ impl std::str::FromStr for SessionListSessionsInner {
                 #[allow(clippy::match_single_binding)]
                 match key {
                     #[allow(clippy::redundant_clone)]
-                    "id" => intermediate_rep.id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    "session_id" => intermediate_rep.session_id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     "argv" => return std::result::Result::Err("Parsing a container in this style is not supported in SessionListSessionsInner".to_string()),
+                    #[allow(clippy::redundant_clone)]
+                    "process_id" => intermediate_rep.process_id.push(<i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     _ => return std::result::Result::Err("Unexpected key while parsing SessionListSessionsInner".to_string())
                 }
             }
@@ -473,8 +490,9 @@ impl std::str::FromStr for SessionListSessionsInner {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(SessionListSessionsInner {
-            id: intermediate_rep.id.into_iter().next().ok_or_else(|| "id missing in SessionListSessionsInner".to_string())?,
+            session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in SessionListSessionsInner".to_string())?,
             argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in SessionListSessionsInner".to_string())?,
+            process_id: intermediate_rep.process_id.into_iter().next(),
         })
     }
 }
