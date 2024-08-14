@@ -23,6 +23,7 @@ impl KernelSession {
 
         let child = tokio::process::Command::new(&argv[0])
             .args(&argv[1..])
+            .current_dir(session.working_directory)
             .spawn()
             .expect("Failed to start child process");
 

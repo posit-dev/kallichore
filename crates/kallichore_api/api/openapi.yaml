@@ -49,9 +49,13 @@ components:
           items:
             type: string
           type: array
+        working_directory:
+          description: The working directory in which to start the session.
+          type: string
       required:
       - argv
       - session_id
+      - working_directory
       type: object
     sessionList:
       example:

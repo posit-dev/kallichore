@@ -78,9 +78,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "working_directory": {
+            "type": "string",
+            "description": "The working directory in which to start the session."
           }
         },
-        "required": ["session_id", "argv"]
+        "required": ["session_id", "argv", "working_directory"]
       },
       "sessionList": {
         "type": "object",

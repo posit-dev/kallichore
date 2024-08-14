@@ -137,15 +137,20 @@ pub struct Session {
     #[serde(rename = "argv")]
     pub argv: Vec<String>,
 
+    /// The working directory in which to start the session.
+    #[serde(rename = "working_directory")]
+    pub working_directory: String,
+
 }
 
 
 impl Session {
     #[allow(clippy::new_without_default)]
-    pub fn new(session_id: String, argv: Vec<String>, ) -> Session {
+    pub fn new(session_id: String, argv: Vec<String>, working_directory: String, ) -> Session {
         Session {
             session_id,
             argv,
+            working_directory,
         }
     }
 }
@@ -163,6 +168,10 @@ impl std::string::ToString for Session {
 
             Some("argv".to_string()),
             Some(self.argv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
+
+
+            Some("working_directory".to_string()),
+            Some(self.working_directory.to_string()),
 
         ];
 
@@ -183,6 +192,7 @@ impl std::str::FromStr for Session {
         struct IntermediateRep {
             pub session_id: Vec<String>,
             pub argv: Vec<Vec<String>>,
+            pub working_directory: Vec<String>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -203,6 +213,8 @@ impl std::str::FromStr for Session {
                     #[allow(clippy::redundant_clone)]
                     "session_id" => intermediate_rep.session_id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     "argv" => return std::result::Result::Err("Parsing a container in this style is not supported in Session".to_string()),
+                    #[allow(clippy::redundant_clone)]
+                    "working_directory" => intermediate_rep.working_directory.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     _ => return std::result::Result::Err("Unexpected key while parsing Session".to_string())
                 }
             }
@@ -215,6 +227,7 @@ impl std::str::FromStr for Session {
         std::result::Result::Ok(Session {
             session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in Session".to_string())?,
             argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in Session".to_string())?,
+            working_directory: intermediate_rep.working_directory.into_iter().next().ok_or_else(|| "working_directory missing in Session".to_string())?,
         })
     }
 }
