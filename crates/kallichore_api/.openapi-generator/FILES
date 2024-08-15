@@ -3,6 +3,7 @@
 Cargo.toml
 README.md
 api/openapi.yaml
+docs/Error.md
 docs/NewSession200Response.md
 docs/Session.md
 docs/SessionList.md

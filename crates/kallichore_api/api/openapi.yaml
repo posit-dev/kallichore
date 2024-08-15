@@ -36,9 +36,31 @@ paths:
               schema:
                 $ref: '#/components/schemas/new_session_200_response'
           description: The session ID
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Invalid request
       summary: Create a new session
 components:
   schemas:
+    error:
+      example:
+        code: code
+        details: details
+        message: message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: string
+      required:
+      - code
+      - message
+      type: object
     session:
       properties:
         session_id:

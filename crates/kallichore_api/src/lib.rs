@@ -22,10 +22,15 @@ pub enum ListSessionsResponse {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum NewSessionResponse {
     /// The session ID
     TheSessionID
     (models::NewSession200Response)
+    ,
+    /// Invalid request
+    InvalidRequest
+    (models::Error)
 }
 
 /// API
