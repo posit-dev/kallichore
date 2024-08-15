@@ -14,9 +14,11 @@ use futures::{future, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use hyper::server::conn::Http;
 use hyper::service::Service;
 use log::info;
+use std::env;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use swagger::auth::MakeAllowAllAuthenticator;
@@ -66,6 +68,7 @@ use kallichore_api::{Api, ListSessionsResponse};
 use std::error::Error;
 use swagger::ApiError;
 
+use crate::connection_file::{self, ConnectionFile};
 use crate::session::KernelSession;
 
 #[async_trait]
@@ -108,8 +111,51 @@ where
             session,
             context.get().0.clone()
         );
-        let session_id = session.session_id.clone();
-        let session_id = models::NewSession200Response { session_id };
+        // TODO: error if session_id is already in use
+
+        let new_session_id = session.session_id.clone();
+        let session_id = models::NewSession200Response {
+            session_id: new_session_id.clone(),
+        };
+        let args = session.argv.clone();
+
+        // Create a connection file for the session in a temporary directory
+        // TODO: Handle error
+        let connection_file = ConnectionFile::generate(String::from("localhost")).unwrap();
+
+        let temp_dir = env::temp_dir();
+        let mut file_name = std::ffi::OsString::from("connection_");
+        file_name.push(new_session_id.clone());
+        file_name.push(".json");
+
+        // Combine the temporary directory with the file name to get the full path
+        let connection_path: PathBuf = temp_dir.join(file_name);
+        connection_file.to_file(connection_path.clone()).unwrap();
+
+        log::trace!(
+            "Created connection file for session {} at {:?}",
+            new_session_id.clone(),
+            connection_path
+        );
+
+        // Loop through the arguments; if any is the special string "{connection_file}", replace it with the session id
+        let args: Vec<String> = args
+            .iter()
+            .map(|arg| {
+                if arg == "{connection_file}" {
+                    connection_path.to_string_lossy().to_string()
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect();
+
+        let session = models::Session {
+            session_id: session_id.session_id.clone(),
+            argv: args,
+            working_directory: session.working_directory.clone(),
+        };
+
         let kernel_session = KernelSession::new(session);
         let mut sessions = self.sessions.write().unwrap();
         sessions.push(kernel_session);

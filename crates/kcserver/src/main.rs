@@ -9,6 +9,7 @@
 
 #![allow(missing_docs)]
 
+mod connection_file;
 mod server;
 mod session;
 
