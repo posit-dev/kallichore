@@ -111,7 +111,19 @@ where
             session,
             context.get().0.clone()
         );
-        // TODO: error if session_id is already in use
+
+        // Check to see if the session already exists
+        let sessions = self.sessions.read().unwrap();
+        for s in sessions.iter() {
+            if s.session_id == session.session_id {
+                let err = models::Error {
+                    code: String::from("KS-001"),
+                    message: format!("Session {} already exists", session.session_id),
+                    details: None,
+                };
+                return Ok(NewSessionResponse::InvalidRequest(err));
+            }
+        }
 
         let new_session_id = session.session_id.clone();
         let session_id = models::NewSession200Response {

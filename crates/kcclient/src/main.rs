@@ -41,10 +41,12 @@ fn main() {
 
     let mut rt = tokio::runtime::Runtime::new().unwrap();
 
+    // Get the current working directory
+    let working_directory = std::env::current_dir().unwrap();
     let session = models::Session {
         session_id: String::from("1"),
         argv: vec![String::from("sleep"), String::from("10")],
-        working_directory: String::new(),
+        working_directory: working_directory.to_string_lossy().to_string(),
     };
     let result = rt.block_on(client.new_session(session));
     info!(
