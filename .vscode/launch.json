@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Kallichore server",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceRoot}/target/debug/kcserver",
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "RUST_LOG": "trace"
+      },
+      "cwd": "${workspaceRoot}/target/debug"
+    }
+  ]
+}
