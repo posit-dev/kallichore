@@ -48,6 +48,10 @@ fn main() {
         argv: vec![String::from("sleep"), String::from("10")],
         working_directory: working_directory.to_string_lossy().to_string(),
     };
+    info!(
+        "Creating new session with id {}",
+        session.session_id.clone()
+    );
     let result = rt.block_on(client.new_session(session));
     info!(
         "{:?} (X-Span-ID: {:?})",

@@ -112,16 +112,19 @@ where
             context.get().0.clone()
         );
 
-        // Check to see if the session already exists
-        let sessions = self.sessions.read().unwrap();
-        for s in sessions.iter() {
-            if s.session_id == session.session_id {
-                let err = models::Error {
-                    code: String::from("KS-001"),
-                    message: format!("Session {} already exists", session.session_id),
-                    details: None,
-                };
-                return Ok(NewSessionResponse::InvalidRequest(err));
+        {
+            // Check to see if the session already exists, dropping the read
+            // lock afterwards.
+            let sessions = self.sessions.read().unwrap();
+            for s in sessions.iter() {
+                if s.session_id == session.session_id {
+                    let err = models::Error {
+                        code: String::from("KS-001"),
+                        message: format!("Session {} already exists", session.session_id),
+                        details: None,
+                    };
+                    return Ok(NewSessionResponse::InvalidRequest(err));
+                }
             }
         }
 
