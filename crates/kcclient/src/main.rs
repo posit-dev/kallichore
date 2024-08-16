@@ -41,10 +41,12 @@ fn main() {
 
     let mut rt = tokio::runtime::Runtime::new().unwrap();
 
-    // Get the current working directory
+    let session_id = format!("{:08x}", rand::random::<u32>());
+
     let working_directory = std::env::current_dir().unwrap();
+
     let session = models::Session {
-        session_id: String::from("1"),
+        session_id,
         argv: vec![String::from("sleep"), String::from("10")],
         working_directory: working_directory.to_string_lossy().to_string(),
     };
