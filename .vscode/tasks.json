@@ -1,0 +1,30 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "cargo",
+      "command": "build",
+      "problemMatcher": ["$rustc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "label": "rust: cargo build"
+    },
+    {
+      "type": "shell",
+      "command": "cargo run --bin kcserver",
+      "options": {
+        "env": {
+          "RUST_BACKTRACE": "1",
+          "RUST_LOG": "trace"
+        }
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "build"
+      },
+      "label": "rust: run Kallichore server"
+    }
+  ]
+}
