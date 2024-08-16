@@ -8,6 +8,7 @@ docs/NewSession200Response.md
 docs/Session.md
 docs/SessionList.md
 docs/SessionListSessionsInner.md
+docs/Status.md
 docs/default_api.md
 examples/ca.pem
 examples/client/main.rs

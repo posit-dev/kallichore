@@ -563,16 +563,20 @@ pub struct SessionListSessionsInner {
     #[serde(skip_serializing_if="Option::is_none")]
     pub process_id: Option<i32>,
 
+    #[serde(rename = "status")]
+    pub status: models::Status,
+
 }
 
 
 impl SessionListSessionsInner {
     #[allow(clippy::new_without_default)]
-    pub fn new(session_id: String, argv: Vec<String>, ) -> SessionListSessionsInner {
+    pub fn new(session_id: String, argv: Vec<String>, status: models::Status, ) -> SessionListSessionsInner {
         SessionListSessionsInner {
             session_id,
             argv,
             process_id: None,
+            status,
         }
     }
 }
@@ -599,6 +603,8 @@ impl std::string::ToString for SessionListSessionsInner {
                 ].join(",")
             }),
 
+            // Skipping status in query parameter serialization
+
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -619,6 +625,7 @@ impl std::str::FromStr for SessionListSessionsInner {
             pub session_id: Vec<String>,
             pub argv: Vec<Vec<String>>,
             pub process_id: Vec<i32>,
+            pub status: Vec<models::Status>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -641,6 +648,8 @@ impl std::str::FromStr for SessionListSessionsInner {
                     "argv" => return std::result::Result::Err("Parsing a container in this style is not supported in SessionListSessionsInner".to_string()),
                     #[allow(clippy::redundant_clone)]
                     "process_id" => intermediate_rep.process_id.push(<i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    #[allow(clippy::redundant_clone)]
+                    "status" => intermediate_rep.status.push(<models::Status as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     _ => return std::result::Result::Err("Unexpected key while parsing SessionListSessionsInner".to_string())
                 }
             }
@@ -654,6 +663,7 @@ impl std::str::FromStr for SessionListSessionsInner {
             session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in SessionListSessionsInner".to_string())?,
             argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in SessionListSessionsInner".to_string())?,
             process_id: intermediate_rep.process_id.into_iter().next(),
+            status: intermediate_rep.status.into_iter().next().ok_or_else(|| "status missing in SessionListSessionsInner".to_string())?,
         })
     }
 }
@@ -696,3 +706,43 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+
+/// The status of the session
+/// Enumeration of values.
+/// Since this enum's variants do not hold data, we can easily define them as `#[repr(C)]`
+/// which helps with FFI.
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
+pub enum Status {
+    #[serde(rename = "idle")]
+    Idle,
+    #[serde(rename = "starting")]
+    Starting,
+    #[serde(rename = "exited")]
+    Exited,
+}
+
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Status::Idle => write!(f, "idle"),
+            Status::Starting => write!(f, "starting"),
+            Status::Exited => write!(f, "exited"),
+        }
+    }
+}
+
+impl std::str::FromStr for Status {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "idle" => std::result::Result::Ok(Status::Idle),
+            "starting" => std::result::Result::Ok(Status::Starting),
+            "exited" => std::result::Result::Ok(Status::Exited),
+            _ => std::result::Result::Err(format!("Value not valid: {}", s)),
+        }
+    }
+}

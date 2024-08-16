@@ -61,6 +61,13 @@ components:
       - code
       - message
       type: object
+    status:
+      description: The status of the session
+      enum:
+      - idle
+      - starting
+      - exited
+      type: string
     session:
       properties:
         session_id:
@@ -88,11 +95,13 @@ components:
           argv:
           - argv
           - argv
+          status: idle
         - process_id: 6
           session_id: session_id
           argv:
           - argv
           - argv
+          status: idle
       properties:
         total:
           type: integer
@@ -121,6 +130,7 @@ components:
         argv:
         - argv
         - argv
+        status: idle
       properties:
         session_id:
           description: A unique identifier for the session
@@ -134,8 +144,11 @@ components:
           description: "The underlying process ID of the session, if the session is\
             \ running."
           type: integer
+        status:
+          $ref: '#/components/schemas/status'
       required:
       - argv
       - session_id
+      - status
       type: object
 

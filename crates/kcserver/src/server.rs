@@ -91,6 +91,7 @@ where
                     Some(pid) => Some(pid as i32),
                     None => None,
                 },
+                status: s.status.clone(),
             })
             .collect();
         let session_list = models::SessionList {

@@ -54,7 +54,9 @@
                       "description": "A unique identifier for the session"
                     }
                   },
-                  "required": ["session_id"]
+                  "required": [
+                    "session_id"
+                  ]
                 }
               }
             }
@@ -88,7 +90,19 @@
             "type": "string"
           }
         },
-        "required": ["code", "message"]
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "status": {
+        "type": "string",
+        "description": "The status of the session",
+        "enum": [
+          "idle",
+          "starting",
+          "exited"
+        ]
       },
       "session": {
         "type": "object",
@@ -109,7 +123,11 @@
             "description": "The working directory in which to start the session."
           }
         },
-        "required": ["session_id", "argv", "working_directory"]
+        "required": [
+          "session_id",
+          "argv",
+          "working_directory"
+        ]
       },
       "sessionList": {
         "type": "object",
@@ -136,13 +154,23 @@
                 "process_id": {
                   "type": "integer",
                   "description": "The underlying process ID of the session, if the session is running."
+                },
+                "status": {
+                  "$ref": "#/components/schemas/status"
                 }
               },
-              "required": ["session_id", "argv"]
+              "required": [
+                "session_id",
+                "argv",
+                "status"
+              ]
             }
           }
         },
-        "required": ["total", "sessions"]
+        "required": [
+          "total",
+          "sessions"
+        ]
       }
     }
   }
