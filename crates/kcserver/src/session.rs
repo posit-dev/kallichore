@@ -9,6 +9,9 @@
 
 use kallichore_api::models;
 
+use crate::connection_file;
+use zeromq::{Socket, SocketRecv, SocketSend};
+
 pub struct KernelSession {
     pub session_id: String,
     pub argv: Vec<String>,
@@ -18,7 +21,7 @@ pub struct KernelSession {
 
 impl KernelSession {
     /// Create a new kernel session.
-    pub fn new(session: models::Session) -> Self {
+    pub fn new(session: models::Session, connection: connection_file::ConnectionFile) -> Self {
         // Start the session in a new thread
         let argv = session.argv.clone();
 
@@ -37,6 +40,28 @@ impl KernelSession {
             process_id: pid,
             status: models::Status::Idle,
         };
+
+        // Attempt to connect to the kernel using zeromq
+        tokio::spawn(async move {
+            let mut socket = zeromq::ReqSocket::new();
+            log::info!(
+                "Connecting to kernel heartbeat at {}:{}",
+                connection.ip,
+                connection.hb_port
+            );
+            socket
+                .connect(format!("tcp://{}:{}", connection.ip, connection.hb_port).as_str())
+                .await
+                .unwrap();
+            log::info!(
+                "Connected to kernel heartbeat at {}:{}; sending 'Hello'",
+                connection.ip,
+                connection.hb_port
+            );
+            socket.send("Hello".into()).await.unwrap();
+            let repl = socket.recv().await.unwrap();
+            log::info!("Received reply: {:?}", repl);
+        });
 
         tokio::spawn(async move {
             let status = child.wait().await.expect("Failed to wait on child process");
