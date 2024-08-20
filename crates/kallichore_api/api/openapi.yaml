@@ -43,6 +43,27 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Invalid request
       summary: Create a new session
+  /sessions/{session_id}/channels:
+    get:
+      operationId: channels-websocket
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          description: Upgrade connection to a websocket
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Invalid request
+      summary: Upgrade to a WebSocket for channel communication
 components:
   schemas:
     error:

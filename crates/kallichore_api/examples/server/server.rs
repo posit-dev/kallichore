@@ -94,6 +94,7 @@ impl<C> Server<C> {
 
 use kallichore_api::{
     Api,
+    ChannelsWebsocketResponse,
     ListSessionsResponse,
     NewSessionResponse,
 };
@@ -104,6 +105,16 @@ use swagger::ApiError;
 #[async_trait]
 impl<C> Api<C> for Server<C> where C: Has<XSpanIdString> + Send + Sync
 {
+    /// Upgrade to a WebSocket for channel communication
+    async fn channels_websocket(
+        &self,
+        session_id: String,
+        context: &C) -> Result<ChannelsWebsocketResponse, ApiError>
+    {
+        info!("channels_websocket(\"{}\") - X-Span-ID: {:?}", session_id, context.get().0.clone());
+        Err(ApiError("Generic failure".into()))
+    }
+
     /// List active sessions
     async fn list_sessions(
         &self,

@@ -15,6 +15,17 @@ pub const BASE_PATH: &str = "";
 pub const API_VERSION: &str = "1.0.0";
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum ChannelsWebsocketResponse {
+    /// Upgrade connection to a websocket
+    UpgradeConnectionToAWebsocket
+    ,
+    /// Invalid request
+    InvalidRequest
+    (models::Error)
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum ListSessionsResponse {
     /// List of active sessions
     ListOfActiveSessions
@@ -41,6 +52,12 @@ pub trait Api<C: Send + Sync> {
         Poll::Ready(Ok(()))
     }
 
+    /// Upgrade to a WebSocket for channel communication
+    async fn channels_websocket(
+        &self,
+        session_id: String,
+        context: &C) -> Result<ChannelsWebsocketResponse, ApiError>;
+
     /// List active sessions
     async fn list_sessions(
         &self,
@@ -62,6 +79,12 @@ pub trait ApiNoContext<C: Send + Sync> {
     fn poll_ready(&self, _cx: &mut Context) -> Poll<Result<(), Box<dyn Error + Send + Sync + 'static>>>;
 
     fn context(&self) -> &C;
+
+    /// Upgrade to a WebSocket for channel communication
+    async fn channels_websocket(
+        &self,
+        session_id: String,
+        ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
     /// List active sessions
     async fn list_sessions(
@@ -97,6 +120,16 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
 
     fn context(&self) -> &C {
         ContextWrapper::context(self)
+    }
+
+    /// Upgrade to a WebSocket for channel communication
+    async fn channels_websocket(
+        &self,
+        session_id: String,
+        ) -> Result<ChannelsWebsocketResponse, ApiError>
+    {
+        let context = self.context().clone();
+        self.api().channels_websocket(session_id, &context).await
     }
 
     /// List active sessions

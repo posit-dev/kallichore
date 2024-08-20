@@ -26,7 +26,7 @@ use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
 use tokio::net::TcpListener;
 
-use kallichore_api::{models, NewSessionResponse};
+use kallichore_api::{models, ChannelsWebsocketResponse, NewSessionResponse};
 
 pub async fn create(addr: &str) {
     let addr = addr.parse().expect("Failed to parse bind address");
@@ -190,5 +190,14 @@ where
         let mut sessions = self.sessions.write().unwrap();
         sessions.push(kernel_session);
         Ok(NewSessionResponse::TheSessionID(session_id))
+    }
+
+    async fn channels_websocket(
+        &self,
+        session_id: String,
+        _context: &C,
+    ) -> Result<ChannelsWebsocketResponse, ApiError> {
+        info!("upgrade to websocket: {}", session_id);
+        unimplemented!()
     }
 }

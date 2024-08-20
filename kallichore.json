@@ -73,6 +73,37 @@
           }
         }
       }
+    },
+    "/sessions/{session_id}/channels": {
+      "get": {
+        "operationId": "channels-websocket",
+        "summary": "Upgrade to a WebSocket for channel communication",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upgrade connection to a websocket"
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
