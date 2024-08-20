@@ -140,12 +140,12 @@ where
         let connection_file = ConnectionFile::generate(String::from("localhost")).unwrap();
 
         let temp_dir = env::temp_dir();
-        let mut file_name = std::ffi::OsString::from("connection_");
-        file_name.push(new_session_id.clone());
-        file_name.push(".json");
+        let mut connection_file_name = std::ffi::OsString::from("connection_");
+        connection_file_name.push(new_session_id.clone());
+        connection_file_name.push(".json");
 
         // Combine the temporary directory with the file name to get the full path
-        let connection_path: PathBuf = temp_dir.join(file_name);
+        let connection_path: PathBuf = temp_dir.join(connection_file_name);
         connection_file.to_file(connection_path.clone()).unwrap();
 
         log::trace!(
@@ -154,12 +154,25 @@ where
             connection_path
         );
 
+        let mut log_file_name = std::ffi::OsString::from("kernel_log_");
+        log_file_name.push(new_session_id.clone());
+        log_file_name.push(".txt");
+        let log_path: PathBuf = temp_dir.join(log_file_name);
+
+        log::trace!(
+            "Created log file for session {} at {:?}",
+            new_session_id.clone(),
+            log_path
+        );
+
         // Loop through the arguments; if any is the special string "{connection_file}", replace it with the session id
         let args: Vec<String> = args
             .iter()
             .map(|arg| {
                 if arg == "{connection_file}" {
                     connection_path.to_string_lossy().to_string()
+                } else if arg == "{log_file}" {
+                    log_path.to_string_lossy().to_string()
                 } else {
                     arg.clone()
                 }
