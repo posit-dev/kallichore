@@ -63,6 +63,7 @@ impl KernelSession {
         let mut child = tokio::process::Command::new(&argv[0])
             .args(&argv[1..])
             .current_dir(session.working_directory)
+            .envs(&session.env)
             .spawn()
             .expect("Failed to start child process");
 

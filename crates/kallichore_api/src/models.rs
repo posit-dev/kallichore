@@ -289,16 +289,21 @@ pub struct Session {
     #[serde(rename = "working_directory")]
     pub working_directory: String,
 
+    /// Environment variables to set for the session
+    #[serde(rename = "env")]
+    pub env: std::collections::HashMap<String, String>,
+
 }
 
 
 impl Session {
     #[allow(clippy::new_without_default)]
-    pub fn new(session_id: String, argv: Vec<String>, working_directory: String, ) -> Session {
+    pub fn new(session_id: String, argv: Vec<String>, working_directory: String, env: std::collections::HashMap<String, String>, ) -> Session {
         Session {
             session_id,
             argv,
             working_directory,
+            env,
         }
     }
 }
@@ -321,6 +326,8 @@ impl std::string::ToString for Session {
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
 
+            // Skipping env in query parameter serialization
+
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -341,6 +348,7 @@ impl std::str::FromStr for Session {
             pub session_id: Vec<String>,
             pub argv: Vec<Vec<String>>,
             pub working_directory: Vec<String>,
+            pub env: Vec<std::collections::HashMap<String, String>>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -363,6 +371,7 @@ impl std::str::FromStr for Session {
                     "argv" => return std::result::Result::Err("Parsing a container in this style is not supported in Session".to_string()),
                     #[allow(clippy::redundant_clone)]
                     "working_directory" => intermediate_rep.working_directory.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    "env" => return std::result::Result::Err("Parsing a container in this style is not supported in Session".to_string()),
                     _ => return std::result::Result::Err("Unexpected key while parsing Session".to_string())
                 }
             }
@@ -376,6 +385,7 @@ impl std::str::FromStr for Session {
             session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in Session".to_string())?,
             argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in Session".to_string())?,
             working_directory: intermediate_rep.working_directory.into_iter().next().ok_or_else(|| "working_directory missing in Session".to_string())?,
+            env: intermediate_rep.env.into_iter().next().ok_or_else(|| "env missing in Session".to_string())?,
         })
     }
 }

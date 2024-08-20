@@ -183,6 +183,7 @@ where
             session_id: session_id.session_id.clone(),
             argv: args,
             working_directory: session.working_directory.clone(),
+            env: session.env.clone(),
         };
 
         let kernel_session = KernelSession::new(session, connection_file);

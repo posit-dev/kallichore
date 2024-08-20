@@ -55,6 +55,7 @@ enum Commands {
     },
 }
 
+use log::trace;
 // swagger::Has may be unused if there are no examples
 #[allow(unused_imports)]
 use swagger::{AuthData, ContextBuilder, EmptyContext, Has, Push, XSpanIdString};
@@ -128,10 +129,27 @@ fn main() {
                 serde_json::from_reader(std::fs::File::open(kernel_spec_json).unwrap())
                     .expect("Failed to parse kernel spec");
 
+            // Convert the environment variables from the kernel spec to a
+            // HashMap for use in the session
+            let mut env = std::collections::HashMap::new();
+            for (key, value) in kernel_spec.env.iter() {
+                trace!(
+                    "Session {}: Setting env var {}={}",
+                    session_id.clone(),
+                    key,
+                    value
+                );
+                if value.is_string() {
+                    let value = value.as_str().unwrap();
+                    env.insert(key.clone(), value.to_string());
+                }
+            }
+
             let session = models::Session {
                 session_id,
                 argv: kernel_spec.argv,
                 working_directory: working_directory.to_string_lossy().to_string(),
+                env,
             };
             info!(
                 "Creating new session for '{}' kernel ({}) with id {}",

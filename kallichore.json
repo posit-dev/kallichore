@@ -121,12 +121,20 @@
           "working_directory": {
             "type": "string",
             "description": "The working directory in which to start the session."
+          },
+          "env": {
+            "type": "object",
+            "description": "Environment variables to set for the session",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "session_id",
           "argv",
-          "working_directory"
+          "working_directory",
+          "env"
         ]
       },
       "sessionList": {
