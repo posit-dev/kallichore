@@ -137,7 +137,7 @@ where
 
         // Create a connection file for the session in a temporary directory
         // TODO: Handle error
-        let connection_file = ConnectionFile::generate(String::from("localhost")).unwrap();
+        let connection_file = ConnectionFile::generate(String::from("127.0.0.1")).unwrap();
 
         let temp_dir = env::temp_dir();
         let mut connection_file_name = std::ffi::OsString::from("connection_");

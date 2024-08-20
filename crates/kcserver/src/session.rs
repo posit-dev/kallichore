@@ -25,31 +25,15 @@ impl KernelSession {
         // Start the session in a new thread
         let argv = session.argv.clone();
 
-        let mut child = tokio::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .current_dir(session.working_directory)
-            .spawn()
-            .expect("Failed to start child process");
-
-        // Get the process ID of the child process
-        let pid = child.id();
-
-        let mut kernel_session = KernelSession {
-            session_id: session.session_id.clone(),
-            argv: session.argv,
-            process_id: pid,
-            status: models::Status::Idle,
-        };
-
         // Attempt to connect to the kernel using zeromq
         tokio::spawn(async move {
             // Connect to the shell socket
             log::info!(
                 "Connecting to kernel shell at {}:{}",
                 connection.ip,
-                connection.hb_port
+                connection.shell_port
             );
-            let mut socket = zeromq::RouterSocket::new();
+            let mut socket = zeromq::DealerSocket::new();
             socket
                 .connect(format!("tcp://{}:{}", connection.ip, connection.shell_port).as_str())
                 .await
@@ -75,6 +59,22 @@ impl KernelSession {
             let repl = socket.recv().await.unwrap();
             log::info!("Received reply: {:?}", repl);
         });
+
+        let mut child = tokio::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .current_dir(session.working_directory)
+            .spawn()
+            .expect("Failed to start child process");
+
+        // Get the process ID of the child process
+        let pid = child.id();
+
+        let mut kernel_session = KernelSession {
+            session_id: session.session_id.clone(),
+            argv: session.argv,
+            process_id: pid,
+            status: models::Status::Idle,
+        };
 
         tokio::spawn(async move {
             let status = child.wait().await.expect("Failed to wait on child process");
