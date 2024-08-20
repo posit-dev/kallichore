@@ -21,7 +21,7 @@ use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListS
 use log::info;
 
 use clap::Parser;
-use clap_derive::{Parser, Subcommand};
+use clap_derive::Subcommand;
 
 mod kernel_spec;
 
@@ -29,8 +29,13 @@ mod kernel_spec;
 #[command(version, about, long_about = None)]
 struct Args {
     /// Optional URL to use as the base for API requests
-    #[arg(short, long, value_name = "URL")]
-    url: Option<String>,
+    #[arg(
+        short,
+        long,
+        value_name = "URL",
+        default_value_t = String::from("http://localhost:8182")
+    )]
+    url: String,
 
     /// Subcommands
     #[command(subcommand)]
@@ -69,19 +74,13 @@ fn main() {
     // Read command line arguments
     let args = Args::parse();
 
-    // Determine the base URL for API requests
-    let base_url = match args.url {
-        Some(url) => url,
-        None => String::from("http://localhost:8080"),
-    };
-
     let context: ClientContext = swagger::make_context!(
         ContextBuilder,
         EmptyContext,
         None as Option<AuthData>,
         XSpanIdString::default()
     );
-
+    let base_url = args.url;
     let client = Box::new(Client::try_new_http(&base_url).expect("Failed to create HTTP client"));
     let client = Box::new(client.with_context(context));
 

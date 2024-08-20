@@ -43,6 +43,19 @@ impl KernelSession {
 
         // Attempt to connect to the kernel using zeromq
         tokio::spawn(async move {
+            // Connect to the shell socket
+            log::info!(
+                "Connecting to kernel shell at {}:{}",
+                connection.ip,
+                connection.hb_port
+            );
+            let mut socket = zeromq::RouterSocket::new();
+            socket
+                .connect(format!("tcp://{}:{}", connection.ip, connection.shell_port).as_str())
+                .await
+                .unwrap();
+
+            // Connect to the heartbeat socket
             let mut socket = zeromq::ReqSocket::new();
             log::info!(
                 "Connecting to kernel heartbeat at {}:{}",
