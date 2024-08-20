@@ -1,8 +1,16 @@
+//
+// main.rs
+//
+// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+//
+//
+
 //! kcclient
 //!
 //! Kallichore Client
 #![allow(missing_docs, unused_variables, trivial_casts)]
 
+use directories::BaseDirs;
 #[allow(unused_imports)]
 use futures::{future, stream, Stream};
 use kallichore_api::NewSessionResponse;
@@ -14,6 +22,8 @@ use log::info;
 
 use clap::Parser;
 use clap_derive::{Parser, Subcommand};
+
+mod kernel_spec;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -33,7 +43,11 @@ enum Commands {
     List,
 
     /// Start a new session
-    Start,
+    Start {
+        /// The previously registered kernel to use
+        #[arg(short, long)]
+        kernel: String,
+    },
 }
 
 // swagger::Has may be unused if there are no examples
@@ -91,14 +105,39 @@ fn main() {
                 println!("{}", serde_json::to_string_pretty(&sessions).unwrap());
             }
         }
-        Some(Commands::Start) => {
+        Some(Commands::Start { kernel }) => {
+            let base_dir = BaseDirs::new().unwrap();
+
+            // On macOS, Jupyter doens't follow XDG Base Directory
+            // Specification; it stores its data in `~/Library/Jupyter` instead
+            // of the "correct" XDG location in `~/Library/Application Support`.
+            #[cfg(target_os = "macos")]
+            let mut jupyter_dir = base_dir.home_dir().join("Library").join("Jupyter");
+
+            #[cfg(not(target_os = "macos"))]
+            let mut jupyter_dir = directories::ProjectDirs::from("Jupyter", "", "")
+                .unwrap()
+                .data_dir();
+
+            let kernel_spec_json = jupyter_dir
+                .join("kernels")
+                .join(kernel.clone())
+                .join("kernel.json");
+
+            // Parse the kernel spec from the JSON file using the serde json library
+            let kernel_spec: kernel_spec::KernelSpec =
+                serde_json::from_reader(std::fs::File::open(kernel_spec_json).unwrap())
+                    .expect("Failed to parse kernel spec");
+
             let session = models::Session {
                 session_id,
-                argv: vec![String::from("sleep"), String::from("10")],
+                argv: kernel_spec.argv,
                 working_directory: working_directory.to_string_lossy().to_string(),
             };
             info!(
-                "Creating new session with id {}",
+                "Creating new session for '{}' kernel ({}) with id {}",
+                kernel,
+                kernel_spec.display_name,
                 session.session_id.clone()
             );
 
