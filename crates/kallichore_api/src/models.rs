@@ -2,9 +2,9 @@
 
 use validator::Validate;
 
-use crate::models;
 #[cfg(any(feature = "client", feature = "server"))]
 use crate::header;
+use crate::models;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
@@ -16,15 +16,13 @@ pub struct Error {
     pub message: String,
 
     #[serde(rename = "details")]
-    #[serde(skip_serializing_if="Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
-
 }
-
 
 impl Error {
     #[allow(clippy::new_without_default)]
-    pub fn new(code: String, message: String, ) -> Error {
+    pub fn new(code: String, message: String) -> Error {
         Error {
             code,
             message,
@@ -39,22 +37,13 @@ impl Error {
 impl std::string::ToString for Error {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
-
             Some("code".to_string()),
             Some(self.code.to_string()),
-
-
             Some("message".to_string()),
             Some(self.message.to_string()),
-
-
-            self.details.as_ref().map(|details| {
-                [
-                    "details".to_string(),
-                    details.to_string(),
-                ].join(",")
-            }),
-
+            self.details
+                .as_ref()
+                .map(|details| ["details".to_string(), details.to_string()].join(",")),
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -86,19 +75,33 @@ impl std::str::FromStr for Error {
         while key_result.is_some() {
             let val = match string_iter.next() {
                 Some(x) => x,
-                None => return std::result::Result::Err("Missing value while parsing Error".to_string())
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing Error".to_string(),
+                    )
+                }
             };
 
             if let Some(key) = key_result {
                 #[allow(clippy::match_single_binding)]
                 match key {
                     #[allow(clippy::redundant_clone)]
-                    "code" => intermediate_rep.code.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    "code" => intermediate_rep.code.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     #[allow(clippy::redundant_clone)]
-                    "message" => intermediate_rep.message.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    "message" => intermediate_rep.message.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     #[allow(clippy::redundant_clone)]
-                    "details" => intermediate_rep.details.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
-                    _ => return std::result::Result::Err("Unexpected key while parsing Error".to_string())
+                    "details" => intermediate_rep.details.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing Error".to_string(),
+                        )
+                    }
                 }
             }
 
@@ -108,8 +111,16 @@ impl std::str::FromStr for Error {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(Error {
-            code: intermediate_rep.code.into_iter().next().ok_or_else(|| "code missing in Error".to_string())?,
-            message: intermediate_rep.message.into_iter().next().ok_or_else(|| "message missing in Error".to_string())?,
+            code: intermediate_rep
+                .code
+                .into_iter()
+                .next()
+                .ok_or_else(|| "code missing in Error".to_string())?,
+            message: intermediate_rep
+                .message
+                .into_iter()
+                .next()
+                .ok_or_else(|| "message missing in Error".to_string())?,
             details: intermediate_rep.details.into_iter().next(),
         })
     }
@@ -121,13 +132,16 @@ impl std::str::FromStr for Error {
 impl std::convert::TryFrom<header::IntoHeaderValue<Error>> for hyper::header::HeaderValue {
     type Error = String;
 
-    fn try_from(hdr_value: header::IntoHeaderValue<Error>) -> std::result::Result<Self, Self::Error> {
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<Error>,
+    ) -> std::result::Result<Self, Self::Error> {
         let hdr_value = hdr_value.to_string();
         match hyper::header::HeaderValue::from_str(&hdr_value) {
-             std::result::Result::Ok(value) => std::result::Result::Ok(value),
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Invalid header value for Error - value: {} is invalid {}",
-                     hdr_value, e))
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for Error - value: {} is invalid {}",
+                hdr_value, e
+            )),
         }
     }
 }
@@ -138,21 +152,22 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 
     fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
         match hdr_value.to_str() {
-             std::result::Result::Ok(value) => {
-                    match <Error as std::str::FromStr>::from_str(value) {
-                        std::result::Result::Ok(value) => std::result::Result::Ok(header::IntoHeaderValue(value)),
-                        std::result::Result::Err(err) => std::result::Result::Err(
-                            format!("Unable to convert header value '{}' into Error - {}",
-                                value, err))
-                    }
-             },
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Unable to convert header: {:?} to string: {}",
-                     hdr_value, e))
+            std::result::Result::Ok(value) => match <Error as std::str::FromStr>::from_str(value) {
+                std::result::Result::Ok(value) => {
+                    std::result::Result::Ok(header::IntoHeaderValue(value))
+                }
+                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                    "Unable to convert header value '{}' into Error - {}",
+                    value, err
+                )),
+            },
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
@@ -160,16 +175,12 @@ pub struct NewSession200Response {
     /// A unique identifier for the session
     #[serde(rename = "session_id")]
     pub session_id: String,
-
 }
-
 
 impl NewSession200Response {
     #[allow(clippy::new_without_default)]
-    pub fn new(session_id: String, ) -> NewSession200Response {
-        NewSession200Response {
-            session_id,
-        }
+    pub fn new(session_id: String) -> NewSession200Response {
+        NewSession200Response { session_id }
     }
 }
 
@@ -179,10 +190,8 @@ impl NewSession200Response {
 impl std::string::ToString for NewSession200Response {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
-
             Some("session_id".to_string()),
             Some(self.session_id.to_string()),
-
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -212,15 +221,25 @@ impl std::str::FromStr for NewSession200Response {
         while key_result.is_some() {
             let val = match string_iter.next() {
                 Some(x) => x,
-                None => return std::result::Result::Err("Missing value while parsing NewSession200Response".to_string())
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing NewSession200Response".to_string(),
+                    )
+                }
             };
 
             if let Some(key) = key_result {
                 #[allow(clippy::match_single_binding)]
                 match key {
                     #[allow(clippy::redundant_clone)]
-                    "session_id" => intermediate_rep.session_id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
-                    _ => return std::result::Result::Err("Unexpected key while parsing NewSession200Response".to_string())
+                    "session_id" => intermediate_rep.session_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing NewSession200Response".to_string(),
+                        )
+                    }
                 }
             }
 
@@ -230,7 +249,11 @@ impl std::str::FromStr for NewSession200Response {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(NewSession200Response {
-            session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in NewSession200Response".to_string())?,
+            session_id: intermediate_rep
+                .session_id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "session_id missing in NewSession200Response".to_string())?,
         })
     }
 }
@@ -238,41 +261,51 @@ impl std::str::FromStr for NewSession200Response {
 // Methods for converting between header::IntoHeaderValue<NewSession200Response> and hyper::header::HeaderValue
 
 #[cfg(any(feature = "client", feature = "server"))]
-impl std::convert::TryFrom<header::IntoHeaderValue<NewSession200Response>> for hyper::header::HeaderValue {
+impl std::convert::TryFrom<header::IntoHeaderValue<NewSession200Response>>
+    for hyper::header::HeaderValue
+{
     type Error = String;
 
-    fn try_from(hdr_value: header::IntoHeaderValue<NewSession200Response>) -> std::result::Result<Self, Self::Error> {
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<NewSession200Response>,
+    ) -> std::result::Result<Self, Self::Error> {
         let hdr_value = hdr_value.to_string();
         match hyper::header::HeaderValue::from_str(&hdr_value) {
-             std::result::Result::Ok(value) => std::result::Result::Ok(value),
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Invalid header value for NewSession200Response - value: {} is invalid {}",
-                     hdr_value, e))
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for NewSession200Response - value: {} is invalid {}",
+                hdr_value, e
+            )),
         }
     }
 }
 
 #[cfg(any(feature = "client", feature = "server"))]
-impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<NewSession200Response> {
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<NewSession200Response>
+{
     type Error = String;
 
     fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
         match hdr_value.to_str() {
-             std::result::Result::Ok(value) => {
-                    match <NewSession200Response as std::str::FromStr>::from_str(value) {
-                        std::result::Result::Ok(value) => std::result::Result::Ok(header::IntoHeaderValue(value)),
-                        std::result::Result::Err(err) => std::result::Result::Err(
-                            format!("Unable to convert header value '{}' into NewSession200Response - {}",
-                                value, err))
+            std::result::Result::Ok(value) => {
+                match <NewSession200Response as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
                     }
-             },
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Unable to convert header: {:?} to string: {}",
-                     hdr_value, e))
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into NewSession200Response - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
@@ -292,13 +325,16 @@ pub struct Session {
     /// Environment variables to set for the session
     #[serde(rename = "env")]
     pub env: std::collections::HashMap<String, String>,
-
 }
-
 
 impl Session {
     #[allow(clippy::new_without_default)]
-    pub fn new(session_id: String, argv: Vec<String>, working_directory: String, env: std::collections::HashMap<String, String>, ) -> Session {
+    pub fn new(
+        session_id: String,
+        argv: Vec<String>,
+        working_directory: String,
+        env: std::collections::HashMap<String, String>,
+    ) -> Session {
         Session {
             session_id,
             argv,
@@ -314,20 +350,19 @@ impl Session {
 impl std::string::ToString for Session {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
-
             Some("session_id".to_string()),
             Some(self.session_id.to_string()),
-
-
             Some("argv".to_string()),
-            Some(self.argv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
-
-
+            Some(
+                self.argv
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
-
             // Skipping env in query parameter serialization
-
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -360,19 +395,41 @@ impl std::str::FromStr for Session {
         while key_result.is_some() {
             let val = match string_iter.next() {
                 Some(x) => x,
-                None => return std::result::Result::Err("Missing value while parsing Session".to_string())
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing Session".to_string(),
+                    )
+                }
             };
 
             if let Some(key) = key_result {
                 #[allow(clippy::match_single_binding)]
                 match key {
                     #[allow(clippy::redundant_clone)]
-                    "session_id" => intermediate_rep.session_id.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
-                    "argv" => return std::result::Result::Err("Parsing a container in this style is not supported in Session".to_string()),
+                    "session_id" => intermediate_rep.session_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    "argv" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in Session"
+                                .to_string(),
+                        )
+                    }
                     #[allow(clippy::redundant_clone)]
-                    "working_directory" => intermediate_rep.working_directory.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
-                    "env" => return std::result::Result::Err("Parsing a container in this style is not supported in Session".to_string()),
-                    _ => return std::result::Result::Err("Unexpected key while parsing Session".to_string())
+                    "working_directory" => intermediate_rep.working_directory.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    "env" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in Session"
+                                .to_string(),
+                        )
+                    }
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing Session".to_string(),
+                        )
+                    }
                 }
             }
 
@@ -382,10 +439,26 @@ impl std::str::FromStr for Session {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(Session {
-            session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in Session".to_string())?,
-            argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in Session".to_string())?,
-            working_directory: intermediate_rep.working_directory.into_iter().next().ok_or_else(|| "working_directory missing in Session".to_string())?,
-            env: intermediate_rep.env.into_iter().next().ok_or_else(|| "env missing in Session".to_string())?,
+            session_id: intermediate_rep
+                .session_id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "session_id missing in Session".to_string())?,
+            argv: intermediate_rep
+                .argv
+                .into_iter()
+                .next()
+                .ok_or_else(|| "argv missing in Session".to_string())?,
+            working_directory: intermediate_rep
+                .working_directory
+                .into_iter()
+                .next()
+                .ok_or_else(|| "working_directory missing in Session".to_string())?,
+            env: intermediate_rep
+                .env
+                .into_iter()
+                .next()
+                .ok_or_else(|| "env missing in Session".to_string())?,
         })
     }
 }
@@ -396,13 +469,16 @@ impl std::str::FromStr for Session {
 impl std::convert::TryFrom<header::IntoHeaderValue<Session>> for hyper::header::HeaderValue {
     type Error = String;
 
-    fn try_from(hdr_value: header::IntoHeaderValue<Session>) -> std::result::Result<Self, Self::Error> {
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<Session>,
+    ) -> std::result::Result<Self, Self::Error> {
         let hdr_value = hdr_value.to_string();
         match hyper::header::HeaderValue::from_str(&hdr_value) {
-             std::result::Result::Ok(value) => std::result::Result::Ok(value),
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Invalid header value for Session - value: {} is invalid {}",
-                     hdr_value, e))
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for Session - value: {} is invalid {}",
+                hdr_value, e
+            )),
         }
     }
 }
@@ -413,21 +489,24 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 
     fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
         match hdr_value.to_str() {
-             std::result::Result::Ok(value) => {
-                    match <Session as std::str::FromStr>::from_str(value) {
-                        std::result::Result::Ok(value) => std::result::Result::Ok(header::IntoHeaderValue(value)),
-                        std::result::Result::Err(err) => std::result::Result::Err(
-                            format!("Unable to convert header value '{}' into Session - {}",
-                                value, err))
+            std::result::Result::Ok(value) => {
+                match <Session as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
                     }
-             },
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Unable to convert header: {:?} to string: {}",
-                     hdr_value, e))
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into Session - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
@@ -437,17 +516,12 @@ pub struct SessionList {
 
     #[serde(rename = "sessions")]
     pub sessions: Vec<models::SessionListSessionsInner>,
-
 }
-
 
 impl SessionList {
     #[allow(clippy::new_without_default)]
-    pub fn new(total: i32, sessions: Vec<models::SessionListSessionsInner>, ) -> SessionList {
-        SessionList {
-            total,
-            sessions,
-        }
+    pub fn new(total: i32, sessions: Vec<models::SessionListSessionsInner>) -> SessionList {
+        SessionList { total, sessions }
     }
 }
 
@@ -457,12 +531,9 @@ impl SessionList {
 impl std::string::ToString for SessionList {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
-
             Some("total".to_string()),
             Some(self.total.to_string()),
-
             // Skipping sessions in query parameter serialization
-
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -493,16 +564,31 @@ impl std::str::FromStr for SessionList {
         while key_result.is_some() {
             let val = match string_iter.next() {
                 Some(x) => x,
-                None => return std::result::Result::Err("Missing value while parsing SessionList".to_string())
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing SessionList".to_string(),
+                    )
+                }
             };
 
             if let Some(key) = key_result {
                 #[allow(clippy::match_single_binding)]
                 match key {
                     #[allow(clippy::redundant_clone)]
-                    "total" => intermediate_rep.total.push(<i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
-                    "sessions" => return std::result::Result::Err("Parsing a container in this style is not supported in SessionList".to_string()),
-                    _ => return std::result::Result::Err("Unexpected key while parsing SessionList".to_string())
+                    "total" => intermediate_rep.total.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    "sessions" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in SessionList"
+                                .to_string(),
+                        )
+                    }
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing SessionList".to_string(),
+                        )
+                    }
                 }
             }
 
@@ -512,8 +598,16 @@ impl std::str::FromStr for SessionList {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(SessionList {
-            total: intermediate_rep.total.into_iter().next().ok_or_else(|| "total missing in SessionList".to_string())?,
-            sessions: intermediate_rep.sessions.into_iter().next().ok_or_else(|| "sessions missing in SessionList".to_string())?,
+            total: intermediate_rep
+                .total
+                .into_iter()
+                .next()
+                .ok_or_else(|| "total missing in SessionList".to_string())?,
+            sessions: intermediate_rep
+                .sessions
+                .into_iter()
+                .next()
+                .ok_or_else(|| "sessions missing in SessionList".to_string())?,
         })
     }
 }
@@ -524,13 +618,16 @@ impl std::str::FromStr for SessionList {
 impl std::convert::TryFrom<header::IntoHeaderValue<SessionList>> for hyper::header::HeaderValue {
     type Error = String;
 
-    fn try_from(hdr_value: header::IntoHeaderValue<SessionList>) -> std::result::Result<Self, Self::Error> {
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<SessionList>,
+    ) -> std::result::Result<Self, Self::Error> {
         let hdr_value = hdr_value.to_string();
         match hyper::header::HeaderValue::from_str(&hdr_value) {
-             std::result::Result::Ok(value) => std::result::Result::Ok(value),
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Invalid header value for SessionList - value: {} is invalid {}",
-                     hdr_value, e))
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for SessionList - value: {} is invalid {}",
+                hdr_value, e
+            )),
         }
     }
 }
@@ -541,21 +638,24 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 
     fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
         match hdr_value.to_str() {
-             std::result::Result::Ok(value) => {
-                    match <SessionList as std::str::FromStr>::from_str(value) {
-                        std::result::Result::Ok(value) => std::result::Result::Ok(header::IntoHeaderValue(value)),
-                        std::result::Result::Err(err) => std::result::Result::Err(
-                            format!("Unable to convert header value '{}' into SessionList - {}",
-                                value, err))
+            std::result::Result::Ok(value) => {
+                match <SessionList as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
                     }
-             },
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Unable to convert header: {:?} to string: {}",
-                     hdr_value, e))
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into SessionList - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
@@ -570,18 +670,20 @@ pub struct SessionListSessionsInner {
 
     /// The underlying process ID of the session, if the session is running.
     #[serde(rename = "process_id")]
-    #[serde(skip_serializing_if="Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub process_id: Option<i32>,
 
     #[serde(rename = "status")]
     pub status: models::Status,
-
 }
-
 
 impl SessionListSessionsInner {
     #[allow(clippy::new_without_default)]
-    pub fn new(session_id: String, argv: Vec<String>, status: models::Status, ) -> SessionListSessionsInner {
+    pub fn new(
+        session_id: String,
+        argv: Vec<String>,
+        status: models::Status,
+    ) -> SessionListSessionsInner {
         SessionListSessionsInner {
             session_id,
             argv,
@@ -597,24 +699,20 @@ impl SessionListSessionsInner {
 impl std::string::ToString for SessionListSessionsInner {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
-
             Some("session_id".to_string()),
             Some(self.session_id.to_string()),
-
-
             Some("argv".to_string()),
-            Some(self.argv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
-
-
-            self.process_id.as_ref().map(|process_id| {
-                [
-                    "process_id".to_string(),
-                    process_id.to_string(),
-                ].join(",")
-            }),
-
+            Some(
+                self.argv
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            self.process_id
+                .as_ref()
+                .map(|process_id| ["process_id".to_string(), process_id.to_string()].join(",")),
             // Skipping status in query parameter serialization
-
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -647,7 +745,11 @@ impl std::str::FromStr for SessionListSessionsInner {
         while key_result.is_some() {
             let val = match string_iter.next() {
                 Some(x) => x,
-                None => return std::result::Result::Err("Missing value while parsing SessionListSessionsInner".to_string())
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing SessionListSessionsInner".to_string(),
+                    )
+                }
             };
 
             if let Some(key) = key_result {
@@ -670,10 +772,22 @@ impl std::str::FromStr for SessionListSessionsInner {
 
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(SessionListSessionsInner {
-            session_id: intermediate_rep.session_id.into_iter().next().ok_or_else(|| "session_id missing in SessionListSessionsInner".to_string())?,
-            argv: intermediate_rep.argv.into_iter().next().ok_or_else(|| "argv missing in SessionListSessionsInner".to_string())?,
+            session_id: intermediate_rep
+                .session_id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "session_id missing in SessionListSessionsInner".to_string())?,
+            argv: intermediate_rep
+                .argv
+                .into_iter()
+                .next()
+                .ok_or_else(|| "argv missing in SessionListSessionsInner".to_string())?,
             process_id: intermediate_rep.process_id.into_iter().next(),
-            status: intermediate_rep.status.into_iter().next().ok_or_else(|| "status missing in SessionListSessionsInner".to_string())?,
+            status: intermediate_rep
+                .status
+                .into_iter()
+                .next()
+                .ok_or_else(|| "status missing in SessionListSessionsInner".to_string())?,
         })
     }
 }
@@ -681,41 +795,51 @@ impl std::str::FromStr for SessionListSessionsInner {
 // Methods for converting between header::IntoHeaderValue<SessionListSessionsInner> and hyper::header::HeaderValue
 
 #[cfg(any(feature = "client", feature = "server"))]
-impl std::convert::TryFrom<header::IntoHeaderValue<SessionListSessionsInner>> for hyper::header::HeaderValue {
+impl std::convert::TryFrom<header::IntoHeaderValue<SessionListSessionsInner>>
+    for hyper::header::HeaderValue
+{
     type Error = String;
 
-    fn try_from(hdr_value: header::IntoHeaderValue<SessionListSessionsInner>) -> std::result::Result<Self, Self::Error> {
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<SessionListSessionsInner>,
+    ) -> std::result::Result<Self, Self::Error> {
         let hdr_value = hdr_value.to_string();
         match hyper::header::HeaderValue::from_str(&hdr_value) {
-             std::result::Result::Ok(value) => std::result::Result::Ok(value),
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Invalid header value for SessionListSessionsInner - value: {} is invalid {}",
-                     hdr_value, e))
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for SessionListSessionsInner - value: {} is invalid {}",
+                hdr_value, e
+            )),
         }
     }
 }
 
 #[cfg(any(feature = "client", feature = "server"))]
-impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<SessionListSessionsInner> {
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<SessionListSessionsInner>
+{
     type Error = String;
 
     fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
         match hdr_value.to_str() {
-             std::result::Result::Ok(value) => {
-                    match <SessionListSessionsInner as std::str::FromStr>::from_str(value) {
-                        std::result::Result::Ok(value) => std::result::Result::Ok(header::IntoHeaderValue(value)),
-                        std::result::Result::Err(err) => std::result::Result::Err(
-                            format!("Unable to convert header value '{}' into SessionListSessionsInner - {}",
-                                value, err))
+            std::result::Result::Ok(value) => {
+                match <SessionListSessionsInner as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
                     }
-             },
-             std::result::Result::Err(e) => std::result::Result::Err(
-                 format!("Unable to convert header: {:?} to string: {}",
-                     hdr_value, e))
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into SessionListSessionsInner - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
         }
     }
 }
-
 
 /// The status of the session
 /// Enumeration of values.
@@ -723,7 +847,9 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 /// which helps with FFI.
 #[allow(non_camel_case_types)]
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
 pub enum Status {
     #[serde(rename = "idle")]

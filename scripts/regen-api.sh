@@ -18,3 +18,5 @@ cd $DIR/../crates/kallichore_api
 # Generate the API
 openapi-generator generate -i ../../kallichore.json -g rust-server --additional-properties=packageName=kallichore_api
 
+# Format all of the generated Rust code
+cargo fmt
