@@ -1,13 +1,26 @@
-#![allow(missing_docs, trivial_casts, unused_variables, unused_mut, unused_imports, unused_extern_crates, non_camel_case_types)]
+#![allow(
+    missing_docs,
+    trivial_casts,
+    unused_variables,
+    unused_mut,
+    unused_imports,
+    unused_extern_crates,
+    non_camel_case_types
+)]
 #![allow(unused_imports, unused_attributes)]
-#![allow(clippy::derive_partial_eq_without_eq, clippy::disallowed_names, clippy::too_many_arguments)]
+#![allow(
+    clippy::derive_partial_eq_without_eq,
+    clippy::disallowed_names,
+    clippy::too_many_arguments
+)]
 
 use async_trait::async_trait;
 use futures::Stream;
+use hyper::{Body, Request};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::task::{Poll, Context};
+use std::task::{Context, Poll};
 use swagger::{ApiError, ContextWrapper};
-use serde::{Serialize, Deserialize};
 
 type ServiceError = Box<dyn Error + Send + Sync + 'static>;
 
@@ -18,37 +31,34 @@ pub const API_VERSION: &str = "1.0.0";
 #[must_use]
 pub enum ChannelsWebsocketResponse {
     /// Upgrade connection to a websocket
-    UpgradeConnectionToAWebsocket
-    ,
+    UpgradeConnectionToAWebsocket,
     /// Invalid request
-    InvalidRequest
-    (models::Error)
+    InvalidRequest(models::Error),
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum ListSessionsResponse {
     /// List of active sessions
-    ListOfActiveSessions
-    (models::SessionList)
+    ListOfActiveSessions(models::SessionList),
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub enum NewSessionResponse {
     /// The session ID
-    TheSessionID
-    (models::NewSession200Response)
-    ,
+    TheSessionID(models::NewSession200Response),
     /// Invalid request
-    InvalidRequest
-    (models::Error)
+    InvalidRequest(models::Error),
 }
 
 /// API
 #[async_trait]
 #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 pub trait Api<C: Send + Sync> {
-    fn poll_ready(&self, _cx: &mut Context) -> Poll<Result<(), Box<dyn Error + Send + Sync + 'static>>> {
+    fn poll_ready(
+        &self,
+        _cx: &mut Context,
+    ) -> Poll<Result<(), Box<dyn Error + Send + Sync + 'static>>> {
         Poll::Ready(Ok(()))
     }
 
@@ -56,27 +66,38 @@ pub trait Api<C: Send + Sync> {
     async fn channels_websocket(
         &self,
         session_id: String,
-        context: &C) -> Result<ChannelsWebsocketResponse, ApiError>;
+        context: &C,
+    ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
     /// List active sessions
-    async fn list_sessions(
-        &self,
-        context: &C) -> Result<ListSessionsResponse, ApiError>;
+    async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError>;
 
     /// Create a new session
     async fn new_session(
         &self,
         session: models::Session,
-        context: &C) -> Result<NewSessionResponse, ApiError>;
+        context: &C,
+    ) -> Result<NewSessionResponse, ApiError>;
 
+    // --- Start Kallichore ---
+    /// Upgrade a websocket request for channel communication
+    async fn channels_websocket_request(
+        &self,
+        request: Request<Body>,
+        session_id: String,
+        context: &C,
+    ) -> Result<(), ApiError>;
+    // --- End Kallichore ---
 }
 
 /// API where `Context` isn't passed on every API call
 #[async_trait]
 #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 pub trait ApiNoContext<C: Send + Sync> {
-
-    fn poll_ready(&self, _cx: &mut Context) -> Poll<Result<(), Box<dyn Error + Send + Sync + 'static>>>;
+    fn poll_ready(
+        &self,
+        _cx: &mut Context,
+    ) -> Poll<Result<(), Box<dyn Error + Send + Sync + 'static>>>;
 
     fn context(&self) -> &C;
 
@@ -84,23 +105,28 @@ pub trait ApiNoContext<C: Send + Sync> {
     async fn channels_websocket(
         &self,
         session_id: String,
-        ) -> Result<ChannelsWebsocketResponse, ApiError>;
+    ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
     /// List active sessions
-    async fn list_sessions(
-        &self,
-        ) -> Result<ListSessionsResponse, ApiError>;
+    async fn list_sessions(&self) -> Result<ListSessionsResponse, ApiError>;
 
     /// Create a new session
-    async fn new_session(
-        &self,
-        session: models::Session,
-        ) -> Result<NewSessionResponse, ApiError>;
+    async fn new_session(&self, session: models::Session) -> Result<NewSessionResponse, ApiError>;
 
+    // --- Start Kallichore ---
+    /// Upgrade a websocket request for channel communication
+    async fn channels_websocket_request(
+        &self,
+        request: Request<Body>,
+        session_id: String,
+    ) -> Result<(), ApiError>;
+    // --- End Kallichore ---
 }
 
 /// Trait to extend an API to make it easy to bind it to a context.
-pub trait ContextWrapperExt<C: Send + Sync> where Self: Sized
+pub trait ContextWrapperExt<C: Send + Sync>
+where
+    Self: Sized,
 {
     /// Binds this API to a context.
     fn with_context(self, context: C) -> ContextWrapper<Self, C>;
@@ -108,7 +134,7 @@ pub trait ContextWrapperExt<C: Send + Sync> where Self: Sized
 
 impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ContextWrapperExt<C> for T {
     fn with_context(self: T, context: C) -> ContextWrapper<T, C> {
-         ContextWrapper::<T, C>::new(self, context)
+        ContextWrapper::<T, C>::new(self, context)
     }
 }
 
@@ -126,33 +152,36 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn channels_websocket(
         &self,
         session_id: String,
-        ) -> Result<ChannelsWebsocketResponse, ApiError>
-    {
+    ) -> Result<ChannelsWebsocketResponse, ApiError> {
         let context = self.context().clone();
         self.api().channels_websocket(session_id, &context).await
     }
 
     /// List active sessions
-    async fn list_sessions(
-        &self,
-        ) -> Result<ListSessionsResponse, ApiError>
-    {
+    async fn list_sessions(&self) -> Result<ListSessionsResponse, ApiError> {
         let context = self.context().clone();
         self.api().list_sessions(&context).await
     }
 
     /// Create a new session
-    async fn new_session(
-        &self,
-        session: models::Session,
-        ) -> Result<NewSessionResponse, ApiError>
-    {
+    async fn new_session(&self, session: models::Session) -> Result<NewSessionResponse, ApiError> {
         let context = self.context().clone();
         self.api().new_session(session, &context).await
     }
 
+    // --- Start Kallichore ---
+    async fn channels_websocket_request(
+        &self,
+        request: Request<Body>,
+        session_id: String,
+    ) -> Result<(), ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .channels_websocket_request(request, session_id, &context)
+            .await
+    }
+    // --- End Kallichore ---
 }
-
 
 #[cfg(feature = "client")]
 pub mod client;

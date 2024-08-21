@@ -200,4 +200,13 @@ where
         info!("upgrade to websocket: {}", session_id);
         unimplemented!()
     }
+
+    async fn channels_websocket_request(
+        &self,
+        _request: hyper::Request<hyper::Body>,
+        _session_id: String,
+        _context: &C,
+    ) -> Result<(), ApiError> {
+        unimplemented!()
+    }
 }
