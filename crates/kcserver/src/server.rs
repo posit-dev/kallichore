@@ -67,7 +67,7 @@ impl<C> Server<C> {
         }
     }
 
-    async fn handle_channel_ws(&self, _ws_stream: WebSocketStream<TokioIo<Upgraded>>) {}
+    async fn handle_channel_ws(&self, _ws_stream: WebSocketStream<Upgraded>) {}
 }
 
 use kallichore_api::server::MakeService;
@@ -75,7 +75,6 @@ use kallichore_api::{Api, ListSessionsResponse};
 use std::error::Error;
 use swagger::ApiError;
 
-use crate::body_reader::RequestBodyReader;
 use crate::connection_file::{self, ConnectionFile};
 use crate::session::KernelSession;
 
@@ -211,14 +210,12 @@ where
 
     async fn channels_websocket_request(
         &self,
-        request: hyper::Request<Body>,
+        mut request: hyper::Request<Body>,
         _session_id: String,
         _context: &C,
     ) -> Result<(), ApiError> {
         match hyper::upgrade::on(&mut request).await {
             Ok(upgraded) => {
-                let reader = RequestBodyReader::new(request);
-                let upgraded = TokioIo::new(reader);
                 self.handle_channel_ws(
                     WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await,
                 )
