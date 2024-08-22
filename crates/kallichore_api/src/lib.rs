@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use futures::Stream;
-use hyper::{Body, Request};
+use hyper::{Body, Request, Response};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::task::{Context, Poll};
@@ -86,7 +86,7 @@ pub trait Api<C: Send + Sync> {
         request: Request<Body>,
         session_id: String,
         context: &C,
-    ) -> Result<(), ApiError>;
+    ) -> Result<Response<Body>, ApiError>;
     // --- End Kallichore ---
 }
 
@@ -119,7 +119,7 @@ pub trait ApiNoContext<C: Send + Sync> {
         &self,
         request: Request<Body>,
         session_id: String,
-    ) -> Result<(), ApiError>;
+    ) -> Result<Response<Body>, ApiError>;
     // --- End Kallichore ---
 }
 
@@ -174,7 +174,7 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         &self,
         request: Request<Body>,
         session_id: String,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Response<Body>, ApiError> {
         let context = self.context().clone();
         self.api()
             .channels_websocket_request(request, session_id, &context)

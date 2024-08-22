@@ -1,5 +1,7 @@
 use futures::{future, future::BoxFuture, future::FutureExt, stream, stream::TryStreamExt, Stream};
-use hyper::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+use hyper::header::{
+    HeaderName, HeaderValue, CONNECTION, CONTENT_TYPE, SEC_WEBSOCKET_KEY, UPGRADE,
+};
 use hyper::{Body, HeaderMap, Request, Response, StatusCode};
 use log::warn;
 #[allow(unused_imports)]
@@ -180,10 +182,15 @@ where
                 };
 
                     // --- Start Kallichore ---
-                    api_impl
+                    log::debug!(
+                        "channels_websocket_request for session '{}'",
+                        param_session_id
+                    );
+                    let response = api_impl
                         .channels_websocket_request(request, param_session_id, &context)
                         .await
                         .unwrap();
+                    Ok(response)
 
                     /*
                     let result = api_impl
@@ -215,9 +222,6 @@ where
                             *response.body_mut() = Body::from("An internal error occurred");
                         }
                     } */
-
-                    let mut response = Response::new(Body::empty());
-                    Ok(response)
                 }
 
                 // ListSessions - GET /sessions

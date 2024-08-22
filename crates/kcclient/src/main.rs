@@ -81,10 +81,9 @@ type ClientContext = swagger::make_context_ty!(
 async fn connect_to_session(url: String, session_id: String) {
     // extract the host from the url
     let url = url.parse::<url::Url>().expect("Failed to parse URL");
-    let host = url.host_str().expect("Failed to extract host");
-
+    let authority = url.authority();
     // form a URL to the websocket endpoint
-    let ws_url = format!("ws://{}/sessions/{}/channels", host, session_id);
+    let ws_url = format!("ws://{}/sessions/{}/channels", authority, session_id);
     info!("Connecting to {}", ws_url);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect");
     println!("WebSocket handshake has been successfully completed");

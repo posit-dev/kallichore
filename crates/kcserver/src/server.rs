@@ -11,10 +11,11 @@
 
 use async_trait::async_trait;
 use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use hyper::header::{HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
 use hyper::server::conn::Http;
 use hyper::service::Service;
 use hyper::upgrade::Upgraded;
-use hyper::Body;
+use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use log::info;
 use std::env;
@@ -28,6 +29,7 @@ use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -226,11 +228,17 @@ where
         mut request: hyper::Request<Body>,
         session_id: String,
         _context: &C,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Response<Body>, ApiError> {
         log::debug!(
             "Upgrading channel connection to websocket for session '{}'",
             session_id
         );
+        let derived = {
+            let headers = request.headers();
+            let key = headers.get(SEC_WEBSOCKET_KEY);
+            key.map(|k| derive_accept_key(k.as_bytes()))
+        };
+        let version = request.version();
         tokio::task::spawn(async move {
             match hyper::upgrade::on(&mut request).await {
                 Ok(upgraded) => {
@@ -247,6 +255,16 @@ where
                 }
             }
         });
-        Ok(())
+        let upgrade = HeaderValue::from_static("Upgrade");
+        let websocket = HeaderValue::from_static("websocket");
+        let mut response = Response::new(Body::default());
+        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+        *response.version_mut() = version;
+        response.headers_mut().append(CONNECTION, upgrade);
+        response.headers_mut().append(UPGRADE, websocket);
+        response
+            .headers_mut()
+            .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
+        Ok(response)
     }
 }

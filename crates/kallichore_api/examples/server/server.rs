@@ -148,7 +148,7 @@ where
         request: hyper::Request<hyper::Body>,
         session_id: String,
         context: &C,
-    ) -> Result<(), ApiError> {
+    ) -> Result<hyper::Response<hyper::Body>, ApiError> {
         info!(
             "channels_websocket_request(\"{}\") - X-Span-ID: {:?} (request: {:?})",
             session_id,

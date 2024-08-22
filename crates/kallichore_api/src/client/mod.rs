@@ -678,7 +678,7 @@ where
         request: Request<Body>,
         param_session_id: String,
         context: &C,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Response<Body>, ApiError> {
         unimplemented!();
     }
     // --- End Kallichore ---
