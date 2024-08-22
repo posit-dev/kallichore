@@ -11,6 +11,7 @@
 
 use clap::{command, Parser};
 
+mod body_reader;
 mod connection_file;
 mod server;
 mod session;

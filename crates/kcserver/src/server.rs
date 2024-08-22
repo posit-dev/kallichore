@@ -13,6 +13,9 @@ use async_trait::async_trait;
 use futures::{future, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use hyper::server::conn::Http;
 use hyper::service::Service;
+use hyper::upgrade::Upgraded;
+use hyper::Body;
+use hyper_util::rt::TokioIo;
 use log::info;
 use std::env;
 use std::future::Future;
@@ -25,6 +28,8 @@ use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{models, ChannelsWebsocketResponse, NewSessionResponse};
 
@@ -61,6 +66,8 @@ impl<C> Server<C> {
             sessions: Arc::new(RwLock::new(vec![])),
         }
     }
+
+    async fn handle_channel_ws(&self, _ws_stream: WebSocketStream<TokioIo<Upgraded>>) {}
 }
 
 use kallichore_api::server::MakeService;
@@ -68,6 +75,7 @@ use kallichore_api::{Api, ListSessionsResponse};
 use std::error::Error;
 use swagger::ApiError;
 
+use crate::body_reader::RequestBodyReader;
 use crate::connection_file::{self, ConnectionFile};
 use crate::session::KernelSession;
 
@@ -198,15 +206,26 @@ where
         _context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         info!("upgrade to websocket: {}", session_id);
-        unimplemented!()
+        Ok(ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket)
     }
 
     async fn channels_websocket_request(
         &self,
-        _request: hyper::Request<hyper::Body>,
+        request: hyper::Request<Body>,
         _session_id: String,
         _context: &C,
     ) -> Result<(), ApiError> {
-        unimplemented!()
+        match hyper::upgrade::on(&mut request).await {
+            Ok(upgraded) => {
+                let reader = RequestBodyReader::new(request);
+                let upgraded = TokioIo::new(reader);
+                self.handle_channel_ws(
+                    WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await,
+                )
+                .await;
+            }
+            Err(e) => println!("upgrade error: {}", e),
+        }
+        Ok(())
     }
 }
