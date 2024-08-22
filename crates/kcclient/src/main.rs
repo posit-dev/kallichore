@@ -20,8 +20,7 @@ use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListS
 #[allow(unused_imports)]
 use log::info;
 
-use clap::Parser;
-use clap_derive::Subcommand;
+use clap::{Parser, Subcommand};
 
 use tokio_tungstenite::connect_async;
 
@@ -80,7 +79,14 @@ type ClientContext = swagger::make_context_ty!(
 );
 
 async fn connect_to_session(url: String, session_id: String) {
-    let (ws_stream, _) = connect_async(&url).await.expect("Failed to connect");
+    // extract the host from the url
+    let url = url.parse::<url::Url>().expect("Failed to parse URL");
+    let host = url.host_str().expect("Failed to extract host");
+
+    // form a URL to the websocket endpoint
+    let ws_url = format!("ws://{}/sessions/{}/channels", host, session_id);
+    info!("Connecting to {}", ws_url);
+    let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect");
     println!("WebSocket handshake has been successfully completed");
 
     let (write, read) = ws_stream.split();
@@ -98,7 +104,7 @@ fn main() {
     env_logger::init();
 
     // Read command line arguments
-    let args = Args::parse();
+    let args = Args::try_parse().unwrap();
 
     let context: ClientContext = swagger::make_context!(
         ContextBuilder,
