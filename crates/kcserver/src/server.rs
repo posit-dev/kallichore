@@ -10,7 +10,7 @@
 #![allow(unused_imports)]
 
 use async_trait::async_trait;
-use futures::{future, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use hyper::server::conn::Http;
 use hyper::service::Service;
 use hyper::upgrade::Upgraded;
@@ -29,6 +29,7 @@ use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{models, ChannelsWebsocketResponse, NewSessionResponse};
@@ -66,8 +67,6 @@ impl<C> Server<C> {
             sessions: Arc::new(RwLock::new(vec![])),
         }
     }
-
-    async fn handle_channel_ws(&self, _ws_stream: WebSocketStream<Upgraded>) {}
 }
 
 use kallichore_api::server::MakeService;
@@ -77,6 +76,20 @@ use swagger::ApiError;
 
 use crate::connection_file::{self, ConnectionFile};
 use crate::session::KernelSession;
+
+async fn handle_channel_ws(ws_stream: WebSocketStream<Upgraded>) {
+    let (mut write, read) = ws_stream.split();
+
+    // Write some test data to the websocket
+    log::debug!("Sending test data to websocket");
+    write.send(Message::text("Hello, world!")).await.unwrap();
+
+    read.for_each(|message| async {
+        let data = message.unwrap().into_data();
+        print!("{}", String::from_utf8_lossy(&data));
+    })
+    .await;
+}
 
 #[async_trait]
 impl<C> Api<C> for Server<C>
@@ -211,18 +224,29 @@ where
     async fn channels_websocket_request(
         &self,
         mut request: hyper::Request<Body>,
-        _session_id: String,
+        session_id: String,
         _context: &C,
     ) -> Result<(), ApiError> {
-        match hyper::upgrade::on(&mut request).await {
-            Ok(upgraded) => {
-                self.handle_channel_ws(
-                    WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await,
-                )
-                .await;
+        log::debug!(
+            "Upgrading channel connection to websocket for session '{}'",
+            session_id
+        );
+        tokio::task::spawn(async move {
+            match hyper::upgrade::on(&mut request).await {
+                Ok(upgraded) => {
+                    log::debug!(
+                        "Connection upgraded to websocket for session '{}'",
+                        session_id
+                    );
+                    let stream =
+                        WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
+                    handle_channel_ws(stream).await;
+                }
+                Err(e) => {
+                    log::error!("Failed to upgrade channel connection to websocket: {}", e);
+                }
             }
-            Err(e) => println!("upgrade error: {}", e),
-        }
+        });
         Ok(())
     }
 }
