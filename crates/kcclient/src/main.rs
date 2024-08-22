@@ -23,6 +23,10 @@ use log::info;
 use clap::Parser;
 use clap_derive::Subcommand;
 
+use tokio_tungstenite::connect_async;
+
+use futures::stream::StreamExt;
+
 mod kernel_spec;
 
 #[derive(Parser, Debug)]
@@ -53,6 +57,14 @@ enum Commands {
         #[arg(short, long)]
         kernel: String,
     },
+
+    /// Connect to a running session
+    Connect {
+        /// The session to connect to. Optional; if not provided, the first
+        /// running session will be used
+        #[arg(short, long)]
+        session_id: Option<String>,
+    },
 }
 
 use log::trace;
@@ -66,6 +78,19 @@ type ClientContext = swagger::make_context_ty!(
     Option<AuthData>,
     XSpanIdString
 );
+
+async fn connect_to_session(url: String, session_id: String) {
+    let (ws_stream, _) = connect_async(&url).await.expect("Failed to connect");
+    println!("WebSocket handshake has been successfully completed");
+
+    let (write, read) = ws_stream.split();
+
+    read.for_each(|message| async {
+        let data = message.unwrap().into_data();
+        print!("{}", String::from_utf8_lossy(&data));
+    })
+    .await;
+}
 
 // rt may be unused if there are no examples
 #[allow(unused_mut)]
@@ -174,6 +199,27 @@ fn main() {
                 }
                 _ => {}
             }
+        }
+        Some(Commands::Connect { session_id }) => {
+            let session_id = match session_id {
+                Some(session_id) => session_id,
+                None => {
+                    let result = rt.block_on(client.list_sessions());
+                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
+                        if let Some(session) = sessions.sessions.first() {
+                            session.session_id.clone()
+                        } else {
+                            eprintln!("No sessions available to connect to");
+                            return;
+                        }
+                    } else {
+                        eprintln!("Failed to list sessions");
+                        return;
+                    }
+                }
+            };
+            log::info!("Connecting to session '{}'", session_id);
+            rt.block_on(connect_to_session(base_url, session_id));
         }
         None => {
             eprintln!("No command specified");
