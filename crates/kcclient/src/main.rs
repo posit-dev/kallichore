@@ -12,7 +12,7 @@
 
 use directories::BaseDirs;
 #[allow(unused_imports)]
-use futures::{future, stream, Stream};
+use futures::{future, stream, SinkExt, Stream};
 use kallichore_api::NewSessionResponse;
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
@@ -87,9 +87,9 @@ async fn connect_to_session(url: String, session_id: String) {
     let ws_url = format!("ws://{}/sessions/{}/channels", authority, session_id);
     info!("Connecting to {}", ws_url);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect");
-    println!("WebSocket handshake has been successfully completed");
+    info!("WebSocket handshake has been successfully completed");
 
-    let (write, read) = ws_stream.split();
+    let (mut write, read) = ws_stream.split();
 
     let message = JupyterMessage {
         header: JupyterMessageHeader {
@@ -105,6 +105,14 @@ async fn connect_to_session(url: String, session_id: String) {
         buffers: Vec::new(),
         metadata: serde_json::json!({}),
     };
+
+    // Write the message to the websocket
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&message).unwrap(),
+        ))
+        .await
+        .expect("Failed to send message");
     read.for_each(|message| async {
         let data = message.unwrap().into_data();
         print!("{}", String::from_utf8_lossy(&data));

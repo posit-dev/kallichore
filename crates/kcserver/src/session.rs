@@ -126,7 +126,8 @@ impl KernelSession {
 
                 // acknowledge the message; TODO: write to the correct socket
                 write
-                    .blocking_lock()
+                    .lock()
+                    .await
                     .send(Message::text(format!(
                         "got message {}",
                         channel_message.header.msg_id
