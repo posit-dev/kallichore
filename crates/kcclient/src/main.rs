@@ -17,6 +17,7 @@ use kallichore_api::NewSessionResponse;
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
 
+use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
 #[allow(unused_imports)]
 use log::info;
 
@@ -90,6 +91,20 @@ async fn connect_to_session(url: String, session_id: String) {
 
     let (write, read) = ws_stream.split();
 
+    let message = JupyterMessage {
+        header: JupyterMessageHeader {
+            msg_id: "1234".to_string(),
+            msg_type: "test".to_string(),
+        },
+        parent_header: JupyterMessageHeader {
+            msg_id: "1233".to_string(),
+            msg_type: "test".to_string(),
+        },
+        channel: JupyterChannel::Shell,
+        content: serde_json::json!({"foo": "bar"}),
+        buffers: Vec::new(),
+        metadata: serde_json::json!({}),
+    };
     read.for_each(|message| async {
         let data = message.unwrap().into_data();
         print!("{}", String::from_utf8_lossy(&data));

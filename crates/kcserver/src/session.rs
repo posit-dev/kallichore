@@ -10,15 +10,24 @@
 use futures::{SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use kallichore_api::models;
+use kcshared::jupyter_message::JupyterMessage;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 use crate::connection_file;
 use zeromq::{Socket, SocketRecv, SocketSend};
 
 pub struct KernelSession {
+    /// The ID of the session
     pub session_id: String,
+
+    /// The command line arguments used to start the kernel. The first is the
+    /// path to the kernel itself.
     pub argv: Vec<String>,
+
+    /// The process ID of the kernel
     pub process_id: Option<u32>,
+
+    /// The current status of the kernel
     pub status: models::Status,
 }
 
@@ -95,15 +104,35 @@ impl KernelSession {
     }
 
     pub fn handle_channel_ws(&self, ws_stream: WebSocketStream<Upgraded>) {
-        let (mut write, read) = ws_stream.split();
+        let (write, read) = ws_stream.split();
+        let write = tokio::sync::Mutex::new(write);
 
         // Write some test data to the websocket
         tokio::spawn(async move {
-            log::debug!("Sending test data to websocket");
-            write.send(Message::text("Hello, world!")).await.unwrap();
-
             read.for_each(|message| async {
                 let data = message.unwrap().into_data();
+
+                // parse the message into a JupyterMessage
+                let channel_message = serde_json::from_slice::<JupyterMessage>(&data);
+
+                // if the message is not a Jupyter message, log an error and return
+                let channel_message = match channel_message {
+                    Ok(channel_message) => channel_message,
+                    Err(e) => {
+                        log::error!("Failed to parse Jupyter message: {}", e);
+                        return;
+                    }
+                };
+
+                // acknowledge the message; TODO: write to the correct socket
+                write
+                    .blocking_lock()
+                    .send(Message::text(format!(
+                        "got message {}",
+                        channel_message.header.msg_id
+                    )))
+                    .await
+                    .unwrap();
                 print!("{}", String::from_utf8_lossy(&data));
             })
             .await;
