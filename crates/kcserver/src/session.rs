@@ -7,7 +7,10 @@
 
 //! Wraps Jupyter kernel sessions.
 
+use futures::{SinkExt, StreamExt};
+use hyper::upgrade::Upgraded;
 use kallichore_api::models;
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 use crate::connection_file;
 use zeromq::{Socket, SocketRecv, SocketSend};
@@ -89,5 +92,21 @@ impl KernelSession {
         });
 
         kernel_session
+    }
+
+    pub fn handle_channel_ws(&self, ws_stream: WebSocketStream<Upgraded>) {
+        let (mut write, read) = ws_stream.split();
+
+        // Write some test data to the websocket
+        tokio::spawn(async move {
+            log::debug!("Sending test data to websocket");
+            write.send(Message::text("Hello, world!")).await.unwrap();
+
+            read.for_each(|message| async {
+                let data = message.unwrap().into_data();
+                print!("{}", String::from_utf8_lossy(&data));
+            })
+            .await;
+        });
     }
 }

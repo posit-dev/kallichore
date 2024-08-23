@@ -79,20 +79,6 @@ use swagger::ApiError;
 use crate::connection_file::{self, ConnectionFile};
 use crate::session::KernelSession;
 
-async fn handle_channel_ws(ws_stream: WebSocketStream<Upgraded>) {
-    let (mut write, read) = ws_stream.split();
-
-    // Write some test data to the websocket
-    log::debug!("Sending test data to websocket");
-    write.send(Message::text("Hello, world!")).await.unwrap();
-
-    read.for_each(|message| async {
-        let data = message.unwrap().into_data();
-        print!("{}", String::from_utf8_lossy(&data));
-    })
-    .await;
-}
-
 #[async_trait]
 impl<C> Api<C> for Server<C>
 where
@@ -239,6 +225,8 @@ where
             key.map(|k| derive_accept_key(k.as_bytes()))
         };
         let version = request.version();
+        let sessions = self.sessions.clone();
+
         tokio::task::spawn(async move {
             match hyper::upgrade::on(&mut request).await {
                 Ok(upgraded) => {
@@ -246,9 +234,17 @@ where
                         "Connection upgraded to websocket for session '{}'",
                         session_id
                     );
+
                     let stream =
                         WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
-                    handle_channel_ws(stream).await;
+
+                    // Find the session with the given ID
+                    let sessions = sessions.read().unwrap();
+                    let session = sessions
+                        .iter()
+                        .find(|s| s.session_id == session_id)
+                        .expect("Session not found");
+                    session.handle_channel_ws(stream);
                 }
                 Err(e) => {
                     log::error!("Failed to upgrade channel connection to websocket: {}", e);
