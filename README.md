@@ -46,6 +46,9 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
 > [!NOTE]
 > The regenerator script requires the [OpenAPI Generator](https://openapi-generator.tech/docs/installation).
 
+> [!IMPORTANT]
+> Because we have custom behavior attached to some of the endpoints, we have some manual edits applied to the generated code. These are generally fenced with `--- Start Kallichore ---` and `--- End Kallichore ---` comments. Be sure to reapply these edits (or just revert changes that delete them) if you regenerate the API.
+
 ## Repository Structure
 
 ```
@@ -60,6 +63,8 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
       |    |
       |    +-- examples/server -- Example server
       |
+      +-- kcshared -- Shared code for the server and client
+      |
       +-- kcserver -- Main Kallichore server, using the kallichore_api crate
       |
       +-- kcclient -- Command-line client (for testing), using the kallichore_api crate
@@ -68,4 +73,3 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
 ## Adjacent Projects/Links
 
 [Jupyter Kernel Gateway](https://jupyter-kernel-gateway.readthedocs.io/en/latest/): a headless Jupyter server that uses WebSockets to deliver Jupyter messages.
-
