@@ -142,6 +142,10 @@
             "type": "string",
             "description": "A unique identifier for the session"
           },
+          "username": {
+            "type": "string",
+            "description": "The username of the user who owns the session"
+          },
           "argv": {
             "type": "array",
             "description": "The program and command-line parameters for the session",
@@ -163,6 +167,7 @@
         },
         "required": [
           "session_id",
+          "username",
           "argv",
           "working_directory",
           "env"
@@ -194,6 +199,10 @@
                   "type": "integer",
                   "description": "The underlying process ID of the session, if the session is running."
                 },
+                "username": {
+                  "type": "string",
+                  "description": "The username of the user who owns the session"
+                },
                 "status": {
                   "$ref": "#/components/schemas/status"
                 }
@@ -201,6 +210,7 @@
               "required": [
                 "session_id",
                 "argv",
+                "username",
                 "status"
               ]
             }

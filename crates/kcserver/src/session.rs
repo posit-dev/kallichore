@@ -20,6 +20,9 @@ pub struct KernelSession {
     /// The ID of the session
     pub session_id: String,
 
+    /// The username of the user who owns the session
+    pub username: String,
+
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
     pub argv: Vec<String>,
@@ -86,6 +89,7 @@ impl KernelSession {
             session_id: session.session_id.clone(),
             argv: session.argv,
             process_id: pid,
+            username: session.username.clone(),
             status: models::Status::Idle,
         };
 

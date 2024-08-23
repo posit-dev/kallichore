@@ -94,6 +94,7 @@ where
             .iter()
             .map(|s| models::SessionListSessionsInner {
                 session_id: s.session_id.clone(),
+                username: s.username.clone(),
                 argv: s.argv.clone(),
                 process_id: match s.process_id {
                     Some(pid) => Some(pid as i32),
@@ -191,6 +192,7 @@ where
             session_id: session_id.session_id.clone(),
             argv: args,
             working_directory: session.working_directory.clone(),
+            username: session.username.clone(),
             env: session.env.clone(),
         };
 

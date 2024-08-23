@@ -314,6 +314,10 @@ pub struct Session {
     #[serde(rename = "session_id")]
     pub session_id: String,
 
+    /// The username of the user who owns the session
+    #[serde(rename = "username")]
+    pub username: String,
+
     /// The program and command-line parameters for the session
     #[serde(rename = "argv")]
     pub argv: Vec<String>,
@@ -331,12 +335,14 @@ impl Session {
     #[allow(clippy::new_without_default)]
     pub fn new(
         session_id: String,
+        username: String,
         argv: Vec<String>,
         working_directory: String,
         env: std::collections::HashMap<String, String>,
     ) -> Session {
         Session {
             session_id,
+            username,
             argv,
             working_directory,
             env,
@@ -352,6 +358,8 @@ impl std::string::ToString for Session {
         let params: Vec<Option<String>> = vec![
             Some("session_id".to_string()),
             Some(self.session_id.to_string()),
+            Some("username".to_string()),
+            Some(self.username.to_string()),
             Some("argv".to_string()),
             Some(
                 self.argv
@@ -381,6 +389,7 @@ impl std::str::FromStr for Session {
         #[allow(dead_code)]
         struct IntermediateRep {
             pub session_id: Vec<String>,
+            pub username: Vec<String>,
             pub argv: Vec<Vec<String>>,
             pub working_directory: Vec<String>,
             pub env: Vec<std::collections::HashMap<String, String>>,
@@ -407,6 +416,10 @@ impl std::str::FromStr for Session {
                 match key {
                     #[allow(clippy::redundant_clone)]
                     "session_id" => intermediate_rep.session_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "username" => intermediate_rep.username.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     "argv" => {
@@ -444,6 +457,11 @@ impl std::str::FromStr for Session {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "session_id missing in Session".to_string())?,
+            username: intermediate_rep
+                .username
+                .into_iter()
+                .next()
+                .ok_or_else(|| "username missing in Session".to_string())?,
             argv: intermediate_rep
                 .argv
                 .into_iter()
@@ -673,6 +691,10 @@ pub struct SessionListSessionsInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_id: Option<i32>,
 
+    /// The username of the user who owns the session
+    #[serde(rename = "username")]
+    pub username: String,
+
     #[serde(rename = "status")]
     pub status: models::Status,
 }
@@ -682,12 +704,14 @@ impl SessionListSessionsInner {
     pub fn new(
         session_id: String,
         argv: Vec<String>,
+        username: String,
         status: models::Status,
     ) -> SessionListSessionsInner {
         SessionListSessionsInner {
             session_id,
             argv,
             process_id: None,
+            username,
             status,
         }
     }
@@ -712,6 +736,8 @@ impl std::string::ToString for SessionListSessionsInner {
             self.process_id
                 .as_ref()
                 .map(|process_id| ["process_id".to_string(), process_id.to_string()].join(",")),
+            Some("username".to_string()),
+            Some(self.username.to_string()),
             // Skipping status in query parameter serialization
         ];
 
@@ -733,6 +759,7 @@ impl std::str::FromStr for SessionListSessionsInner {
             pub session_id: Vec<String>,
             pub argv: Vec<Vec<String>>,
             pub process_id: Vec<i32>,
+            pub username: Vec<String>,
             pub status: Vec<models::Status>,
         }
 
@@ -761,6 +788,8 @@ impl std::str::FromStr for SessionListSessionsInner {
                     #[allow(clippy::redundant_clone)]
                     "process_id" => intermediate_rep.process_id.push(<i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     #[allow(clippy::redundant_clone)]
+                    "username" => intermediate_rep.username.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    #[allow(clippy::redundant_clone)]
                     "status" => intermediate_rep.status.push(<models::Status as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     _ => return std::result::Result::Err("Unexpected key while parsing SessionListSessionsInner".to_string())
                 }
@@ -783,6 +812,11 @@ impl std::str::FromStr for SessionListSessionsInner {
                 .next()
                 .ok_or_else(|| "argv missing in SessionListSessionsInner".to_string())?,
             process_id: intermediate_rep.process_id.into_iter().next(),
+            username: intermediate_rep
+                .username
+                .into_iter()
+                .next()
+                .ok_or_else(|| "username missing in SessionListSessionsInner".to_string())?,
             status: intermediate_rep
                 .status
                 .into_iter()

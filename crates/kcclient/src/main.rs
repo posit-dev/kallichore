@@ -201,6 +201,7 @@ fn main() {
             let session = models::Session {
                 session_id,
                 argv: kernel_spec.argv,
+                username: String::from("testuser"),
                 working_directory: working_directory.to_string_lossy().to_string(),
                 env,
             };

@@ -94,6 +94,9 @@ components:
         session_id:
           description: A unique identifier for the session
           type: string
+        username:
+          description: The username of the user who owns the session
+          type: string
         argv:
           description: The program and command-line parameters for the session
           items:
@@ -111,6 +114,7 @@ components:
       - argv
       - env
       - session_id
+      - username
       - working_directory
       type: object
     sessionList:
@@ -122,12 +126,14 @@ components:
           argv:
           - argv
           - argv
+          username: username
           status: idle
         - process_id: 6
           session_id: session_id
           argv:
           - argv
           - argv
+          username: username
           status: idle
       properties:
         total:
@@ -157,6 +163,7 @@ components:
         argv:
         - argv
         - argv
+        username: username
         status: idle
       properties:
         session_id:
@@ -171,11 +178,15 @@ components:
           description: "The underlying process ID of the session, if the session is\
             \ running."
           type: integer
+        username:
+          description: The username of the user who owns the session
+          type: string
         status:
           $ref: '#/components/schemas/status'
       required:
       - argv
       - session_id
       - status
+      - username
       type: object
 
