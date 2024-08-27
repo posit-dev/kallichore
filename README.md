@@ -2,14 +2,15 @@
 
 Kallichore is an experimental, headless supervisor for Jupyter kernels.
 
-It exposes a JSON API (described with OpenAPI) that can be used to start a kernel, send messages to and receive messages from the kernel, and stop the kernel.
+It exposes a JSON API (described with OpenAPI) that can be used to start kernel sessions and query for their status. It also provides a WebSocket interface for sending and receiving Jupyter messages.
 
 Multiple kernels/sessions can be supervised at once; each receives its own interface.
 
 ```mermaid
 graph LR
 frontend -- http --> kallichore
-kallichore -- sse --> frontend
+kallichore -- websocket --> frontend
+frontend -- websocket --> kallichore
 kallichore --> ki1[kernel interface 1]
 kallichore --> ki2[kernel interface 2]
 ki1 -- zeromq --> k1[kernel 1]
