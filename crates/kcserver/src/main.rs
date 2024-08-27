@@ -12,6 +12,7 @@
 use clap::{command, Parser};
 
 mod connection_file;
+mod error;
 mod server;
 mod session;
 

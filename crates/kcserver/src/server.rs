@@ -77,6 +77,7 @@ use std::error::Error;
 use swagger::ApiError;
 
 use crate::connection_file::{self, ConnectionFile};
+use crate::error::KSError;
 use crate::session::KernelSession;
 
 #[async_trait]
@@ -128,12 +129,8 @@ where
             let sessions = self.sessions.read().unwrap();
             for s in sessions.iter() {
                 if s.session_id == session.session_id {
-                    let err = models::Error {
-                        code: String::from("KS-001"),
-                        message: format!("Session {} already exists", session.session_id),
-                        details: None,
-                    };
-                    return Ok(NewSessionResponse::InvalidRequest(err));
+                    let error = KSError::SessionExists(session.session_id.clone());
+                    return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
                 }
             }
         }
