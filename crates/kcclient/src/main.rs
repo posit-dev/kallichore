@@ -93,15 +93,12 @@ async fn connect_to_session(url: String, session_id: String) {
 
     let message = JupyterMessage {
         header: JupyterMessageHeader {
-            msg_id: "1234".to_string(),
-            msg_type: "test".to_string(),
+            msg_id: "7C857F22-013E-4ECD-89ED-9A1E6BAA0F98".to_string(),
+            msg_type: "kernel_info_request".to_string(),
         },
-        parent_header: Some(JupyterMessageHeader {
-            msg_id: "1233".to_string(),
-            msg_type: "test".to_string(),
-        }),
+        parent_header: None,
         channel: JupyterChannel::Shell,
-        content: serde_json::json!({"foo": "bar"}),
+        content: serde_json::json!({}),
         buffers: Vec::new(),
         metadata: serde_json::json!({}),
     };

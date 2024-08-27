@@ -17,7 +17,10 @@ pub struct WireMessageHeader {
     pub msg_type: String,
 
     /// The ID of the session
-    pub session_id: String,
+    pub session: String,
+
+    /// The username of the user who owns the session
+    pub username: String,
 
     /// The date/time the message was published
     pub date: String,
@@ -28,7 +31,7 @@ pub struct WireMessageHeader {
 
 impl WireMessageHeader {
     /// Create a new wire message header from a Jupyter message header.
-    pub fn new(jupyter_header: JupyterMessageHeader, session_id: String) -> Self {
+    pub fn new(jupyter_header: JupyterMessageHeader, session: String, username: String) -> Self {
         // Create an ISO 8601 date string to use as a timestamp
         let date = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
@@ -38,7 +41,8 @@ impl WireMessageHeader {
             msg_type: jupyter_header.msg_type,
             version: String::from("5.3"),
             date,
-            session_id,
+            session,
+            username,
         }
     }
 }

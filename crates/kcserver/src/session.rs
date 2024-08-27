@@ -47,7 +47,7 @@ pub struct KernelSession {
     pub connection: connection_file::ConnectionFile,
 
     /// The websocket used to write to the client
-    ws_write: Option<Arc<Mutex<SplitSink<WebSocketStream<Upgraded>, Message>>>>,
+    ws_write: Arc<Mutex<Option<SplitSink<WebSocketStream<Upgraded>, Message>>>>,
 
     /// The HMAC key used to sign messages
     hmac_key: Hmac<Sha256>,
@@ -91,7 +91,7 @@ impl KernelSession {
             shell_socket: Arc::new(Mutex::new(DealerSocket::new())),
             hb_socket: Arc::new(Mutex::new(ReqSocket::new())),
             iopub_socket: Arc::new(Mutex::new(SubSocket::new())),
-            ws_write: None,
+            ws_write: Arc::new(Mutex::new(None)),
             connection,
             hmac_key,
         };
@@ -112,9 +112,10 @@ impl KernelSession {
 
     pub fn handle_channel_ws(&mut self, ws_stream: WebSocketStream<Upgraded>) {
         let (write, read) = ws_stream.split();
-        self.ws_write = Some(Arc::new(Mutex::new(write)));
+        self.ws_write.try_lock().unwrap().replace(write);
 
         let session_id = self.session_id.clone();
+        let username = self.username.clone();
         let hmac_key = self.hmac_key.clone();
         let shell_socket = self.shell_socket.clone();
         // Write some test data to the websocket
@@ -145,6 +146,7 @@ impl KernelSession {
                 let wire_message = WireMessage::from_jupyter(
                     channel_message,
                     session_id.clone(),
+                    username.clone(),
                     hmac_key.clone(),
                 )
                 .unwrap();
@@ -224,21 +226,19 @@ impl KernelSession {
                 let message = socket.recv().await.unwrap();
                 log::info!("Received message: {:?}", message);
 
-                // TODO: If no websocket is connected, then we should buffer the messages
-                let ws_write = match ws_write.clone() {
-                    Some(ws_write) => ws_write,
-                    None => {
-                        log::warn!("No websocket connected; dropping message");
-                        continue;
-                    }
-                };
-
                 // Write the message to the websocket
                 let mut ws_write = ws_write.lock().await;
-                ws_write
-                    .send(Message::text("Got message from iopub"))
-                    .await
-                    .unwrap();
+                match ws_write.as_mut() {
+                    Some(ws_write) => {
+                        ws_write
+                            .send(Message::text("Got message from iopub"))
+                            .await
+                            .unwrap();
+                    }
+                    None => {
+                        log::debug!("No websocket to write to; dropping message");
+                    }
+                }
             }
         });
     }

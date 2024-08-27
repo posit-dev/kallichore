@@ -25,19 +25,23 @@ impl WireMessage {
     /// Create a new wire message from a Jupyter message.
     pub fn from_jupyter(
         msg: JupyterMessage,
-        session_id: String,
+        session: String,
+        username: String,
         hmac_key: Hmac<Sha256>,
     ) -> Result<Self, anyhow::Error> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
 
         // Derive a wire message header from the Jupyter message header
-        let header = WireMessageHeader::new(msg.header, session_id.clone());
+        let header = WireMessageHeader::new(msg.header, session.clone(), username.clone());
         parts.push(serde_json::to_vec(&header)?);
 
         // Add the parent header, if any
         if msg.parent_header.is_some() {
-            let parent_header =
-                WireMessageHeader::new(msg.parent_header.unwrap(), session_id.clone());
+            let parent_header = WireMessageHeader::new(
+                msg.parent_header.unwrap(),
+                session.clone(),
+                username.clone(),
+            );
             parts.push(serde_json::to_vec(&parent_header)?);
         } else {
             parts.push(serde_json::to_vec(&serde_json::Map::new())?);
