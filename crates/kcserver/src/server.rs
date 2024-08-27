@@ -276,9 +276,9 @@ where
                         WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
 
                     // Find the session with the given ID
-                    let sessions = sessions.read().unwrap();
+                    let mut sessions = sessions.write().unwrap();
                     let session = sessions
-                        .iter()
+                        .iter_mut()
                         .find(|s| s.session_id == session_id)
                         .expect("Session not found");
                     session.handle_channel_ws(stream);

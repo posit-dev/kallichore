@@ -7,10 +7,10 @@
 
 //! Wraps Jupyter kernel sessions.
 
-use std::{io::Read, sync::Arc};
+use std::sync::Arc;
 
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
+use futures::{stream::SplitSink, SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use hyper::upgrade::Upgraded;
 use kallichore_api::models;
@@ -23,8 +23,9 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 const MSG_DELIM: &[u8] = b"<IDS|MSG>";
 
 use crate::{connection_file, wire_message::WireMessage};
-use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
+use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
 
+#[derive(Clone)]
 pub struct KernelSession {
     /// The ID of the session
     pub session_id: String,
@@ -45,14 +46,20 @@ pub struct KernelSession {
     /// The connection information for the kernel
     pub connection: connection_file::ConnectionFile,
 
+    /// The websocket used to write to the client
+    ws_write: Option<Arc<Mutex<SplitSink<WebSocketStream<Upgraded>, Message>>>>,
+
     /// The HMAC key used to sign messages
     hmac_key: Hmac<Sha256>,
 
-    // The kernel's shell socket
+    /// The kernel's shell socket
     shell_socket: Arc<Mutex<DealerSocket>>,
 
-    // The kernel's heartbeat socket
+    /// The kernel's heartbeat socket
     hb_socket: Arc<Mutex<ReqSocket>>,
+
+    /// The kernel's iopub socket
+    iopub_socket: Arc<Mutex<SubSocket>>,
 }
 
 impl KernelSession {
@@ -83,6 +90,8 @@ impl KernelSession {
             status: models::Status::Idle,
             shell_socket: Arc::new(Mutex::new(DealerSocket::new())),
             hb_socket: Arc::new(Mutex::new(ReqSocket::new())),
+            iopub_socket: Arc::new(Mutex::new(SubSocket::new())),
+            ws_write: None,
             connection,
             hmac_key,
         };
@@ -101,9 +110,9 @@ impl KernelSession {
         kernel_session
     }
 
-    pub fn handle_channel_ws(&self, ws_stream: WebSocketStream<Upgraded>) {
+    pub fn handle_channel_ws(&mut self, ws_stream: WebSocketStream<Upgraded>) {
         let (write, read) = ws_stream.split();
-        let write = Mutex::new(write);
+        self.ws_write = Some(Arc::new(Mutex::new(write)));
 
         let session_id = self.session_id.clone();
         let hmac_key = self.hmac_key.clone();
@@ -161,7 +170,7 @@ impl KernelSession {
         let shell_socket = self.shell_socket.clone();
         let connection = self.connection.clone();
 
-        // Attempt to connect to the kernel using zeromq
+        // Attempt to connect to the kernel's shell socket using zeromq
         tokio::spawn(async move {
             let mut socket = shell_socket.lock().await;
             socket
@@ -191,6 +200,43 @@ impl KernelSession {
             socket.send("Hello".into()).await.unwrap();
             let repl = socket.recv().await.unwrap();
             log::info!("Received reply: {:?}", repl);
+        });
+
+        // Attempt to connect to the kernel's iopub socket using zeromq
+        let iopub_socket = self.iopub_socket.clone();
+        let connection = self.connection.clone();
+        let ws_write = self.ws_write.clone();
+        tokio::spawn(async move {
+            let mut socket = iopub_socket.lock().await;
+            socket
+                .connect(format!("tcp://{}:{}", connection.ip, connection.iopub_port).as_str())
+                .await
+                .unwrap();
+
+            // Subscribe to all messages
+            socket.subscribe("").await.unwrap();
+
+            // Wait for a message to be delivered
+            loop {
+                let message = socket.recv().await.unwrap();
+                log::info!("Received message: {:?}", message);
+
+                // TODO: If no websocket is connected, then we should buffer the messages
+                let ws_write = match ws_write.clone() {
+                    Some(ws_write) => ws_write,
+                    None => {
+                        log::warn!("No websocket connected; dropping message");
+                        continue;
+                    }
+                };
+
+                // Write the message to the websocket
+                let mut ws_write = ws_write.lock().await;
+                ws_write
+                    .send(Message::text("Got message from iopub"))
+                    .await
+                    .unwrap();
+            }
         });
     }
 }
