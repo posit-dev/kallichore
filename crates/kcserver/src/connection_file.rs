@@ -15,7 +15,7 @@ use serde::Serialize;
 
 /// The contents of the Connection File as listed in the Jupyter specfication;
 /// directly parsed from JSON.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ConnectionFile {
     /// ZeroMQ port: Control channel (kernel interrupts)
     pub control_port: u16,

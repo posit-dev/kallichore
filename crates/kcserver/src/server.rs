@@ -212,6 +212,7 @@ where
 
         let kernel_session = KernelSession::new(session, connection_file);
         let mut sessions = self.sessions.write().unwrap();
+        kernel_session.connect();
         sessions.push(kernel_session);
         Ok(NewSessionResponse::TheSessionID(session_id))
     }

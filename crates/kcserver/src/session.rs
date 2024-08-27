@@ -7,14 +7,17 @@
 
 //! Wraps Jupyter kernel sessions.
 
+use std::sync::Arc;
+
 use futures::{SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use kallichore_api::models;
 use kcshared::jupyter_message::JupyterMessage;
+use tokio::sync::Mutex;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 use crate::connection_file;
-use zeromq::{Socket, SocketRecv, SocketSend};
+use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend};
 
 pub struct KernelSession {
     /// The ID of the session
@@ -32,6 +35,15 @@ pub struct KernelSession {
 
     /// The current status of the kernel
     pub status: models::Status,
+
+    /// The connection information for the kernel
+    pub connection: connection_file::ConnectionFile,
+
+    // The kernel's shell socket
+    shell_socket: Arc<Mutex<DealerSocket>>,
+
+    // The kernel's heartbeat socket
+    hb_socket: Arc<Mutex<ReqSocket>>,
 }
 
 impl KernelSession {
@@ -39,41 +51,6 @@ impl KernelSession {
     pub fn new(session: models::Session, connection: connection_file::ConnectionFile) -> Self {
         // Start the session in a new thread
         let argv = session.argv.clone();
-
-        // Attempt to connect to the kernel using zeromq
-        tokio::spawn(async move {
-            // Connect to the shell socket
-            log::info!(
-                "Connecting to kernel shell at {}:{}",
-                connection.ip,
-                connection.shell_port
-            );
-            let mut socket = zeromq::DealerSocket::new();
-            socket
-                .connect(format!("tcp://{}:{}", connection.ip, connection.shell_port).as_str())
-                .await
-                .unwrap();
-
-            // Connect to the heartbeat socket
-            let mut socket = zeromq::ReqSocket::new();
-            log::info!(
-                "Connecting to kernel heartbeat at {}:{}",
-                connection.ip,
-                connection.hb_port
-            );
-            socket
-                .connect(format!("tcp://{}:{}", connection.ip, connection.hb_port).as_str())
-                .await
-                .unwrap();
-            log::info!(
-                "Connected to kernel heartbeat at {}:{}; sending 'Hello'",
-                connection.ip,
-                connection.hb_port
-            );
-            socket.send("Hello".into()).await.unwrap();
-            let repl = socket.recv().await.unwrap();
-            log::info!("Received reply: {:?}", repl);
-        });
 
         let mut child = tokio::process::Command::new(&argv[0])
             .args(&argv[1..])
@@ -91,6 +68,9 @@ impl KernelSession {
             process_id: pid,
             username: session.username.clone(),
             status: models::Status::Idle,
+            shell_socket: Arc::new(Mutex::new(DealerSocket::new())),
+            hb_socket: Arc::new(Mutex::new(ReqSocket::new())),
+            connection,
         };
 
         tokio::spawn(async move {
@@ -109,7 +89,7 @@ impl KernelSession {
 
     pub fn handle_channel_ws(&self, ws_stream: WebSocketStream<Upgraded>) {
         let (write, read) = ws_stream.split();
-        let write = tokio::sync::Mutex::new(write);
+        let write = Mutex::new(write);
 
         // Write some test data to the websocket
         tokio::spawn(async move {
@@ -141,6 +121,50 @@ impl KernelSession {
                 print!("{}", String::from_utf8_lossy(&data));
             })
             .await;
+        });
+    }
+
+    pub fn connect(&self) {
+        // Connect to the shell socket
+        log::info!(
+            "Connecting to kernel shell at {}:{}",
+            self.connection.ip,
+            self.connection.shell_port
+        );
+
+        let shell_socket = self.shell_socket.clone();
+        let connection = self.connection.clone();
+
+        // Attempt to connect to the kernel using zeromq
+        tokio::spawn(async move {
+            let mut socket = shell_socket.lock().await;
+            socket
+                .connect(format!("tcp://{}:{}", connection.ip, connection.shell_port).as_str())
+                .await
+                .unwrap();
+        });
+
+        let hb_socket = self.hb_socket.clone();
+        let connection = self.connection.clone();
+        tokio::spawn(async move {
+            let mut socket = hb_socket.lock().await;
+            log::info!(
+                "Connecting to kernel heartbeat at {}:{}",
+                connection.ip,
+                connection.hb_port
+            );
+            socket
+                .connect(format!("tcp://{}:{}", connection.ip, connection.hb_port).as_str())
+                .await
+                .unwrap();
+            log::info!(
+                "Connected to kernel heartbeat at {}:{}; sending 'Hello'",
+                connection.ip,
+                connection.hb_port
+            );
+            socket.send("Hello".into()).await.unwrap();
+            let repl = socket.recv().await.unwrap();
+            log::info!("Received reply: {:?}", repl);
         });
     }
 }
