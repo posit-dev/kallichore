@@ -142,9 +142,12 @@ impl KernelSession {
                 );
 
                 // Convert the message to a wire message
-                let wire_message =
-                    WireMessage::new(channel_message, session_id.clone(), hmac_key.clone())
-                        .unwrap();
+                let wire_message = WireMessage::from_jupyter(
+                    channel_message,
+                    session_id.clone(),
+                    hmac_key.clone(),
+                )
+                .unwrap();
 
                 let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
                 for part in wire_message.parts {

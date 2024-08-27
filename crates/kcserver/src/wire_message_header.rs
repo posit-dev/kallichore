@@ -6,9 +6,9 @@
 //
 
 use kcshared::jupyter_message::JupyterMessageHeader;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct WireMessageHeader {
     /// The message ID
     pub msg_id: String,
@@ -39,6 +39,15 @@ impl WireMessageHeader {
             version: String::from("5.3"),
             date,
             session_id,
+        }
+    }
+}
+
+impl From<WireMessageHeader> for JupyterMessageHeader {
+    fn from(header: WireMessageHeader) -> Self {
+        JupyterMessageHeader {
+            msg_id: header.msg_id,
+            msg_type: header.msg_type,
         }
     }
 }

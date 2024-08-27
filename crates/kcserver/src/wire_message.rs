@@ -5,8 +5,12 @@
 //
 //
 
-use kcshared::jupyter_message::JupyterMessage;
+/// Separates ZeroMQ socket identities from the message body payload.
+const MSG_DELIM: &[u8] = b"<IDS|MSG>";
+
+use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
 use sha2::Sha256;
+use zeromq::ZmqMessage;
 
 use crate::wire_message_header::WireMessageHeader;
 
@@ -19,7 +23,7 @@ pub struct WireMessage {
 
 impl WireMessage {
     /// Create a new wire message from a Jupyter message.
-    pub fn new(
+    pub fn from_jupyter(
         msg: JupyterMessage,
         session_id: String,
         hmac_key: Hmac<Sha256>,
@@ -54,5 +58,48 @@ impl WireMessage {
         parts.insert(0, signature.as_bytes().to_vec());
 
         Ok(WireMessage { parts })
+    }
+
+    /// Convert the wire message to a Jupyter message.
+    pub fn to_jupyter(&self, channel: JupyterChannel) -> Result<JupyterMessage, anyhow::Error> {
+        let mut parts = self.parts.clone();
+        let mut iter = self.parts.iter();
+        let pos = match iter.position(|buf| &buf[..] == MSG_DELIM) {
+            Some(pos) => pos,
+            None => return Err(anyhow::anyhow!("No message delimiter found")),
+        };
+        let parts = parts.drain(pos + 1..).collect::<Vec<_>>();
+
+        // TODO: validate HMAC signature
+        let header: WireMessageHeader = serde_json::from_value(Self::parse_buffer(&parts[1])?)?;
+        let jupyter_header: JupyterMessageHeader = header.into();
+        let parent_header: Option<JupyterMessageHeader> = if parts[2].len() < 5 {
+            None
+        } else {
+            let header: WireMessageHeader = serde_json::from_value(Self::parse_buffer(&parts[2])?)?;
+            Some(header.into())
+        };
+
+        Ok(JupyterMessage {
+            header: jupyter_header,
+            parent_header,
+            metadata: serde_json::from_slice(&parts[3])?,
+            content: serde_json::from_slice(&parts[4])?,
+            channel,
+            buffers: Vec::new(),
+        })
+    }
+
+    fn parse_buffer(buf: &[u8]) -> Result<serde_json::Value, anyhow::Error> {
+        let contents = std::str::from_utf8(buf)?;
+        let val = serde_json::from_str(contents)?;
+        Ok(val)
+    }
+}
+
+impl From<ZmqMessage> for WireMessage {
+    fn from(msg: ZmqMessage) -> Self {
+        let parts: Vec<Vec<u8>> = msg.iter().map(|frame| frame.to_vec()).collect();
+        Self { parts }
     }
 }

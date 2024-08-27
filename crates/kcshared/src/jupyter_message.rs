@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub struct JupyterMessageHeader {
     /// The message ID
     pub msg_id: String,
+
     /// The type of the message
     pub msg_type: String,
 }
