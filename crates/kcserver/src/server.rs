@@ -9,6 +9,7 @@
 
 #![allow(unused_imports)]
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use hyper::header::{HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
@@ -18,13 +19,13 @@ use hyper::upgrade::Upgraded;
 use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use log::info;
-use std::env;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
+use std::{any, env};
 use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
@@ -130,6 +131,7 @@ where
             for s in sessions.iter() {
                 if s.session_id == session.session_id {
                     let error = KSError::SessionExists(session.session_id.clone());
+                    error.log();
                     return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
                 }
             }
@@ -143,7 +145,14 @@ where
 
         // Create a connection file for the session in a temporary directory
         // TODO: Handle error
-        let connection_file = ConnectionFile::generate(String::from("127.0.0.1")).unwrap();
+        let connection_file = match ConnectionFile::generate(String::from("127.0.0.1")) {
+            Ok(connection_file) => connection_file,
+            Err(e) => {
+                let error = KSError::SessionStartFailed(e);
+                error.log();
+                return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
+            }
+        };
 
         let temp_dir = env::temp_dir();
         let mut connection_file_name = std::ffi::OsString::from("connection_");
@@ -152,7 +161,15 @@ where
 
         // Combine the temporary directory with the file name to get the full path
         let connection_path: PathBuf = temp_dir.join(connection_file_name);
-        connection_file.to_file(connection_path.clone()).unwrap();
+        if let Err(err) = connection_file.to_file(connection_path.clone()) {
+            let error = KSError::SessionStartFailed(anyhow!(
+                "Failed to write connection file {}: {}",
+                connection_path.to_string_lossy(),
+                err
+            ));
+            error.log();
+            return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
+        }
 
         log::trace!(
             "Created connection file for session {} at {:?}",
@@ -225,6 +242,26 @@ where
         };
         let version = request.version();
         let sessions = self.sessions.clone();
+        {
+            // Validate the session ID before upgrading the connection
+            let sessions = sessions.read().unwrap();
+            if sessions
+                .iter()
+                .find(|s| s.session_id == session_id)
+                .is_none()
+            {
+                let err = KSError::SessionNotFound(session_id.clone());
+                err.log();
+                let err = err.to_json(Some(
+                    "Establishing a websocket connection requires a valid session ID".to_string(),
+                ));
+                // Serialize the error to JSON
+                let err = serde_json::to_string(&err).unwrap();
+                let mut response = Response::new(err.into());
+                *response.status_mut() = StatusCode::BAD_REQUEST;
+                return Ok(response);
+            }
+        };
 
         tokio::task::spawn(async move {
             match hyper::upgrade::on(&mut request).await {

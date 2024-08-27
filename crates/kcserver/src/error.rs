@@ -10,8 +10,15 @@ use std::fmt;
 use kallichore_api::models;
 use log::error;
 
+/// Errors that can occur in the Kallichore server.
+///
+/// Important: do not remove or reorder variants from this enum, as the discriminant
+/// of each variant is used as an error code and we'd like to keep the error codes
+/// stable across versions.
 pub enum KSError {
     SessionExists(String),
+    SessionNotFound(String),
+    SessionStartFailed(anyhow::Error),
 }
 
 impl fmt::Display for KSError {
@@ -21,11 +28,20 @@ impl fmt::Display for KSError {
             KSError::SessionExists(session_id) => {
                 write!(f, "Session {} already exists", session_id)
             }
+            KSError::SessionStartFailed(err) => {
+                write!(f, "Failed to start session: {}", err)
+            }
+            KSError::SessionNotFound(session_id) => {
+                write!(f, "Session {} not found", session_id)
+            }
         }
     }
 }
 
 impl KSError {
+    /// This method is used to match each error variant to a unique error code.
+    /// The error codes are just the discriminants of the error variants, i.e.
+    /// the index of the variant in the enum definition.
     #[allow(unsafe_code, trivial_casts)]
     fn discriminant(&self) -> u8 {
         unsafe { *(self as *const Self as *const u8) }
