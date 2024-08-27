@@ -96,10 +96,10 @@ async fn connect_to_session(url: String, session_id: String) {
             msg_id: "1234".to_string(),
             msg_type: "test".to_string(),
         },
-        parent_header: JupyterMessageHeader {
+        parent_header: Some(JupyterMessageHeader {
             msg_id: "1233".to_string(),
             msg_type: "test".to_string(),
-        },
+        }),
         channel: JupyterChannel::Shell,
         content: serde_json::json!({"foo": "bar"}),
         buffers: Vec::new(),

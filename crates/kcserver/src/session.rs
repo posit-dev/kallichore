@@ -7,17 +7,23 @@
 
 //! Wraps Jupyter kernel sessions.
 
-use std::sync::Arc;
+use std::{io::Read, sync::Arc};
 
+use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
 use hyper::upgrade::Upgraded;
 use kallichore_api::models;
 use kcshared::jupyter_message::JupyterMessage;
+use sha2::Sha256;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
-use crate::connection_file;
-use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend};
+/// Separates ZeroMQ socket identities from the message body payload.
+const MSG_DELIM: &[u8] = b"<IDS|MSG>";
+
+use crate::{connection_file, wire_message::WireMessage};
+use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
 pub struct KernelSession {
     /// The ID of the session
@@ -38,6 +44,9 @@ pub struct KernelSession {
 
     /// The connection information for the kernel
     pub connection: connection_file::ConnectionFile,
+
+    /// The HMAC key used to sign messages
+    hmac_key: Hmac<Sha256>,
 
     // The kernel's shell socket
     shell_socket: Arc<Mutex<DealerSocket>>,
@@ -62,6 +71,10 @@ impl KernelSession {
         // Get the process ID of the child process
         let pid = child.id();
 
+        // Create a new random HMAC key to sign messages for this session
+        let hmac_key = Hmac::<Sha256>::new_from_slice(connection.key.as_bytes())
+            .expect("Failed to create HMAC key");
+
         let mut kernel_session = KernelSession {
             session_id: session.session_id.clone(),
             argv: session.argv,
@@ -71,6 +84,7 @@ impl KernelSession {
             shell_socket: Arc::new(Mutex::new(DealerSocket::new())),
             hb_socket: Arc::new(Mutex::new(ReqSocket::new())),
             connection,
+            hmac_key,
         };
 
         tokio::spawn(async move {
@@ -91,6 +105,9 @@ impl KernelSession {
         let (write, read) = ws_stream.split();
         let write = Mutex::new(write);
 
+        let session_id = self.session_id.clone();
+        let hmac_key = self.hmac_key.clone();
+        let shell_socket = self.shell_socket.clone();
         // Write some test data to the websocket
         tokio::spawn(async move {
             read.for_each(|message| async {
@@ -115,17 +132,19 @@ impl KernelSession {
                     channel_message.header.msg_type
                 );
 
-                // acknowledge the message; TODO: write to the correct socket
-                write
-                    .lock()
-                    .await
-                    .send(Message::text(format!(
-                        "got message {}",
-                        channel_message.header.msg_id
-                    )))
-                    .await
-                    .unwrap();
-                print!("{}", String::from_utf8_lossy(&data));
+                // Convert the message to a wire message
+                let wire_message =
+                    WireMessage::new(channel_message, session_id.clone(), hmac_key.clone())
+                        .unwrap();
+
+                let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
+                for part in wire_message.parts {
+                    zmq_mesage.push_back(Bytes::from(part));
+                }
+
+                // Unlock the shell socket and send the message
+                let mut socket = shell_socket.lock().await;
+                socket.send(zmq_mesage).await.unwrap();
             })
             .await;
         });

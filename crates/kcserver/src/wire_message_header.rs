@@ -6,7 +6,9 @@
 //
 
 use kcshared::jupyter_message::JupyterMessageHeader;
+use serde::Serialize;
 
+#[derive(Serialize)]
 pub struct WireMessageHeader {
     /// The message ID
     pub msg_id: String,
@@ -26,15 +28,17 @@ pub struct WireMessageHeader {
 
 impl WireMessageHeader {
     /// Create a new wire message header from a Jupyter message header.
-    pub fn new(jupyter_header: JupyterMessageHeader) -> Self {
-        // Create an ISO 8601 date string
+    pub fn new(jupyter_header: JupyterMessageHeader, session_id: String) -> Self {
+        // Create an ISO 8601 date string to use as a timestamp
         let date = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+        // Create the wire message header from the Jupyter message header
         WireMessageHeader {
             msg_id: jupyter_header.msg_id,
             msg_type: jupyter_header.msg_type,
             version: String::from("5.3"),
-            date: date,
-            session_id: String::from(""),
+            date,
+            session_id,
         }
     }
 }

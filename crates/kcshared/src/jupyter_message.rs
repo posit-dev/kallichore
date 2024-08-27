@@ -48,7 +48,7 @@ pub struct JupyterMessage {
     pub header: JupyterMessageHeader,
 
     /// The header of the message's parent (the message that caused this message)
-    pub parent_header: JupyterMessageHeader,
+    pub parent_header: Option<JupyterMessageHeader>,
 
     /// The channel on which the message was sent (or is to be sent)
     pub channel: JupyterChannel,
