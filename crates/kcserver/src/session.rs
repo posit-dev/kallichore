@@ -108,6 +108,13 @@ impl KernelSession {
                     }
                 };
 
+                // Log the message ID and type
+                log::info!(
+                    "Got message {} of type {}",
+                    channel_message.header.msg_id,
+                    channel_message.header.msg_type
+                );
+
                 // acknowledge the message; TODO: write to the correct socket
                 write
                     .lock()

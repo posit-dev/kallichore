@@ -15,6 +15,8 @@ mod connection_file;
 mod error;
 mod server;
 mod session;
+mod wire_message;
+mod wire_message_header;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
