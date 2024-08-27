@@ -121,7 +121,18 @@ impl KernelSession {
         // Write some test data to the websocket
         tokio::spawn(async move {
             read.for_each(|message| async {
-                let data = message.unwrap().into_data();
+                let data = match message {
+                    Ok(message) => message.into_data(),
+                    Err(e) => {
+                        // This is normal when the websocket is closed by the
+                        // client without sending a close frame
+                        log::info!(
+                            "Failed to read message from websocket: {} (presuming disconnect)",
+                            e
+                        );
+                        return;
+                    }
+                };
 
                 // parse the message into a JupyterMessage
                 let channel_message = serde_json::from_slice::<JupyterMessage>(&data);
