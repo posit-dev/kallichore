@@ -19,14 +19,26 @@ use hyper::upgrade::Upgraded;
 use kallichore_api::models;
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage};
 use sha2::Sha256;
-use tokio::{select, sync::Mutex};
+use tokio::{
+    select,
+    sync::{
+        mpsc::{UnboundedReceiver, UnboundedSender},
+        Mutex,
+    },
+};
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
+use zeromq::SocketSend;
 
 /// Separates ZeroMQ socket identities from the message body payload.
 const MSG_DELIM: &[u8] = b"<IDS|MSG>";
 
 use crate::{connection_file, wire_message::WireMessage};
 use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SubSocket, ZmqMessage};
+
+struct ZmqChannelMessage {
+    channel: JupyterChannel,
+    message: ZmqMessage,
+}
 
 pub struct KernelSession {
     /// The ID of the session
@@ -53,6 +65,10 @@ pub struct KernelSession {
 
     /// The websocket used to read from the client
     ws_read: Arc<Mutex<Option<SplitStream<WebSocketStream<Upgraded>>>>>,
+
+    ws_tx: UnboundedSender<ZmqChannelMessage>,
+
+    ws_rx: UnboundedReceiver<ZmqChannelMessage>,
 
     /// The HMAC key used to sign messages
     hmac_key: Hmac<Sha256>,
@@ -87,6 +103,8 @@ impl KernelSession {
         let hmac_key = Hmac::<Sha256>::new_from_slice(connection.key.as_bytes())
             .expect("Failed to create HMAC key");
 
+        // Add an unbounded MPSC channel to the session
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ZmqChannelMessage>();
         let mut kernel_session = KernelSession {
             session_id: session.session_id.clone(),
             argv: session.argv,
@@ -98,6 +116,8 @@ impl KernelSession {
             iopub_socket: SubSocket::new(),
             ws_read: Arc::new(Mutex::new(None)),
             ws_write: Arc::new(Mutex::new(None)),
+            ws_tx: tx,
+            ws_rx: rx,
             connection,
             hmac_key,
         };
@@ -127,6 +147,7 @@ impl KernelSession {
         let username = self.username.clone();
         let hmac_key = self.hmac_key.clone();
         let ws_read = self.ws_read.clone();
+        let ws_tx = self.ws_tx.clone();
         tokio::spawn(async move {
             loop {
                 let data = {
@@ -163,11 +184,12 @@ impl KernelSession {
                 // Log the message ID and type
                 log::info!(
                     "Got message {} of type {}",
-                    channel_message.header.msg_id,
-                    channel_message.header.msg_type
+                    channel_message.header.msg_id.clone(),
+                    channel_message.header.msg_type.clone()
                 );
 
                 // Convert the message to a wire message
+                let channel = channel_message.channel.clone();
                 let wire_message = WireMessage::from_jupyter(
                     channel_message,
                     session_id.clone(),
@@ -179,6 +201,16 @@ impl KernelSession {
                 let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
                 for part in wire_message.parts {
                     zmq_mesage.push_back(Bytes::from(part));
+                }
+
+                match ws_tx.send(ZmqChannelMessage {
+                    channel,
+                    message: zmq_mesage,
+                }) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!("Failed to send message to ZMQ: {}", e);
+                    }
                 }
             }
         });
@@ -239,8 +271,25 @@ impl KernelSession {
                         log::error!("Failed to receive message from iopub socket: {}", e);
                     },
                 }
+            },
+            ws_msg = self.ws_rx.recv() => {
+                match ws_msg {
+                    Some(msg) => {
+                        match msg.channel {
+                            JupyterChannel::Shell => {
+                                self.shell_socket.send(msg.message).await?;
+                            },
+                            _ => {
+                                log::error!("Unsupported channel: {:?}", msg.channel);
+                            }
+                        }
+                    }
+                    None => {
+                        log::error!("Failed to receive message from websocket");
+                    },
+                }
             }
-        }
+        };
 
         Ok(())
     }

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// Additional header fields (such as the session ID) are not included here;
 /// they are populated by Kallichore before sending the message over the ZeroMQ
 /// socket.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct JupyterMessageHeader {
     /// The message ID
     pub msg_id: String,
@@ -42,7 +42,7 @@ pub enum JupyterChannel {
 }
 
 /// A serialized Jupyter message.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct JupyterMessage {
     /// The header of the message
     pub header: JupyterMessageHeader,
