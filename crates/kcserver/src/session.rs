@@ -14,7 +14,7 @@ use futures::{stream::SplitSink, SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use hyper::upgrade::Upgraded;
 use kallichore_api::models;
-use kcshared::jupyter_message::JupyterMessage;
+use kcshared::jupyter_message::{JupyterChannel, JupyterMessage};
 use sha2::Sha256;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
@@ -234,17 +234,26 @@ impl KernelSession {
 
             // Wait for a message to be delivered
             loop {
+                // TODO: handle error
                 let message = socket.recv().await.unwrap();
                 log::info!("Received message: {:?}", message);
+
+                // Convert the message to a Jupyter message
+                let message = WireMessage::from(message);
+                let message = match message.to_jupyter(JupyterChannel::IOPub) {
+                    Ok(message) => message,
+                    Err(e) => {
+                        log::error!("Failed to convert message to Jupyter message: {}", e);
+                        continue;
+                    }
+                };
+                let payload = serde_json::to_string(&message).unwrap();
 
                 // Write the message to the websocket
                 let mut ws_write = ws_write.lock().await;
                 match ws_write.as_mut() {
                     Some(ws_write) => {
-                        ws_write
-                            .send(Message::text("Got message from iopub"))
-                            .await
-                            .unwrap();
+                        ws_write.send(Message::text(payload)).await.unwrap();
                     }
                     None => {
                         log::debug!("No websocket to write to; dropping message");
