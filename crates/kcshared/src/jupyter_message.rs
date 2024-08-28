@@ -16,14 +16,13 @@ use serde::{Deserialize, Serialize};
 pub struct JupyterMessageHeader {
     /// The message ID
     pub msg_id: String,
-
     /// The type of the message
     pub msg_type: String,
 }
 
 /// The set of all Jupyter sockets ("channels") over which messages are sent and
 /// received.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Copy, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum JupyterChannel {
     /// The shell channel

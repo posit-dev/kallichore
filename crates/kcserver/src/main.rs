@@ -15,6 +15,7 @@ mod connection_file;
 mod error;
 mod server;
 mod session;
+mod socket_forwarder;
 mod wire_message;
 mod wire_message_header;
 

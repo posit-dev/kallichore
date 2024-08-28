@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures::{stream::SplitSink, SinkExt, StreamExt};
+use futures::{stream::SplitSink, StreamExt};
 use hmac::{Hmac, Mac};
 use hyper::upgrade::Upgraded;
 use kallichore_api::models;
@@ -22,7 +22,7 @@ use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 /// Separates ZeroMQ socket identities from the message body payload.
 const MSG_DELIM: &[u8] = b"<IDS|MSG>";
 
-use crate::{connection_file, wire_message::WireMessage};
+use crate::{connection_file, socket_forwarder, wire_message::WireMessage};
 use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
 
 #[derive(Clone)]
@@ -185,14 +185,19 @@ impl KernelSession {
 
         let shell_socket = self.shell_socket.clone();
         let connection = self.connection.clone();
+        let ws_write = self.ws_write.clone();
 
         // Attempt to connect to the kernel's shell socket using zeromq
         tokio::spawn(async move {
-            let mut socket = shell_socket.lock().await;
-            socket
-                .connect(format!("tcp://{}:{}", connection.ip, connection.shell_port).as_str())
-                .await
-                .unwrap();
+            {
+                let mut socket = shell_socket.lock().await;
+                socket
+                    .connect(format!("tcp://{}:{}", connection.ip, connection.shell_port).as_str())
+                    .await
+                    .unwrap();
+            }
+
+            socket_forwarder::socket_forwarder(JupyterChannel::Shell, shell_socket, ws_write).await;
         });
 
         let hb_socket = self.hb_socket.clone();
@@ -223,43 +228,17 @@ impl KernelSession {
         let connection = self.connection.clone();
         let ws_write = self.ws_write.clone();
         tokio::spawn(async move {
-            let mut socket = iopub_socket.lock().await;
-            socket
-                .connect(format!("tcp://{}:{}", connection.ip, connection.iopub_port).as_str())
-                .await
-                .unwrap();
-
-            // Subscribe to all messages
-            socket.subscribe("").await.unwrap();
-
-            // Wait for a message to be delivered
-            loop {
-                // TODO: handle error
-                let message = socket.recv().await.unwrap();
-                log::info!("Received message: {:?}", message);
-
-                // Convert the message to a Jupyter message
-                let message = WireMessage::from(message);
-                let message = match message.to_jupyter(JupyterChannel::IOPub) {
-                    Ok(message) => message,
-                    Err(e) => {
-                        log::error!("Failed to convert message to Jupyter message: {}", e);
-                        continue;
-                    }
-                };
-                let payload = serde_json::to_string(&message).unwrap();
-
-                // Write the message to the websocket
-                let mut ws_write = ws_write.lock().await;
-                match ws_write.as_mut() {
-                    Some(ws_write) => {
-                        ws_write.send(Message::text(payload)).await.unwrap();
-                    }
-                    None => {
-                        log::debug!("No websocket to write to; dropping message");
-                    }
-                }
+            {
+                let mut socket = iopub_socket.lock().await;
+                socket
+                    .connect(format!("tcp://{}:{}", connection.ip, connection.iopub_port).as_str())
+                    .await
+                    .unwrap();
+                // Subscribe to all messages
+                socket.subscribe("").await.unwrap();
             }
+
+            socket_forwarder::socket_forwarder(JupyterChannel::IOPub, iopub_socket, ws_write).await;
         });
     }
 }
