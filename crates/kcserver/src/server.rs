@@ -79,7 +79,7 @@ use swagger::ApiError;
 
 use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
-use crate::session::KernelSession;
+use crate::session::{self, KernelSession};
 
 #[async_trait]
 impl<C> Api<C> for Server<C>
@@ -210,10 +210,20 @@ where
             env: session.env.clone(),
         };
 
-        let kernel_session = KernelSession::new(session, connection_file);
-        let mut sessions = self.sessions.write().unwrap();
-        kernel_session.connect();
-        sessions.push(kernel_session);
+        let sessions = self.sessions.clone();
+        tokio::spawn(async move {
+            let mut kernel_session = KernelSession::new(session, connection_file);
+            match kernel_session.connect().await {
+                Ok(_) => {
+                    let mut sessions = sessions.write().unwrap();
+                    sessions.push(kernel_session);
+                }
+                Err(e) => {
+                    let error = KSError::SessionStartFailed(e);
+                    error.log();
+                }
+            }
+        });
         Ok(NewSessionResponse::TheSessionID(session_id))
     }
 

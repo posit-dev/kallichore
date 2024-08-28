@@ -22,7 +22,7 @@ pub struct JupyterMessageHeader {
 
 /// The set of all Jupyter sockets ("channels") over which messages are sent and
 /// received.
-#[derive(Serialize, Deserialize, Copy, Clone)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum JupyterChannel {
     /// The shell channel

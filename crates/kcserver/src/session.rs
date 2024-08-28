@@ -10,22 +10,24 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures::{stream::SplitSink, StreamExt};
+use futures::{
+    stream::{SplitSink, SplitStream},
+    SinkExt, StreamExt,
+};
 use hmac::{Hmac, Mac};
 use hyper::upgrade::Upgraded;
 use kallichore_api::models;
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage};
 use sha2::Sha256;
-use tokio::sync::Mutex;
+use tokio::{select, sync::Mutex};
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
 /// Separates ZeroMQ socket identities from the message body payload.
 const MSG_DELIM: &[u8] = b"<IDS|MSG>";
 
-use crate::{connection_file, socket_forwarder, wire_message::WireMessage};
-use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
+use crate::{connection_file, wire_message::WireMessage};
+use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SubSocket, ZmqMessage};
 
-#[derive(Clone)]
 pub struct KernelSession {
     /// The ID of the session
     pub session_id: String,
@@ -49,17 +51,20 @@ pub struct KernelSession {
     /// The websocket used to write to the client
     ws_write: Arc<Mutex<Option<SplitSink<WebSocketStream<Upgraded>, Message>>>>,
 
+    /// The websocket used to read from the client
+    ws_read: Arc<Mutex<Option<SplitStream<WebSocketStream<Upgraded>>>>>,
+
     /// The HMAC key used to sign messages
     hmac_key: Hmac<Sha256>,
 
     /// The kernel's shell socket
-    shell_socket: Arc<Mutex<DealerSocket>>,
+    shell_socket: DealerSocket,
 
     /// The kernel's heartbeat socket
-    hb_socket: Arc<Mutex<ReqSocket>>,
+    hb_socket: ReqSocket,
 
     /// The kernel's iopub socket
-    iopub_socket: Arc<Mutex<SubSocket>>,
+    iopub_socket: SubSocket,
 }
 
 impl KernelSession {
@@ -88,9 +93,10 @@ impl KernelSession {
             process_id: pid,
             username: session.username.clone(),
             status: models::Status::Idle,
-            shell_socket: Arc::new(Mutex::new(DealerSocket::new())),
-            hb_socket: Arc::new(Mutex::new(ReqSocket::new())),
-            iopub_socket: Arc::new(Mutex::new(SubSocket::new())),
+            shell_socket: DealerSocket::new(),
+            hb_socket: ReqSocket::new(),
+            iopub_socket: SubSocket::new(),
+            ws_read: Arc::new(Mutex::new(None)),
             ws_write: Arc::new(Mutex::new(None)),
             connection,
             hmac_key,
@@ -111,25 +117,33 @@ impl KernelSession {
     }
 
     pub fn handle_channel_ws(&mut self, ws_stream: WebSocketStream<Upgraded>) {
-        let (write, read) = ws_stream.split();
-        self.ws_write.try_lock().unwrap().replace(write);
+        let (ws_write, ws_read) = ws_stream.split();
+        {
+            self.ws_write.blocking_lock().replace(ws_write);
+            self.ws_read.blocking_lock().replace(ws_read);
+        }
 
         let session_id = self.session_id.clone();
         let username = self.username.clone();
         let hmac_key = self.hmac_key.clone();
-        let shell_socket = self.shell_socket.clone();
-        // Write some test data to the websocket
+        let ws_read = self.ws_read.clone();
         tokio::spawn(async move {
-            read.for_each(|message| async {
-                let data = match message {
-                    Ok(message) => message.into_data(),
-                    Err(e) => {
-                        // This is normal when the websocket is closed by the
-                        // client without sending a close frame
-                        log::info!(
-                            "Failed to read message from websocket: {} (presuming disconnect)",
-                            e
-                        );
+            loop {
+                let data = {
+                    let mut ws_read = ws_read.lock().await;
+                    let ws_read = ws_read.as_mut().unwrap();
+                    ws_read.next().await
+                };
+                let data = match data {
+                    Some(data) => match data {
+                        Ok(data) => data.into_data(),
+                        Err(e) => {
+                            log::error!("Failed to read data from websocket: {}", e);
+                            return;
+                        }
+                    },
+                    None => {
+                        log::error!("No data from websocket");
                         return;
                     }
                 };
@@ -166,79 +180,88 @@ impl KernelSession {
                 for part in wire_message.parts {
                     zmq_mesage.push_back(Bytes::from(part));
                 }
-
-                // Unlock the shell socket and send the message
-                let mut socket = shell_socket.lock().await;
-                socket.send(zmq_mesage).await.unwrap();
-            })
-            .await;
+            }
         });
     }
 
-    pub fn connect(&self) {
-        // Connect to the shell socket
-        log::info!(
-            "Connecting to kernel shell at {}:{}",
-            self.connection.ip,
-            self.connection.shell_port
-        );
+    pub async fn connect(&mut self) -> Result<(), anyhow::Error> {
+        self.shell_socket
+            .connect(
+                format!(
+                    "tcp://{}:{}",
+                    self.connection.ip, self.connection.shell_port
+                )
+                .as_str(),
+            )
+            .await?;
 
-        let shell_socket = self.shell_socket.clone();
-        let connection = self.connection.clone();
-        let ws_write = self.ws_write.clone();
+        self.hb_socket
+            .connect(format!("tcp://{}:{}", self.connection.ip, self.connection.hb_port).as_str())
+            .await?;
 
-        // Attempt to connect to the kernel's shell socket using zeromq
-        tokio::spawn(async move {
-            {
-                let mut socket = shell_socket.lock().await;
-                socket
-                    .connect(format!("tcp://{}:{}", connection.ip, connection.shell_port).as_str())
-                    .await
-                    .unwrap();
+        self.iopub_socket
+            .connect(
+                format!(
+                    "tcp://{}:{}",
+                    self.connection.ip, self.connection.iopub_port
+                )
+                .as_str(),
+            )
+            .await?;
+
+        // Subscribe to all messages
+        self.iopub_socket.subscribe("").await?;
+
+        // Wait for a message from any socket
+        select! {
+            shell_msg = self.shell_socket.recv() => {
+                log::info!("Received message from shell socket");
+                match shell_msg {
+                    Ok(msg) => {
+                        log::info!("Received message: {:?}", msg);
+                        self.forward_zmq(JupyterChannel::Shell, msg).await?;
+                    },
+                    Err(e) => {
+                        log::error!("Failed to receive message from shell socket: {}", e);
+                    },
+                }
+            },
+            _ = self.hb_socket.recv() => {
+                log::info!("Received message from heartbeat socket");
+            },
+            iopub_msg = self.iopub_socket.recv() => {
+                match iopub_msg {
+                    Ok(msg) => {
+                        log::info!("Received message: {:?}", msg);
+                        self.forward_zmq(JupyterChannel::IOPub, msg).await?;
+                    },
+                    Err(e) => {
+                        log::error!("Failed to receive message from iopub socket: {}", e);
+                    },
+                }
             }
+        }
 
-            socket_forwarder::socket_forwarder(JupyterChannel::Shell, shell_socket, ws_write).await;
-        });
+        Ok(())
+    }
 
-        let hb_socket = self.hb_socket.clone();
-        let connection = self.connection.clone();
-        tokio::spawn(async move {
-            let mut socket = hb_socket.lock().await;
-            log::info!(
-                "Connecting to kernel heartbeat at {}:{}",
-                connection.ip,
-                connection.hb_port
-            );
-            socket
-                .connect(format!("tcp://{}:{}", connection.ip, connection.hb_port).as_str())
-                .await
-                .unwrap();
-            log::info!(
-                "Connected to kernel heartbeat at {}:{}; sending 'Hello'",
-                connection.ip,
-                connection.hb_port
-            );
-            socket.send("Hello".into()).await.unwrap();
-            let repl = socket.recv().await.unwrap();
-            log::info!("Received reply: {:?}", repl);
-        });
-
-        // Attempt to connect to the kernel's iopub socket using zeromq
-        let iopub_socket = self.iopub_socket.clone();
-        let connection = self.connection.clone();
-        let ws_write = self.ws_write.clone();
-        tokio::spawn(async move {
-            {
-                let mut socket = iopub_socket.lock().await;
-                socket
-                    .connect(format!("tcp://{}:{}", connection.ip, connection.iopub_port).as_str())
-                    .await
-                    .unwrap();
-                // Subscribe to all messages
-                socket.subscribe("").await.unwrap();
+    async fn forward_zmq(
+        &mut self,
+        channel: JupyterChannel,
+        message: ZmqMessage,
+    ) -> Result<(), anyhow::Error> {
+        let message = WireMessage::from(message);
+        let message = message.to_jupyter(channel)?;
+        let payload = serde_json::to_string(&message)?;
+        match self.ws_write.lock().await.as_mut() {
+            None => {
+                log::error!("No websocket stream to forward message to");
+                return Ok(());
             }
-
-            socket_forwarder::socket_forwarder(JupyterChannel::IOPub, iopub_socket, ws_write).await;
-        });
+            Some(ref mut ws_stream) => {
+                ws_stream.send(Message::text(payload)).await?;
+            }
+        }
+        Ok(())
     }
 }
