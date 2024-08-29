@@ -94,13 +94,16 @@ impl ClientSession {
                         zmq_mesage.push_back(Bytes::from(part));
                     }
 
+                    log::trace!("Sending message to Jupyter");
                     match self.ws_zmq_tx.send(ZmqChannelMessage {
                         channel,
                         message: zmq_mesage,
                     }).await {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            log::trace!("Sent message to Jupyter");
+                        }
                         Err(e) => {
-                            log::error!("Failed to send message to ZMQ: {}", e);
+                            log::error!("Failed to send message to Jupyter: {}", e);
                         }
                     }
                 },

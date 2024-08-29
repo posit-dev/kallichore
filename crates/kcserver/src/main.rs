@@ -19,6 +19,7 @@ mod kernel_session;
 mod server;
 mod wire_message;
 mod wire_message_header;
+mod zmq_ws_proxy;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

@@ -83,6 +83,7 @@ use crate::client_session::ClientSession;
 use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
+use crate::zmq_ws_proxy;
 
 #[async_trait]
 impl<C> Api<C> for Server<C>
@@ -214,20 +215,25 @@ where
         };
 
         let sessions = self.kernel_sessions.clone();
+        let kernel_session = match KernelSession::new(session, connection_file.clone()) {
+            Ok(kernel_session) => kernel_session,
+            Err(e) => {
+                let error = KSError::SessionStartFailed(e);
+                return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
+            }
+        };
+
+        let mut sessions = sessions.write().unwrap();
+        let connection = kernel_session.connection.clone();
+        let ws_json_tx = kernel_session.ws_json_tx.clone();
+        let ws_zmq_rx = kernel_session.ws_zmq_rx.clone();
+        sessions.push(kernel_session);
+
         tokio::spawn(async move {
-            let mut kernel_session = match KernelSession::new(session, connection_file) {
-                Ok(kernel_session) => kernel_session,
-                Err(e) => {
-                    let error = KSError::SessionStartFailed(e);
-                    error.log();
-                    return;
-                }
-            };
-            match kernel_session.connect().await {
-                Ok(_) => {
-                    let mut sessions = sessions.write().unwrap();
-                    sessions.push(kernel_session);
-                }
+            match zmq_ws_proxy::zmq_ws_proxy(connection, connection_file, ws_json_tx, ws_zmq_rx)
+                .await
+            {
+                Ok(_) => (),
                 Err(e) => {
                     let error = KSError::SessionStartFailed(e);
                     error.log();
