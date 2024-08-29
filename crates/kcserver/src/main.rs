@@ -11,10 +11,12 @@
 
 use clap::{command, Parser};
 
+mod client_session;
 mod connection_file;
 mod error;
+mod kernel_connection;
+mod kernel_session;
 mod server;
-mod session;
 mod wire_message;
 mod wire_message_header;
 

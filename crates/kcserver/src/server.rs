@@ -60,14 +60,16 @@ pub async fn create(addr: &str) {
 #[derive(Clone)]
 pub struct Server<C> {
     marker: PhantomData<C>,
-    sessions: Arc<RwLock<Vec<KernelSession>>>,
+    kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
+    client_sessions: Arc<RwLock<Vec<ClientSession>>>,
 }
 
 impl<C> Server<C> {
     pub fn new() -> Self {
         Server {
             marker: PhantomData,
-            sessions: Arc::new(RwLock::new(vec![])),
+            kernel_sessions: Arc::new(RwLock::new(vec![])),
+            client_sessions: Arc::new(RwLock::new(vec![])),
         }
     }
 }
@@ -77,9 +79,10 @@ use kallichore_api::{Api, ListSessionsResponse};
 use std::error::Error;
 use swagger::ApiError;
 
+use crate::client_session::ClientSession;
 use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
-use crate::session::{self, KernelSession};
+use crate::kernel_session::{self, KernelSession};
 
 #[async_trait]
 impl<C> Api<C> for Server<C>
@@ -90,13 +93,13 @@ where
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError> {
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
 
-        let sessions = self.sessions.read().unwrap();
+        let sessions = self.kernel_sessions.read().unwrap();
         // Convert the vector of sessions to a vector of SessionsListSessionsInner
         let sessions: Vec<models::SessionListSessionsInner> = sessions
             .iter()
             .map(|s| models::SessionListSessionsInner {
-                session_id: s.session_id.clone(),
-                username: s.username.clone(),
+                session_id: s.connection.session_id.clone(),
+                username: s.connection.username.clone(),
                 argv: s.argv.clone(),
                 process_id: match s.process_id {
                     Some(pid) => Some(pid as i32),
@@ -127,9 +130,9 @@ where
         {
             // Check to see if the session already exists, dropping the read
             // lock afterwards.
-            let sessions = self.sessions.read().unwrap();
+            let sessions = self.kernel_sessions.read().unwrap();
             for s in sessions.iter() {
-                if s.session_id == session.session_id {
+                if s.connection.session_id == session.session_id {
                     let error = KSError::SessionExists(session.session_id.clone());
                     error.log();
                     return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
@@ -210,9 +213,16 @@ where
             env: session.env.clone(),
         };
 
-        let sessions = self.sessions.clone();
+        let sessions = self.kernel_sessions.clone();
         tokio::spawn(async move {
-            let mut kernel_session = KernelSession::new(session, connection_file);
+            let mut kernel_session = match KernelSession::new(session, connection_file) {
+                Ok(kernel_session) => kernel_session,
+                Err(e) => {
+                    let error = KSError::SessionStartFailed(e);
+                    error.log();
+                    return;
+                }
+            };
             match kernel_session.connect().await {
                 Ok(_) => {
                     let mut sessions = sessions.write().unwrap();
@@ -252,13 +262,13 @@ where
             key.map(|k| derive_accept_key(k.as_bytes()))
         };
         let version = request.version();
-        let sessions = self.sessions.clone();
+        let kernel_sessions = self.kernel_sessions.clone();
         {
             // Validate the session ID before upgrading the connection
-            let sessions = sessions.read().unwrap();
-            if sessions
+            let kernel_sessions = kernel_sessions.read().unwrap();
+            if kernel_sessions
                 .iter()
-                .find(|s| s.session_id == session_id)
+                .find(|s| s.connection.session_id == session_id)
                 .is_none()
             {
                 let err = KSError::SessionNotFound(session_id.clone());
@@ -274,9 +284,46 @@ where
             }
         };
 
+        let client_sessions: Arc<RwLock<Vec<ClientSession>>> = self.client_sessions.clone();
+        {
+            // Check if the session already exists
+            let client_sessions = client_sessions.read().unwrap();
+            if client_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+                .is_some()
+            {
+                let err = KSError::SessionConnected(session_id.clone());
+                err.log();
+
+                // Serialize the error to JSON
+                let err = err.to_json(None);
+                let err = serde_json::to_string(&err).unwrap();
+                let mut response = Response::new(err.into());
+                *response.status_mut() = StatusCode::BAD_REQUEST;
+                return Ok(response);
+            }
+        }
+
         tokio::task::spawn(async move {
             match hyper::upgrade::on(&mut request).await {
                 Ok(upgraded) => {
+                    log::debug!("Creating session for websocket connection");
+
+                    // Find the kernel session with the given ID
+                    let mut client_session = {
+                        let sessions = kernel_sessions.read().unwrap();
+                        let session = sessions
+                            .iter()
+                            .find(|s| s.connection.session_id == session_id)
+                            .expect("Session not found");
+
+                        let ws_zmq_tx = session.ws_zmq_tx.clone();
+                        let ws_json_rx = session.ws_json_rx.clone();
+                        let connection = session.connection.clone();
+                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx)
+                    };
+
                     log::debug!(
                         "Connection upgraded to websocket for session '{}'",
                         session_id
@@ -284,14 +331,7 @@ where
 
                     let stream =
                         WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
-
-                    // Find the session with the given ID
-                    let mut sessions = sessions.write().unwrap();
-                    let session = sessions
-                        .iter_mut()
-                        .find(|s| s.session_id == session_id)
-                        .expect("Session not found");
-                    session.handle_channel_ws(stream).await;
+                    client_session.handle_channel_ws(stream).await;
                 }
                 Err(e) => {
                     log::error!("Failed to upgrade channel connection to websocket: {}", e);

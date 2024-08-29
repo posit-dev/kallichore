@@ -107,3 +107,8 @@ impl From<ZmqMessage> for WireMessage {
         Self { parts }
     }
 }
+
+pub struct ZmqChannelMessage {
+    pub channel: JupyterChannel,
+    pub message: ZmqMessage,
+}
