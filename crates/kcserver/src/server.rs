@@ -291,7 +291,7 @@ where
                         .iter_mut()
                         .find(|s| s.session_id == session_id)
                         .expect("Session not found");
-                    session.handle_channel_ws(stream);
+                    session.handle_channel_ws(stream).await;
                 }
                 Err(e) => {
                     log::error!("Failed to upgrade channel connection to websocket: {}", e);
