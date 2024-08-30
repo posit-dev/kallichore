@@ -6,7 +6,7 @@
 //
 
 use async_channel::{Receiver, Sender};
-use kcshared::jupyter_message::JupyterChannel;
+use kcshared::{jupyter_message::JupyterChannel, websocket_message::WebsocketMessage};
 use tokio::select;
 use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
 
@@ -16,13 +16,26 @@ use crate::{
     wire_message::{WireMessage, ZmqChannelMessage},
 };
 
+/// Forward a message from a ZeroMQ socket to a WebSocket channel.
+///
+/// - `channel`: The channel to forward the message to
+/// - `message`: The message to forward
+/// - `ws_json_tx`: The channel to send JSON messages to the WebSocket
 async fn forward_zmq(
     channel: JupyterChannel,
     message: ZmqMessage,
     ws_json_tx: Sender<String>,
 ) -> Result<(), anyhow::Error> {
+    // (1) convert the raw parts/frames of the message into a `WireMessage`.
     let message = WireMessage::from(message);
+
+    // (2) convert it into a Jupyter message; this can fail if the message is
+    // not a valid Jupyter message.
     let message = message.to_jupyter(channel)?;
+
+    // (3) wrap the Jupyter message in a `WebsocketMessage::Jupyter` and send it
+    // to the WebSocket.
+    let message = WebsocketMessage::Jupyter(message);
     let payload = serde_json::to_string(&message)?;
     match ws_json_tx.send(payload).await {
         Ok(_) => Ok(()),
