@@ -695,6 +695,18 @@ pub struct SessionListSessionsInner {
     #[serde(rename = "username")]
     pub username: String,
 
+    /// Whether the session is connected to a client
+    #[serde(rename = "connected")]
+    pub connected: bool,
+
+    /// An ISO 8601 timestamp of when the session was started
+    #[serde(rename = "started")]
+    pub started: chrono::DateTime<chrono::Utc>,
+
+    /// The session's current working directory
+    #[serde(rename = "working_directory")]
+    pub working_directory: String,
+
     #[serde(rename = "status")]
     pub status: models::Status,
 }
@@ -705,6 +717,9 @@ impl SessionListSessionsInner {
         session_id: String,
         argv: Vec<String>,
         username: String,
+        connected: bool,
+        started: chrono::DateTime<chrono::Utc>,
+        working_directory: String,
         status: models::Status,
     ) -> SessionListSessionsInner {
         SessionListSessionsInner {
@@ -712,6 +727,9 @@ impl SessionListSessionsInner {
             argv,
             process_id: None,
             username,
+            connected,
+            started,
+            working_directory,
             status,
         }
     }
@@ -738,6 +756,11 @@ impl std::string::ToString for SessionListSessionsInner {
                 .map(|process_id| ["process_id".to_string(), process_id.to_string()].join(",")),
             Some("username".to_string()),
             Some(self.username.to_string()),
+            Some("connected".to_string()),
+            Some(self.connected.to_string()),
+            // Skipping started in query parameter serialization
+            Some("working_directory".to_string()),
+            Some(self.working_directory.to_string()),
             // Skipping status in query parameter serialization
         ];
 
@@ -760,6 +783,9 @@ impl std::str::FromStr for SessionListSessionsInner {
             pub argv: Vec<Vec<String>>,
             pub process_id: Vec<i32>,
             pub username: Vec<String>,
+            pub connected: Vec<bool>,
+            pub started: Vec<chrono::DateTime<chrono::Utc>>,
+            pub working_directory: Vec<String>,
             pub status: Vec<models::Status>,
         }
 
@@ -790,6 +816,12 @@ impl std::str::FromStr for SessionListSessionsInner {
                     #[allow(clippy::redundant_clone)]
                     "username" => intermediate_rep.username.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     #[allow(clippy::redundant_clone)]
+                    "connected" => intermediate_rep.connected.push(<bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    #[allow(clippy::redundant_clone)]
+                    "started" => intermediate_rep.started.push(<chrono::DateTime::<chrono::Utc> as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    #[allow(clippy::redundant_clone)]
+                    "working_directory" => intermediate_rep.working_directory.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    #[allow(clippy::redundant_clone)]
                     "status" => intermediate_rep.status.push(<models::Status as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     _ => return std::result::Result::Err("Unexpected key while parsing SessionListSessionsInner".to_string())
                 }
@@ -817,6 +849,23 @@ impl std::str::FromStr for SessionListSessionsInner {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "username missing in SessionListSessionsInner".to_string())?,
+            connected: intermediate_rep
+                .connected
+                .into_iter()
+                .next()
+                .ok_or_else(|| "connected missing in SessionListSessionsInner".to_string())?,
+            started: intermediate_rep
+                .started
+                .into_iter()
+                .next()
+                .ok_or_else(|| "started missing in SessionListSessionsInner".to_string())?,
+            working_directory: intermediate_rep
+                .working_directory
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    "working_directory missing in SessionListSessionsInner".to_string()
+                })?,
             status: intermediate_rep
                 .status
                 .into_iter()
@@ -886,10 +935,14 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
 )]
 #[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
 pub enum Status {
-    #[serde(rename = "idle")]
-    Idle,
+    #[serde(rename = "uninitialized")]
+    Uninitialized,
     #[serde(rename = "starting")]
     Starting,
+    #[serde(rename = "idle")]
+    Idle,
+    #[serde(rename = "busy")]
+    Busy,
     #[serde(rename = "exited")]
     Exited,
 }
@@ -897,8 +950,10 @@ pub enum Status {
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
-            Status::Idle => write!(f, "idle"),
+            Status::Uninitialized => write!(f, "uninitialized"),
             Status::Starting => write!(f, "starting"),
+            Status::Idle => write!(f, "idle"),
+            Status::Busy => write!(f, "busy"),
             Status::Exited => write!(f, "exited"),
         }
     }
@@ -909,8 +964,10 @@ impl std::str::FromStr for Status {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "idle" => std::result::Result::Ok(Status::Idle),
+            "uninitialized" => std::result::Result::Ok(Status::Uninitialized),
             "starting" => std::result::Result::Ok(Status::Starting),
+            "idle" => std::result::Result::Ok(Status::Idle),
+            "busy" => std::result::Result::Ok(Status::Busy),
             "exited" => std::result::Result::Ok(Status::Exited),
             _ => std::result::Result::Err(format!("Value not valid: {}", s)),
         }

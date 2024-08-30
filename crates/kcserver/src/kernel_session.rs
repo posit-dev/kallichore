@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
+use chrono::{DateTime, Utc};
 use kallichore_api::models;
 use tokio::sync::RwLock;
 
@@ -33,6 +34,10 @@ pub struct KernelSession {
     /// The current state of the kernel
     pub state: Arc<RwLock<KernelState>>,
 
+    /// The date and time the kernel was started
+    pub started: DateTime<Utc>,
+
+    /// The date and time the kernel was started, as an ISO 8601 string
     pub ws_json_tx: Sender<String>,
     pub ws_json_rx: Receiver<String>,
     pub ws_zmq_tx: Sender<ZmqChannelMessage>,
@@ -61,8 +66,11 @@ impl KernelSession {
         // Add an unbounded MPSC channel to the session
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<ZmqChannelMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<String>();
-        let kernel_state = Arc::new(RwLock::new(KernelState::new()));
+        let kernel_state = Arc::new(RwLock::new(KernelState::new(
+            session.working_directory.clone(),
+        )));
         let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
+        let started = Utc::now();
         let kernel_session = KernelSession {
             argv: session.argv,
             process_id: pid,
@@ -72,6 +80,7 @@ impl KernelSession {
             ws_zmq_tx: zmq_tx,
             ws_zmq_rx: zmq_rx,
             connection,
+            started,
         };
 
         tokio::spawn(async move {

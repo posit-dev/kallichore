@@ -130,8 +130,10 @@
         "type": "string",
         "description": "The status of the session",
         "enum": [
-          "idle",
+          "uninitialized",
           "starting",
+          "idle",
+          "busy",
           "exited"
         ]
       },
@@ -203,6 +205,19 @@
                   "type": "string",
                   "description": "The username of the user who owns the session"
                 },
+                "connected": {
+                  "type": "boolean",
+                  "description": "Whether the session is connected to a client"
+                },
+                "started": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "An ISO 8601 timestamp of when the session was started"
+                },
+                "working_directory": {
+                  "type": "string",
+                  "description": "The session's current working directory"
+                },
                 "status": {
                   "$ref": "#/components/schemas/status"
                 }
@@ -211,6 +226,9 @@
                 "session_id",
                 "argv",
                 "username",
+                "started",
+                "connected",
+                "working_directory",
                 "status"
               ]
             }

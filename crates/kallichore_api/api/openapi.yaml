@@ -85,8 +85,10 @@ components:
     status:
       description: The status of the session
       enum:
-      - idle
+      - uninitialized
       - starting
+      - idle
+      - busy
       - exited
       type: string
     session:
@@ -121,20 +123,26 @@ components:
       example:
         total: 0
         sessions:
-        - process_id: 6
+        - connected: true
+          process_id: 6
           session_id: session_id
+          started: 2000-01-23T04:56:07.000+00:00
+          working_directory: working_directory
           argv:
           - argv
           - argv
           username: username
-          status: idle
-        - process_id: 6
+          status: uninitialized
+        - connected: true
+          process_id: 6
           session_id: session_id
+          started: 2000-01-23T04:56:07.000+00:00
+          working_directory: working_directory
           argv:
           - argv
           - argv
           username: username
-          status: idle
+          status: uninitialized
       properties:
         total:
           type: integer
@@ -158,13 +166,16 @@ components:
       type: object
     sessionList_sessions_inner:
       example:
+        connected: true
         process_id: 6
         session_id: session_id
+        started: 2000-01-23T04:56:07.000+00:00
+        working_directory: working_directory
         argv:
         - argv
         - argv
         username: username
-        status: idle
+        status: uninitialized
       properties:
         session_id:
           description: A unique identifier for the session
@@ -181,12 +192,25 @@ components:
         username:
           description: The username of the user who owns the session
           type: string
+        connected:
+          description: Whether the session is connected to a client
+          type: boolean
+        started:
+          description: An ISO 8601 timestamp of when the session was started
+          format: date-time
+          type: string
+        working_directory:
+          description: The session's current working directory
+          type: string
         status:
           $ref: '#/components/schemas/status'
       required:
       - argv
+      - connected
       - session_id
+      - started
       - status
       - username
+      - working_directory
       type: object
 

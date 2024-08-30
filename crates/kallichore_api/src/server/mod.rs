@@ -1,7 +1,12 @@
 use futures::{future, future::BoxFuture, future::FutureExt, stream, stream::TryStreamExt, Stream};
+// --- Start Kallichore ---
+/*
 use hyper::header::{
     HeaderName, HeaderValue, CONNECTION, CONTENT_TYPE, SEC_WEBSOCKET_KEY, UPGRADE,
 };
+*/
+use hyper::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+// --- End Kallichore ---
 use hyper::{Body, HeaderMap, Request, Response, StatusCode};
 use log::warn;
 #[allow(unused_imports)]
@@ -150,9 +155,15 @@ where
             C: Has<XSpanIdString> + Send + Sync + 'static,
         {
             let (request, context) = req;
+            // --- Start Kallichore ---
+            /*
+            let (parts, body) = request.into_parts();
+            let (method, uri, headers) = (parts.method, parts.uri, parts.headers);
+            */
             let method = request.method().clone();
             let uri = request.uri().clone();
             let headers = request.headers().clone();
+            // --- End Kallichore ---
             let path = paths::GLOBAL_REGEX_SET.matches(uri.path());
 
             match method {
