@@ -317,7 +317,7 @@ where
                     log::debug!("Creating session for websocket connection");
 
                     // Find the kernel session with the given ID
-                    let mut client_session = {
+                    let client_session = {
                         let sessions = kernel_sessions.read().unwrap();
                         let session = sessions
                             .iter()

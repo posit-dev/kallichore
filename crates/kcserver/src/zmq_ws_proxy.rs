@@ -44,6 +44,9 @@ pub async fn zmq_ws_proxy(
     let mut shell_socket = DealerSocket::new();
     let mut hb_socket = ReqSocket::new();
     let mut iopub_socket = SubSocket::new();
+    let mut control_socket = DealerSocket::new();
+    let mut stdin_socket = DealerSocket::new();
+
     shell_socket
         .connect(
             format!(
@@ -84,6 +87,34 @@ pub async fn zmq_ws_proxy(
     // Subscribe to all messages
     iopub_socket.subscribe("").await?;
 
+    control_socket
+        .connect(
+            format!(
+                "tcp://{}:{}",
+                connection_file.ip, connection_file.control_port
+            )
+            .as_str(),
+        )
+        .await?;
+    log::trace!(
+        "Connected to control socket on port {}",
+        connection_file.control_port
+    );
+
+    stdin_socket
+        .connect(
+            format!(
+                "tcp://{}:{}",
+                connection_file.ip, connection_file.stdin_port
+            )
+            .as_str(),
+        )
+        .await?;
+    log::trace!(
+        "Connected to stdin socket on port {}",
+        connection_file.stdin_port
+    );
+
     log::trace!("Listening for messages from kernel");
 
     // Wait for a message from any socket
@@ -112,6 +143,28 @@ pub async fn zmq_ws_proxy(
                     },
                 }
             },
+            control_msg = control_socket.recv() => {
+                match control_msg {
+                    Ok(msg) => {
+                        log::info!("Received message: {:?}", msg);
+                        forward_zmq(JupyterChannel::Control, msg, ws_json_tx.clone()).await?;
+                    },
+                    Err(e) => {
+                        log::error!("Failed to receive message from control socket: {}", e);
+                    },
+                }
+            },
+            stdin_msg = stdin_socket.recv() => {
+                match stdin_msg {
+                    Ok(msg) => {
+                        log::info!("Received message: {:?}", msg);
+                        forward_zmq(JupyterChannel::Stdin, msg, ws_json_tx.clone()).await?;
+                    },
+                    Err(e) => {
+                        log::error!("Failed to receive message from iopub socket: {}", e);
+                    },
+                }
+            },
             ws_msg = ws_zmq_rx.recv() => {
                 match ws_msg {
                     Ok(msg) => {
@@ -121,6 +174,16 @@ pub async fn zmq_ws_proxy(
                                 log::trace!("Sending message to shell socket");
                                 shell_socket.send(msg.message).await?;
                                 log::trace!("Sent message to shell socket");
+                            },
+                            JupyterChannel::Control => {
+                                log::trace!("Sending message to control socket");
+                                control_socket.send(msg.message).await?;
+                                log::trace!("Sent message to control socket");
+                            },
+                            JupyterChannel::Stdin => {
+                                log::trace!("Sending message to stdin socket");
+                                stdin_socket.send(msg.message).await?;
+                                log::trace!("Sent message to stdin socket");
                             },
                             _ => {
                                 log::error!("Unsupported channel: {:?}", msg.channel);

@@ -42,7 +42,7 @@ impl ClientSession {
             ws_zmq_tx,
         }
     }
-    pub async fn handle_channel_ws(&mut self, mut ws_stream: WebSocketStream<Upgraded>) {
+    pub async fn handle_channel_ws(&self, mut ws_stream: WebSocketStream<Upgraded>) {
         loop {
             select! {
                 from_socket = ws_stream.next() => {
