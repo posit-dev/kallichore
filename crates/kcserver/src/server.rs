@@ -339,7 +339,8 @@ where
                         let ws_zmq_tx = session.ws_zmq_tx.clone();
                         let ws_json_rx = session.ws_json_rx.clone();
                         let connection = session.connection.clone();
-                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx)
+                        let state = session.state.clone();
+                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
                     };
 
                     log::debug!(

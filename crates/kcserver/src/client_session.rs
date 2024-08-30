@@ -5,6 +5,8 @@
 //
 //
 
+use std::sync::Arc;
+
 use async_channel::Receiver;
 use async_channel::Sender;
 use bytes::Bytes;
@@ -13,11 +15,13 @@ use futures::StreamExt;
 use hyper::upgrade::Upgraded;
 use kcshared::jupyter_message::JupyterMessage;
 use tokio::select;
+use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use zeromq::ZmqMessage;
 
 use crate::kernel_connection::KernelConnection;
+use crate::kernel_state::KernelState;
 use crate::wire_message::WireMessage;
 use crate::wire_message::ZmqChannelMessage;
 use crate::wire_message::MSG_DELIM;
@@ -26,6 +30,7 @@ pub struct ClientSession {
     pub connection: KernelConnection,
     ws_json_rx: Receiver<String>,
     ws_zmq_tx: Sender<ZmqChannelMessage>,
+    state: Arc<RwLock<KernelState>>,
 }
 
 impl ClientSession {
@@ -33,11 +38,13 @@ impl ClientSession {
         connection: KernelConnection,
         ws_json_rx: Receiver<String>,
         ws_zmq_tx: Sender<ZmqChannelMessage>,
+        state: Arc<RwLock<KernelState>>,
     ) -> Self {
         Self {
             connection,
             ws_json_rx,
             ws_zmq_tx,
+            state,
         }
     }
 
@@ -95,6 +102,13 @@ impl ClientSession {
     }
 
     pub async fn handle_channel_ws(&self, mut ws_stream: WebSocketStream<Upgraded>) {
+        // Mark the session as connected
+        {
+            let mut state = self.state.write().await;
+            state.connected = true;
+        }
+
+        // Loop to handle messages from the websocket and the ZMQ channel
         loop {
             select! {
                 from_socket = ws_stream.next() => {
@@ -103,12 +117,12 @@ impl ClientSession {
                             Ok(data) => data.into_data(),
                             Err(e) => {
                                 log::error!("Failed to read data from websocket: {}", e);
-                                return;
+                                break;
                             }
                         },
                         None => {
                             log::error!("No data from websocket");
-                            return;
+                            break;
                         }
                     };
                     self.handle_ws_message(data).await;
@@ -129,6 +143,12 @@ impl ClientSession {
                     }
                 }
             }
+        }
+
+        // Mark the session as disconnected
+        {
+            let mut state = self.state.write().await;
+            state.connected = false;
         }
     }
 }
