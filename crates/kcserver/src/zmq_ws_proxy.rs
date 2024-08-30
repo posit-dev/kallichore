@@ -33,6 +33,20 @@ async fn forward_zmq(
     }
 }
 
+/// Establish a proxy between a ZeroMQ connection and a WebSocket connection.
+///
+/// This function forms the ZeroMQ side of the proxy, receiving messages from
+/// the ZeroMQ connection and forwarding them to a channel that delivers them to
+/// the WebSocket. It also listens for messages from the WebSocket and forwards
+/// them to the ZeroMQ connection.
+///
+/// - `connection`: Metadata about the kernel connection
+/// - `connection_file`: The connection file for the kernel (names the sockets
+///    and ports)
+/// - `ws_json_tx`: A channel to send JSON messages to the WebSocket
+/// - `ws_zmq_rx`: A channel to receive messages from the WebSocket
+///
+/// Async; does not return until the connection is closed.
 pub async fn zmq_ws_proxy(
     connection: KernelConnection,
     connection_file: ConnectionFile,

@@ -17,12 +17,10 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 use zeromq::ZmqMessage;
 
-/// Separates ZeroMQ socket identities from the message body payload.
-const MSG_DELIM: &[u8] = b"<IDS|MSG>";
-
 use crate::kernel_connection::KernelConnection;
 use crate::wire_message::WireMessage;
 use crate::wire_message::ZmqChannelMessage;
+use crate::wire_message::MSG_DELIM;
 
 pub struct ClientSession {
     pub connection: KernelConnection,
@@ -42,6 +40,60 @@ impl ClientSession {
             ws_zmq_tx,
         }
     }
+
+    async fn handle_ws_message(&self, data: Vec<u8>) {
+        // parse the message into a JupyterMessage
+        let channel_message = serde_json::from_slice::<JupyterMessage>(&data);
+
+        // if the message is not a Jupyter message, log an error and return
+        let channel_message = match channel_message {
+            Ok(channel_message) => channel_message,
+            Err(e) => {
+                log::error!("Failed to parse Jupyter message: {}", e);
+                return;
+            }
+        };
+
+        // Log the message ID and type
+        log::info!(
+            "Got message {} of type {}",
+            channel_message.header.msg_id.clone(),
+            channel_message.header.msg_type.clone()
+        );
+
+        // Convert the message to a wire message
+        let channel = channel_message.channel.clone();
+        let wire_message = WireMessage::from_jupyter(
+            channel_message,
+            self.connection.session_id.clone(),
+            self.connection.username.clone(),
+            self.connection.hmac_key.clone(),
+        )
+        .unwrap();
+
+        let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
+        for part in wire_message.parts {
+            zmq_mesage.push_back(Bytes::from(part));
+        }
+
+        log::trace!("Sending message to Jupyter");
+        match self
+            .ws_zmq_tx
+            .send(ZmqChannelMessage {
+                channel,
+                message: zmq_mesage,
+            })
+            .await
+        {
+            Ok(_) => {
+                log::trace!("Sent message to Jupyter");
+            }
+            Err(e) => {
+                log::error!("Failed to send message to Jupyter: {}", e);
+            }
+        }
+    }
+
     pub async fn handle_channel_ws(&self, mut ws_stream: WebSocketStream<Upgraded>) {
         loop {
             select! {
@@ -59,53 +111,7 @@ impl ClientSession {
                             return;
                         }
                     };
-
-                    // parse the message into a JupyterMessage
-                    let channel_message = serde_json::from_slice::<JupyterMessage>(&data);
-
-                    // if the message is not a Jupyter message, log an error and return
-                    let channel_message = match channel_message {
-                        Ok(channel_message) => channel_message,
-                        Err(e) => {
-                            log::error!("Failed to parse Jupyter message: {}", e);
-                            return;
-                        }
-                    };
-
-                    // Log the message ID and type
-                    log::info!(
-                        "Got message {} of type {}",
-                        channel_message.header.msg_id.clone(),
-                        channel_message.header.msg_type.clone()
-                    );
-
-                    // Convert the message to a wire message
-                    let channel = channel_message.channel.clone();
-                    let wire_message = WireMessage::from_jupyter(
-                        channel_message,
-                        self.connection.session_id.clone(),
-                        self.connection.username.clone(),
-                        self.connection.hmac_key.clone(),
-                    )
-                    .unwrap();
-
-                    let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
-                    for part in wire_message.parts {
-                        zmq_mesage.push_back(Bytes::from(part));
-                    }
-
-                    log::trace!("Sending message to Jupyter");
-                    match self.ws_zmq_tx.send(ZmqChannelMessage {
-                        channel,
-                        message: zmq_mesage,
-                    }).await {
-                        Ok(_) => {
-                            log::trace!("Sent message to Jupyter");
-                        }
-                        Err(e) => {
-                            log::error!("Failed to send message to Jupyter: {}", e);
-                        }
-                    }
+                    self.handle_ws_message(data).await;
                 },
                 json = self.ws_json_rx.recv() => {
                     match json {

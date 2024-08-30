@@ -6,7 +6,7 @@
 //
 
 /// Separates ZeroMQ socket identities from the message body payload.
-const MSG_DELIM: &[u8] = b"<IDS|MSG>";
+pub const MSG_DELIM: &[u8] = b"<IDS|MSG>";
 
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
 use sha2::Sha256;
