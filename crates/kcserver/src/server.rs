@@ -103,15 +103,12 @@ where
         // Create a list of session metadata
         let mut result: Vec<models::SessionListSessionsInner> = Vec::new();
         for s in sessions.iter() {
-            let state = {
-                let state = s.state.read().await;
-                state.clone()
-            };
+            let state = s.state.read().await;
             result.push(models::SessionListSessionsInner {
                 session_id: s.connection.session_id.clone(),
                 username: s.connection.username.clone(),
                 argv: s.argv.clone(),
-                process_id: match s.process_id {
+                process_id: match state.process_id {
                     Some(pid) => Some(pid as i32),
                     None => None,
                 },
