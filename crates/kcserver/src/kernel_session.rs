@@ -12,6 +12,7 @@ use std::sync::Arc;
 use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Utc};
 use kallichore_api::models;
+use kcshared::{kernel_message::KernelMessage, websocket_message::WebsocketMessage};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -75,7 +76,7 @@ impl KernelSession {
             argv: session.argv,
             process_id: pid,
             state: kernel_state.clone(),
-            ws_json_tx: json_tx,
+            ws_json_tx: json_tx.clone(),
             ws_json_rx: json_rx,
             ws_zmq_tx: zmq_tx,
             ws_zmq_rx: zmq_rx,
@@ -93,6 +94,12 @@ impl KernelSession {
                 session.session_id,
                 status
             );
+            let code = status.code().unwrap_or(-1);
+            let event = WebsocketMessage::Kernel(KernelMessage::Exited(code));
+            json_tx
+                .send(serde_json::to_string(&event).unwrap())
+                .await
+                .expect("Failed to send exit event to client");
         });
 
         Ok(kernel_session)

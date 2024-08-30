@@ -25,14 +25,6 @@ pub enum KernelStatus {
     Exited,
 }
 
-/// An event that indicates that the kernel has exited
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum KernelExited {
-    /// The kernel exited with a specific exit code
-    Code(i32),
-}
-
 /// Messages that are sent from Kallichore to the client about the kernel
 /// itself. For messages bridging the Jupyter protocol, see `JupyterMessage`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,5 +34,5 @@ pub enum KernelMessage {
     Status(KernelStatus),
 
     /// The kernel has exited
-    Exited(KernelExited),
+    Exited(i32),
 }
