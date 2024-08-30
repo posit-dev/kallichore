@@ -24,7 +24,7 @@ use crate::{
 async fn forward_zmq(
     channel: JupyterChannel,
     message: ZmqMessage,
-    ws_json_tx: Sender<String>,
+    ws_json_tx: Sender<WebsocketMessage>,
 ) -> Result<(), anyhow::Error> {
     // (1) convert the raw parts/frames of the message into a `WireMessage`.
     let message = WireMessage::from(message);
@@ -36,8 +36,7 @@ async fn forward_zmq(
     // (3) wrap the Jupyter message in a `WebsocketMessage::Jupyter` and send it
     // to the WebSocket.
     let message = WebsocketMessage::Jupyter(message);
-    let payload = serde_json::to_string(&message)?;
-    match ws_json_tx.send(payload).await {
+    match ws_json_tx.send(message).await {
         Ok(_) => Ok(()),
         Err(e) => Err(anyhow::anyhow!(
             "Failed to send message to websocket: {}",
@@ -63,7 +62,7 @@ async fn forward_zmq(
 pub async fn zmq_ws_proxy(
     connection: KernelConnection,
     connection_file: ConnectionFile,
-    ws_json_tx: Sender<String>,
+    ws_json_tx: Sender<WebsocketMessage>,
     ws_zmq_rx: Receiver<ZmqChannelMessage>,
 ) -> Result<(), anyhow::Error> {
     log::trace!("Connecting to kernel for session {}", connection.session_id);

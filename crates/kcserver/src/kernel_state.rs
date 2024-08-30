@@ -29,12 +29,12 @@ pub struct KernelState {
 
     /// A channel to send JSON messages to the WebSocket, for automatically
     /// publishing kernel status updates.
-    ws_json_tx: Sender<String>,
+    ws_json_tx: Sender<WebsocketMessage>,
 }
 
 impl KernelState {
     /// Create a new kernel state.
-    pub fn new(working_directory: String, ws_json_tx: Sender<String>) -> Self {
+    pub fn new(working_directory: String, ws_json_tx: Sender<WebsocketMessage>) -> Self {
         KernelState {
             status: models::Status::Idle,
             working_directory,
@@ -50,9 +50,6 @@ impl KernelState {
 
         // Publish the new status to the WebSocket
         let status_message = WebsocketMessage::Kernel(KernelMessage::Status(status.clone()));
-        self.ws_json_tx
-            .send(serde_json::to_string(&status_message).unwrap())
-            .await
-            .unwrap();
+        self.ws_json_tx.send(status_message).await.unwrap();
     }
 }

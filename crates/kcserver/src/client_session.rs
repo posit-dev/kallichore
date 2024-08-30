@@ -14,6 +14,7 @@ use futures::SinkExt;
 use futures::StreamExt;
 use hyper::upgrade::Upgraded;
 use kcshared::jupyter_message::JupyterMessage;
+use kcshared::websocket_message::WebsocketMessage;
 use tokio::select;
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
@@ -28,7 +29,7 @@ use crate::wire_message::MSG_DELIM;
 
 pub struct ClientSession {
     pub connection: KernelConnection,
-    ws_json_rx: Receiver<String>,
+    ws_json_rx: Receiver<WebsocketMessage>,
     ws_zmq_tx: Sender<ZmqChannelMessage>,
     state: Arc<RwLock<KernelState>>,
 }
@@ -36,7 +37,7 @@ pub struct ClientSession {
 impl ClientSession {
     pub fn new(
         connection: KernelConnection,
-        ws_json_rx: Receiver<String>,
+        ws_json_rx: Receiver<WebsocketMessage>,
         ws_zmq_tx: Sender<ZmqChannelMessage>,
         state: Arc<RwLock<KernelState>>,
     ) -> Self {
@@ -130,6 +131,7 @@ impl ClientSession {
                 json = self.ws_json_rx.recv() => {
                     match json {
                         Ok(json) => {
+                            let json = serde_json::to_string(&json).unwrap();
                             match ws_stream.send(Message::text(json)).await {
                                 Ok(_) => {}
                                 Err(e) => {

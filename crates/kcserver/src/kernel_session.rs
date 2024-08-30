@@ -41,10 +41,10 @@ pub struct KernelSession {
     pub started: DateTime<Utc>,
 
     /// The channel to send JSON messages to the WebSocket
-    pub ws_json_tx: Sender<String>,
+    pub ws_json_tx: Sender<WebsocketMessage>,
 
     /// The channel to receive JSON messages from the WebSocket
-    pub ws_json_rx: Receiver<String>,
+    pub ws_json_rx: Receiver<WebsocketMessage>,
 
     /// The channel to send ZMQ messages to the kernel
     pub ws_zmq_tx: Sender<ZmqChannelMessage>,
@@ -60,7 +60,7 @@ impl KernelSession {
         connection_file: connection_file::ConnectionFile,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<ZmqChannelMessage>();
-        let (json_tx, json_rx) = async_channel::unbounded::<String>();
+        let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
             session.working_directory.clone(),
             json_tx.clone(),
@@ -119,7 +119,7 @@ impl KernelSession {
         let code = status.code().unwrap_or(-1);
         let event = WebsocketMessage::Kernel(KernelMessage::Exited(code));
         self.ws_json_tx
-            .send(serde_json::to_string(&event).unwrap())
+            .send(event)
             .await
             .expect("Failed to send exit event to client");
     }
