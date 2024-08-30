@@ -7,12 +7,18 @@
 
 //! Wraps Jupyter kernel sessions.
 
+use std::sync::Arc;
+
 use async_channel::{Receiver, Sender};
 use kallichore_api::models;
+use tokio::sync::RwLock;
 
 use crate::{
-    connection_file, kernel_connection::KernelConnection, wire_message::ZmqChannelMessage,
+    connection_file, kernel_connection::KernelConnection, kernel_state::KernelState,
+    wire_message::ZmqChannelMessage,
 };
+
+#[derive(Debug, Clone)]
 pub struct KernelSession {
     /// Metadata about the session
     pub connection: KernelConnection,
@@ -24,8 +30,8 @@ pub struct KernelSession {
     /// The process ID of the kernel
     pub process_id: Option<u32>,
 
-    /// The current status of the kernel
-    pub status: models::Status,
+    /// The current state of the kernel
+    pub state: Arc<RwLock<KernelState>>,
 
     pub ws_json_tx: Sender<String>,
     pub ws_json_rx: Receiver<String>,
@@ -55,12 +61,12 @@ impl KernelSession {
         // Add an unbounded MPSC channel to the session
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<ZmqChannelMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<String>();
-
+        let kernel_state = Arc::new(RwLock::new(KernelState::new()));
         let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
-        let mut kernel_session = KernelSession {
+        let kernel_session = KernelSession {
             argv: session.argv,
             process_id: pid,
-            status: models::Status::Idle,
+            state: kernel_state.clone(),
             ws_json_tx: json_tx,
             ws_json_rx: json_rx,
             ws_zmq_tx: zmq_tx,
@@ -71,7 +77,8 @@ impl KernelSession {
         tokio::spawn(async move {
             let status = child.wait().await.expect("Failed to wait on child process");
             // update the status of the session
-            kernel_session.status = models::Status::Exited;
+            let mut state = kernel_state.write().await;
+            state.status = models::Status::Exited;
             log::info!(
                 "Child process for session {} exited with status: {}",
                 session.session_id,

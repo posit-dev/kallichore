@@ -94,11 +94,20 @@ where
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError> {
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
 
-        let sessions = self.kernel_sessions.read().unwrap();
-        // Convert the vector of sessions to a vector of SessionsListSessionsInner
-        let sessions: Vec<models::SessionListSessionsInner> = sessions
-            .iter()
-            .map(|s| models::SessionListSessionsInner {
+        // Make a copy of the active session list to avoid holding the lock
+        let sessions = {
+            let sessions = self.kernel_sessions.read().unwrap();
+            sessions.clone()
+        };
+
+        // Create a list of session metadata
+        let mut result: Vec<models::SessionListSessionsInner> = Vec::new();
+        for s in sessions.iter() {
+            let status = {
+                let state = s.state.read().await;
+                state.status.clone()
+            };
+            result.push(models::SessionListSessionsInner {
                 session_id: s.connection.session_id.clone(),
                 username: s.connection.username.clone(),
                 argv: s.argv.clone(),
@@ -106,12 +115,12 @@ where
                     Some(pid) => Some(pid as i32),
                     None => None,
                 },
-                status: s.status.clone(),
-            })
-            .collect();
+                status,
+            });
+        }
         let session_list = models::SessionList {
-            total: sessions.len() as i32,
-            sessions: sessions.clone(),
+            total: result.len() as i32,
+            sessions: result.clone(),
         };
         Ok(ListSessionsResponse::ListOfActiveSessions(session_list))
     }

@@ -16,6 +16,7 @@ mod connection_file;
 mod error;
 mod kernel_connection;
 mod kernel_session;
+mod kernel_state;
 mod server;
 mod wire_message;
 mod wire_message_header;
