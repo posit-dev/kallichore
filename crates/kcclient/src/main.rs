@@ -123,7 +123,7 @@ fn main() {
     env_logger::init();
 
     // Read command line arguments
-    let args = Args::try_parse().unwrap();
+    let args = Args::parse();
 
     let context: ClientContext = swagger::make_context!(
         ContextBuilder,
