@@ -281,8 +281,32 @@ where
         _context: &C,
     ) -> Result<StartSessionResponse, ApiError> {
         info!("start session: {}", session_id);
-        // TODO
-        Ok(StartSessionResponse::Started(serde_json::Value::Null))
+        let kernel_sessions = self.kernel_sessions.clone();
+        let kernel_session = {
+            let kernel_sessions = kernel_sessions.read().unwrap();
+            let kernel_session = match kernel_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+            {
+                Some(s) => s,
+                None => {
+                    let err = KSError::SessionNotFound(session_id.clone());
+                    err.log();
+                    return Ok(StartSessionResponse::StartFailed(err.to_json(Some(
+                        "Starting a session requires a valid session ID; create the session before starting it.".to_string(),
+                    ))));
+                }
+            };
+            kernel_session.clone()
+        };
+        match kernel_session.start().await {
+            Ok(_) => Ok(StartSessionResponse::Started(serde_json::Value::Null)),
+            Err(e) => {
+                let error = KSError::SessionStartFailed(e);
+                error.log();
+                Ok(StartSessionResponse::StartFailed(error.to_json(None)))
+            }
+        }
     }
 
     async fn channels_websocket_request(

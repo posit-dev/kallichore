@@ -234,7 +234,7 @@ fn main() {
             }
 
             let session = models::Session {
-                session_id,
+                session_id: session_id.clone(),
                 argv: kernel_spec.argv,
                 username: String::from("testuser"),
                 working_directory: working_directory.to_string_lossy().to_string(),
@@ -263,6 +263,14 @@ fn main() {
                 }
                 _ => {}
             }
+
+            // Start the new session
+            let result = rt.block_on(client.start_session(session_id.clone()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
         }
         Some(Commands::Connect { session_id }) => {
             let session_id = match session_id {

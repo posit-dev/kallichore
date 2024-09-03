@@ -30,6 +30,9 @@ pub struct KernelSession {
     /// Metadata about the session
     pub connection: KernelConnection,
 
+    /// The session model that was used to create this session
+    pub model: models::Session,
+
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
     pub argv: Vec<String>,
@@ -71,28 +74,40 @@ impl KernelSession {
             argv: session.argv.clone(),
             state: kernel_state.clone(),
             ws_json_tx: json_tx.clone(),
+            model: session,
             ws_json_rx: json_rx,
             ws_zmq_tx: zmq_tx,
             ws_zmq_rx: zmq_rx,
             connection,
             started,
         };
-
-        // Start the kernel in a separate task
-        let new_session = kernel_session.clone();
-        tokio::spawn(async move {
-            new_session.start(session).await;
-        });
         Ok(kernel_session)
     }
 
-    async fn start(&self, session: models::Session) {
-        let mut child = tokio::process::Command::new(&self.argv[0])
+    pub async fn start(&self) -> Result<(), anyhow::Error> {
+        // Mark the kernel as starting
+        {
+            let mut state = self.state.write().await;
+            state.set_status(models::Status::Starting).await;
+        }
+
+        // Attempt to actually start the kernel process
+        let mut child = match tokio::process::Command::new(&self.argv[0])
             .args(&self.argv[1..])
-            .current_dir(session.working_directory.clone())
-            .envs(&session.env)
+            .current_dir(self.model.working_directory.clone())
+            .envs(&self.model.env)
             .spawn()
-            .expect("Failed to start child process");
+        {
+            Ok(child) => child,
+            Err(e) => {
+                log::error!("Failed to start kernel: {}", e);
+                {
+                    let mut state = self.state.write().await;
+                    state.set_status(models::Status::Exited).await;
+                }
+                return Err(e.into());
+            }
+        };
 
         // Get the process ID of the child process
         let pid = child.id();
@@ -100,27 +115,35 @@ impl KernelSession {
             // update the status of the session
             let mut state = self.state.write().await;
             state.process_id = pid;
-            state.set_status(models::Status::Starting).await;
         }
 
-        // Actually run the kernel! This will block until the kernel exits.
-        let status = child.wait().await.expect("Failed to wait on child process");
+        // Prepare the data needed in the thread that waits for the child process to exit
+        let kernel_state = self.state.clone();
+        let session_id = self.model.session_id.clone();
+        let ws_json_tx = self.ws_json_tx.clone();
+        tokio::spawn(async move {
+            // Actually run the kernel! This will block until the kernel exits.
+            let status = child.wait().await.expect("Failed to wait on child process");
 
-        log::info!(
-            "Child process for session {} exited with status: {}",
-            session.session_id,
-            status
-        );
-        {
-            // update the status of the session
-            let mut state = self.state.write().await;
-            state.set_status(models::Status::Exited).await;
-        }
-        let code = status.code().unwrap_or(-1);
-        let event = WebsocketMessage::Kernel(KernelMessage::Exited(code));
-        self.ws_json_tx
-            .send(event)
-            .await
-            .expect("Failed to send exit event to client");
+            log::info!(
+                "Child process for session {} exited with status: {}",
+                session_id,
+                status
+            );
+            {
+                // update the status of the session
+                let mut state = kernel_state.write().await;
+                state.set_status(models::Status::Exited).await;
+            }
+
+            let code = status.code().unwrap_or(-1);
+            let event = WebsocketMessage::Kernel(KernelMessage::Exited(code));
+            ws_json_tx
+                .send(event)
+                .await
+                .expect("Failed to send exit event to client");
+        });
+
+        Ok(())
     }
 }
