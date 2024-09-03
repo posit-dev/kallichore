@@ -23,7 +23,8 @@ use log::info;
 
 use clap::{Parser, Subcommand};
 
-use tokio_tungstenite::connect_async;
+use tokio::net::TcpStream;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use futures::stream::StreamExt;
 
@@ -65,6 +66,14 @@ enum Commands {
         #[arg(short, long)]
         session_id: Option<String>,
     },
+
+    /// Shut down a running session
+    Shutdown {
+        /// The session to shut down. Optional; if not provided, the first
+        /// running session will be used
+        #[arg(short, long)]
+        session_id: Option<String>,
+    },
 }
 
 use log::trace;
@@ -79,7 +88,10 @@ type ClientContext = swagger::make_context_ty!(
     XSpanIdString
 );
 
-async fn connect_to_session(url: String, session_id: String) {
+async fn connect_to_session(
+    url: String,
+    session_id: String,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, Box<dyn std::error::Error>> {
     // extract the host from the url
     let url = url.parse::<url::Url>().expect("Failed to parse URL");
     let authority = url.authority();
@@ -88,7 +100,33 @@ async fn connect_to_session(url: String, session_id: String) {
     info!("Connecting to {}", ws_url);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("Failed to connect");
     info!("WebSocket handshake has been successfully completed");
+    Ok(ws_stream)
+}
 
+async fn request_shutdown(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) {
+    let (mut write, read) = ws_stream.split();
+    let message = JupyterMessage {
+        header: JupyterMessageHeader {
+            msg_id: "CB2B8818-E5EB-419F-A046-23DD3B45E1BD".to_string(),
+            msg_type: "shutdown_request".to_string(),
+        },
+        parent_header: None,
+        channel: JupyterChannel::Control,
+        content: serde_json::json!({
+            "restart": false
+        }),
+        buffers: Vec::new(),
+        metadata: serde_json::json!({}),
+    };
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&message).unwrap(),
+        ))
+        .await
+        .expect("Failed to send message");
+}
+
+async fn get_kernel_info(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) {
     let (mut write, read) = ws_stream.split();
 
     let message = JupyterMessage {
@@ -245,7 +283,33 @@ fn main() {
                 }
             };
             log::info!("Connecting to session '{}'", session_id);
-            rt.block_on(connect_to_session(base_url, session_id));
+            let ws_stream = rt
+                .block_on(connect_to_session(base_url, session_id))
+                .unwrap();
+            rt.block_on(get_kernel_info(ws_stream));
+        }
+        Some(Commands::Shutdown { session_id }) => {
+            let session_id = match session_id {
+                Some(session_id) => session_id,
+                None => {
+                    let result = rt.block_on(client.list_sessions());
+                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
+                        if let Some(session) = sessions.sessions.first() {
+                            session.session_id.clone()
+                        } else {
+                            eprintln!("No sessions available to shut down");
+                            return;
+                        }
+                    } else {
+                        eprintln!("Failed to list sessions");
+                        return;
+                    }
+                }
+            };
+            log::info!("Shutting down session '{}'", session_id.clone());
+            let ws_stream = rt.block_on(connect_to_session(base_url, session_id.clone()));
+            rt.block_on(request_shutdown(ws_stream.unwrap()));
+            println!("Shutdown requested for session {} ", session_id);
         }
         None => {
             eprintln!("No command specified");
