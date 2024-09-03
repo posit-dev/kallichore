@@ -35,7 +35,10 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use kallichore_api::{models, ChannelsWebsocketResponse, NewSessionResponse};
+use kallichore_api::{
+    models, ChannelsWebsocketResponse, KillSessionResponse, NewSessionResponse,
+    StartSessionResponse,
+};
 
 pub async fn create(addr: &str) {
     let addr = addr.parse().expect("Failed to parse bind address");
@@ -124,6 +127,7 @@ where
         };
         Ok(ListSessionsResponse::ListOfActiveSessions(session_list))
     }
+
     /// Create a new session
 
     async fn new_session(
@@ -259,6 +263,26 @@ where
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         info!("upgrade to websocket: {}", session_id);
         Ok(ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket)
+    }
+
+    async fn kill_session(
+        &self,
+        session_id: String,
+        _context: &C,
+    ) -> Result<KillSessionResponse, ApiError> {
+        info!("kill session: {}", session_id);
+        // TODO
+        Ok(KillSessionResponse::Killed(serde_json::Value::Null))
+    }
+
+    async fn start_session(
+        &self,
+        session_id: String,
+        _context: &C,
+    ) -> Result<StartSessionResponse, ApiError> {
+        info!("start session: {}", session_id);
+        // TODO
+        Ok(StartSessionResponse::Started(serde_json::Value::Null))
     }
 
     async fn channels_websocket_request(

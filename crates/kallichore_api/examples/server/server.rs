@@ -99,7 +99,10 @@ impl<C> Server<C> {
 }
 
 use kallichore_api::server::MakeService;
-use kallichore_api::{Api, ChannelsWebsocketResponse, ListSessionsResponse, NewSessionResponse};
+use kallichore_api::{
+    Api, ChannelsWebsocketResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
+    StartSessionResponse,
+};
 use std::error::Error;
 use swagger::ApiError;
 
@@ -116,6 +119,20 @@ where
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         info!(
             "channels_websocket(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
+
+    /// Force quit session
+    async fn kill_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<KillSessionResponse, ApiError> {
+        info!(
+            "kill_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
             context.get().0.clone()
         );
@@ -142,7 +159,7 @@ where
         Err(ApiError("Generic failure".into()))
     }
 
-    // --- Start Kallichore --
+    // --- Start Kallichore ---
     async fn channels_websocket_request(
         &self,
         request: hyper::Request<hyper::Body>,
@@ -150,12 +167,26 @@ where
         context: &C,
     ) -> Result<hyper::Response<hyper::Body>, ApiError> {
         info!(
-            "channels_websocket_request(\"{}\") - X-Span-ID: {:?} (request: {:?})",
-            session_id,
+            "channels_websocket_request({:?}, \"{}\") - X-Span-ID: {:?}",
             request,
+            session_id,
             context.get().0.clone()
         );
         Err(ApiError("Generic failure".into()))
     }
-    // --- End Kallichore --
+    // --- End Kallichore ---
+
+    /// Start a session
+    async fn start_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<StartSessionResponse, ApiError> {
+        info!(
+            "start_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
 }

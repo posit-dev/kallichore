@@ -43,6 +43,54 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Invalid request
       summary: Create a new session
+  /sessions/{session_id}/start:
+    get:
+      operationId: start-session
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Started
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Start failed
+      summary: Start a session
+  /sessions/{session_id}/kill:
+    get:
+      operationId: kill-session
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Killed
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Kill failed
+      summary: Force quit session
   /sessions/{session_id}/channels:
     get:
       operationId: channels-websocket

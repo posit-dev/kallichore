@@ -39,6 +39,15 @@ pub enum ChannelsWebsocketResponse {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum KillSessionResponse {
+    /// Killed
+    Killed(serde_json::Value),
+    /// Kill failed
+    KillFailed(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum ListSessionsResponse {
     /// List of active sessions
     ListOfActiveSessions(models::SessionList),
@@ -51,6 +60,15 @@ pub enum NewSessionResponse {
     TheSessionID(models::NewSession200Response),
     /// Invalid request
     InvalidRequest(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum StartSessionResponse {
+    /// Started
+    Started(serde_json::Value),
+    /// Start failed
+    StartFailed(models::Error),
 }
 
 /// API
@@ -71,6 +89,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Force quit session
+    async fn kill_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<KillSessionResponse, ApiError>;
+
     /// List active sessions
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError>;
 
@@ -80,6 +105,13 @@ pub trait Api<C: Send + Sync> {
         session: models::Session,
         context: &C,
     ) -> Result<NewSessionResponse, ApiError>;
+
+    /// Start a session
+    async fn start_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<StartSessionResponse, ApiError>;
 
     // --- Start Kallichore ---
     /// Upgrade a websocket request for channel communication
@@ -109,11 +141,17 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Force quit session
+    async fn kill_session(&self, session_id: String) -> Result<KillSessionResponse, ApiError>;
+
     /// List active sessions
     async fn list_sessions(&self) -> Result<ListSessionsResponse, ApiError>;
 
     /// Create a new session
     async fn new_session(&self, session: models::Session) -> Result<NewSessionResponse, ApiError>;
+
+    /// Start a session
+    async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError>;
 
     // --- Start Kallichore ---
     /// Upgrade a websocket request for channel communication
@@ -159,6 +197,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().channels_websocket(session_id, &context).await
     }
 
+    /// Force quit session
+    async fn kill_session(&self, session_id: String) -> Result<KillSessionResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().kill_session(session_id, &context).await
+    }
+
     /// List active sessions
     async fn list_sessions(&self) -> Result<ListSessionsResponse, ApiError> {
         let context = self.context().clone();
@@ -171,7 +215,14 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().new_session(session, &context).await
     }
 
+    /// Start a session
+    async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().start_session(session_id, &context).await
+    }
+
     // --- Start Kallichore ---
+    /// Upgrade a websocket request for channel communication
     async fn channels_websocket_request(
         &self,
         request: Request<Body>,

@@ -6,7 +6,7 @@ use futures::{future, stream, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{
     models, Api, ApiNoContext, ChannelsWebsocketResponse, Client, ContextWrapperExt,
-    ListSessionsResponse, NewSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, StartSessionResponse,
 };
 
 #[allow(unused_imports)]
@@ -32,7 +32,12 @@ fn main() {
         .arg(
             Arg::with_name("operation")
                 .help("Sets the operation to run")
-                .possible_values(&["ChannelsWebsocket", "ListSessions"])
+                .possible_values(&[
+                    "ChannelsWebsocket",
+                    "KillSession",
+                    "ListSessions",
+                    "StartSession",
+                ])
                 .required(true)
                 .index(1),
         )
@@ -95,6 +100,14 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
+        Some("KillSession") => {
+            let result = rt.block_on(client.kill_session("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
         Some("ListSessions") => {
             let result = rt.block_on(client.list_sessions());
             info!(
@@ -111,6 +124,14 @@ fn main() {
             info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
         },
         */
+        Some("StartSession") => {
+            let result = rt.block_on(client.start_session("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
         _ => {
             panic!("Invalid operation provided")
         }

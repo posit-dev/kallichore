@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-08-30T10:20:16.196558-07:00[America/Los_Angeles]
+- Build date: 2024-09-03T14:29:54.755363-07:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -63,7 +63,9 @@ To run a client, follow one of the following simple steps:
 
 ```
 cargo run --example client ChannelsWebsocket
+cargo run --example client KillSession
 cargo run --example client ListSessions
+cargo run --example client StartSession
 ```
 
 ### HTTPS
@@ -98,8 +100,10 @@ All URIs are relative to *http://localhost*
 Method | HTTP request | Description
 ------------- | ------------- | -------------
 [**channels-websocket**](docs/default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+[**kill-session**](docs/default_api.md#kill-session) | **GET** /sessions/{session_id}/kill | Force quit session
 [**list-sessions**](docs/default_api.md#list-sessions) | **GET** /sessions | List active sessions
 [**new-session**](docs/default_api.md#new-session) | **PUT** /sessions | Create a new session
+[**start-session**](docs/default_api.md#start-session) | **GET** /sessions/{session_id}/start | Start a session
 
 
 ## Documentation For Models
