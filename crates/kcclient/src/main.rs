@@ -17,7 +17,10 @@ use kallichore_api::NewSessionResponse;
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
 
-use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
+use kcshared::{
+    jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
+    websocket_message::WebsocketMessage,
+};
 #[allow(unused_imports)]
 use log::info;
 
@@ -59,12 +62,24 @@ enum Commands {
         kernel: String,
     },
 
-    /// Connect to a running session
-    Connect {
-        /// The session to connect to. Optional; if not provided, the first
+    /// Get kernel info on a to a running session
+    Info {
+        /// The session to get info for. Optional; if not provided, the first
         /// running session will be used
         #[arg(short, long)]
         session_id: Option<String>,
+    },
+
+    /// Execute code in a running session
+    Execute {
+        /// The session to execute code in. Optional; if not provided, the first
+        /// running session will be used
+        #[arg(short, long)]
+        session_id: Option<String>,
+
+        /// The code to execute
+        #[arg(short, long)]
+        code: String,
     },
 
     /// Shut down a running session
@@ -148,9 +163,26 @@ async fn get_kernel_info(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) 
         ))
         .await
         .expect("Failed to send message");
+
+    // Wait for a kernel info reply
     read.for_each(|message| async {
         let data = message.unwrap().into_data();
-        print!("{}", String::from_utf8_lossy(&data));
+        let payload = String::from_utf8_lossy(&data);
+        let message = serde_json::from_str::<WebsocketMessage>(&payload).unwrap();
+        match message {
+            WebsocketMessage::Jupyter(message) => {
+                if message.header.msg_type == "kernel_info_reply" {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&message.content).unwrap()
+                    );
+                    return;
+                }
+            }
+            _ => {
+                trace! {"Ignoring message {:?}", message};
+            }
+        }
     })
     .await;
 }
@@ -272,7 +304,10 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
-        Some(Commands::Connect { session_id }) => {
+        Some(Commands::Execute { session_id, code }) => {
+            // TODO
+        }
+        Some(Commands::Info { session_id }) => {
             let session_id = match session_id {
                 Some(session_id) => session_id,
                 None => {
@@ -290,7 +325,7 @@ fn main() {
                     }
                 }
             };
-            log::info!("Connecting to session '{}'", session_id);
+            log::info!("Getting kernel info from  session '{}'", session_id);
             let ws_stream = rt
                 .block_on(connect_to_session(base_url, session_id))
                 .unwrap();
