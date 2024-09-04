@@ -5,25 +5,37 @@
 //
 //
 
+use std::sync::Arc;
+
 use async_channel::{Receiver, Sender};
+use kallichore_api::models;
 use kcshared::{jupyter_message::JupyterChannel, websocket_message::WebsocketMessage};
-use tokio::select;
+use serde::Deserialize;
+use tokio::{select, sync::RwLock};
 use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
 
 use crate::{
     connection_file::ConnectionFile,
     kernel_connection::KernelConnection,
+    kernel_state::KernelState,
     wire_message::{WireMessage, ZmqChannelMessage},
 };
+
+#[derive(Deserialize)]
+struct StatusMessage {
+    execution_state: String,
+}
 
 /// Forward a message from a ZeroMQ socket to a WebSocket channel.
 ///
 /// - `channel`: The channel to forward the message to
 /// - `message`: The message to forward
+/// - `state`: The current state of the kernel
 /// - `ws_json_tx`: The channel to send JSON messages to the WebSocket
 async fn forward_zmq(
     channel: JupyterChannel,
     message: ZmqMessage,
+    state: Arc<RwLock<KernelState>>,
     ws_json_tx: Sender<WebsocketMessage>,
 ) -> Result<(), anyhow::Error> {
     // (1) convert the raw parts/frames of the message into a `WireMessage`.
@@ -32,6 +44,25 @@ async fn forward_zmq(
     // (2) convert it into a Jupyter message; this can fail if the message is
     // not a valid Jupyter message.
     let message = message.to_jupyter(channel)?;
+
+    // Update the kernel state if the message is a status message
+    if channel == JupyterChannel::IOPub {
+        match serde_json::from_value::<StatusMessage>(message.content.clone()) {
+            Ok(status_message) => {
+                let mut state = state.write().await;
+                match status_message.execution_state.as_str() {
+                    "busy" => {
+                        state.set_status(models::Status::Busy).await;
+                    }
+                    "idle" => {
+                        state.set_status(models::Status::Idle).await;
+                    }
+                    _ => {}
+                };
+            }
+            Err(_) => {}
+        }
+    }
 
     // (3) wrap the Jupyter message in a `WebsocketMessage::Jupyter` and send it
     // to the WebSocket.
@@ -55,6 +86,7 @@ async fn forward_zmq(
 /// - `connection`: Metadata about the kernel connection
 /// - `connection_file`: The connection file for the kernel (names the sockets
 ///    and ports)
+/// - `state`: The current state of the kernel
 /// - `ws_json_tx`: A channel to send JSON messages to the WebSocket
 /// - `ws_zmq_rx`: A channel to receive messages from the WebSocket
 ///
@@ -62,6 +94,7 @@ async fn forward_zmq(
 pub async fn zmq_ws_proxy(
     connection: KernelConnection,
     connection_file: ConnectionFile,
+    state: Arc<RwLock<KernelState>>,
     ws_json_tx: Sender<WebsocketMessage>,
     ws_zmq_rx: Receiver<ZmqChannelMessage>,
 ) -> Result<(), anyhow::Error> {
@@ -147,11 +180,9 @@ pub async fn zmq_ws_proxy(
     loop {
         select! {
             shell_msg = shell_socket.recv() => {
-                log::info!("Received message from shell socket");
                 match shell_msg {
                     Ok(msg) => {
-                        log::info!("Received message: {:?}", msg);
-                        forward_zmq(JupyterChannel::Shell, msg, ws_json_tx.clone()).await?;
+                        forward_zmq(JupyterChannel::Shell, msg, state.clone(), ws_json_tx.clone()).await?;
                     },
                     Err(e) => {
                         log::error!("Failed to receive message from shell socket: {}", e);
@@ -161,8 +192,7 @@ pub async fn zmq_ws_proxy(
             iopub_msg = iopub_socket.recv() => {
                 match iopub_msg {
                     Ok(msg) => {
-                        log::info!("Received message: {:?}", msg);
-                        forward_zmq(JupyterChannel::IOPub, msg, ws_json_tx.clone()).await?;
+                        forward_zmq(JupyterChannel::IOPub, msg, state.clone(), ws_json_tx.clone()).await?;
                     },
                     Err(e) => {
                         log::error!("Failed to receive message from iopub socket: {}", e);
@@ -172,8 +202,7 @@ pub async fn zmq_ws_proxy(
             control_msg = control_socket.recv() => {
                 match control_msg {
                     Ok(msg) => {
-                        log::info!("Received message: {:?}", msg);
-                        forward_zmq(JupyterChannel::Control, msg, ws_json_tx.clone()).await?;
+                        forward_zmq(JupyterChannel::Control, msg, state.clone(), ws_json_tx.clone()).await?;
                     },
                     Err(e) => {
                         log::error!("Failed to receive message from control socket: {}", e);
@@ -183,8 +212,7 @@ pub async fn zmq_ws_proxy(
             stdin_msg = stdin_socket.recv() => {
                 match stdin_msg {
                     Ok(msg) => {
-                        log::info!("Received message: {:?}", msg);
-                        forward_zmq(JupyterChannel::Stdin, msg, ws_json_tx.clone()).await?;
+                        forward_zmq(JupyterChannel::Stdin, msg, state.clone(), ws_json_tx.clone()).await?;
                     },
                     Err(e) => {
                         log::error!("Failed to receive message from iopub socket: {}", e);

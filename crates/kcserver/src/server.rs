@@ -240,11 +240,22 @@ where
         let connection = kernel_session.connection.clone();
         let ws_json_tx = kernel_session.ws_json_tx.clone();
         let ws_zmq_rx = kernel_session.ws_zmq_rx.clone();
+        let kernel_state = kernel_session.state.clone();
         sessions.push(kernel_session);
 
+        // Start the ZeroMQ/WebSocket proxy
+        //
+        // TODO: This proxy should not be started until we actually attempt to
+        // start the kernel?
         tokio::spawn(async move {
-            match zmq_ws_proxy::zmq_ws_proxy(connection, connection_file, ws_json_tx, ws_zmq_rx)
-                .await
+            match zmq_ws_proxy::zmq_ws_proxy(
+                connection,
+                connection_file,
+                kernel_state,
+                ws_json_tx,
+                ws_zmq_rx,
+            )
+            .await
             {
                 Ok(_) => (),
                 Err(e) => {
