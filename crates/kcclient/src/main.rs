@@ -91,7 +91,7 @@ enum Commands {
     },
 }
 
-use log::trace;
+use log::{debug, trace};
 // swagger::Has may be unused if there are no examples
 #[allow(unused_imports)]
 use swagger::{AuthData, ContextBuilder, EmptyContext, Has, Push, XSpanIdString};
@@ -142,7 +142,7 @@ async fn request_shutdown(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>)
 }
 
 async fn get_kernel_info(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) {
-    let (mut write, read) = ws_stream.split();
+    let (mut write, mut read) = ws_stream.split();
 
     let message = JupyterMessage {
         header: JupyterMessageHeader {
@@ -165,26 +165,35 @@ async fn get_kernel_info(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) 
         .expect("Failed to send message");
 
     // Wait for a kernel info reply
-    read.for_each(|message| async {
-        let data = message.unwrap().into_data();
-        let payload = String::from_utf8_lossy(&data);
-        let message = serde_json::from_str::<WebsocketMessage>(&payload).unwrap();
-        match message {
-            WebsocketMessage::Jupyter(message) => {
-                if message.header.msg_type == "kernel_info_reply" {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&message.content).unwrap()
-                    );
-                    return;
+    loop {
+        match read.next().await {
+            Some(message) => {
+                let data = message.unwrap().into_data();
+                let payload = String::from_utf8_lossy(&data);
+                let message = serde_json::from_str::<WebsocketMessage>(&payload).unwrap();
+                match message {
+                    WebsocketMessage::Jupyter(message) => {
+                        if message.header.msg_type == "kernel_info_reply" {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&message.content).unwrap()
+                            );
+                            break;
+                        }
+                    }
+                    _ => {
+                        debug!("Ignoring message {:?}", message);
+                    }
                 }
             }
-            _ => {
-                trace! {"Ignoring message {:?}", message};
+            None => {
+                debug!("No message received");
+                break;
             }
         }
-    })
-    .await;
+    }
+
+    write.close().await.expect("Failed to close connection");
 }
 
 // rt may be unused if there are no examples
