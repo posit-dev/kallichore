@@ -334,16 +334,19 @@ fn main() {
             // Convert the environment variables from the kernel spec to a
             // HashMap for use in the session
             let mut env = std::collections::HashMap::new();
-            for (key, value) in kernel_spec.env.iter() {
-                trace!(
-                    "Session {}: Setting env var {}={}",
-                    session_id.clone(),
-                    key,
-                    value
-                );
-                if value.is_string() {
-                    let value = value.as_str().unwrap();
-                    env.insert(key.clone(), value.to_string());
+            if kernel_spec.env.is_some() {
+                let kernel_env = kernel_spec.env.as_ref().unwrap();
+                for (key, value) in kernel_env.iter() {
+                    trace!(
+                        "Session {}: Setting env var {}={}",
+                        session_id.clone(),
+                        key,
+                        value
+                    );
+                    if value.is_string() {
+                        let value = value.as_str().unwrap();
+                        env.insert(key.clone(), value.to_string());
+                    }
                 }
             }
 

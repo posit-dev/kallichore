@@ -21,5 +21,5 @@ pub struct KernelSpec {
     pub language: String,
 
     // Environment variables to set for the kernel
-    pub env: serde_json::Map<String, Value>,
+    pub env: Option<serde_json::Map<String, Value>>,
 }
