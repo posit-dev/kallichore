@@ -122,7 +122,7 @@ async fn request_shutdown(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>)
     let (mut write, read) = ws_stream.split();
     let message = JupyterMessage {
         header: JupyterMessageHeader {
-            msg_id: "CB2B8818-E5EB-419F-A046-23DD3B45E1BD".to_string(),
+            msg_id: uuid::Uuid::new_v4().to_string(),
             msg_type: "shutdown_request".to_string(),
         },
         parent_header: None,
@@ -146,7 +146,7 @@ async fn get_kernel_info(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) 
 
     let message = JupyterMessage {
         header: JupyterMessageHeader {
-            msg_id: "7C857F22-013E-4ECD-89ED-9A1E6BAA0F98".to_string(),
+            msg_id: uuid::Uuid::new_v4().to_string(),
             msg_type: "kernel_info_request".to_string(),
         },
         parent_header: None,
@@ -183,6 +183,79 @@ async fn get_kernel_info(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) 
                     }
                     _ => {
                         debug!("Ignoring message {:?}", message);
+                    }
+                }
+            }
+            None => {
+                debug!("No message received");
+                break;
+            }
+        }
+    }
+
+    write.close().await.expect("Failed to close connection");
+}
+
+async fn execute_request(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>, code: String) {
+    let (mut write, mut read) = ws_stream.split();
+
+    let request = JupyterMessage {
+        header: JupyterMessageHeader {
+            msg_id: uuid::Uuid::new_v4().to_string(),
+            msg_type: "execute_request".to_string(),
+        },
+        parent_header: None,
+        channel: JupyterChannel::Shell,
+        content: serde_json::json!({
+            "code": code,
+            "silent": false,
+            "store_history": true,
+            "user_expressions": {},
+            "allow_stdin": true,
+            "stop_on_error": true,
+        }),
+        buffers: Vec::new(),
+        metadata: serde_json::json!({}),
+    };
+
+    // Write the message to the websocket
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&request).unwrap(),
+        ))
+        .await
+        .expect("Failed to send message");
+
+    // Wait for a reply to the execute request
+    loop {
+        match read.next().await {
+            Some(raw_message) => {
+                let data = raw_message.unwrap().into_data();
+                let payload = String::from_utf8_lossy(&data);
+                let ws_message = serde_json::from_str::<WebsocketMessage>(&payload).unwrap();
+                match ws_message {
+                    WebsocketMessage::Jupyter(jupyter_message) => {
+                        if jupyter_message.parent_header.is_some()
+                            && jupyter_message.parent_header.unwrap().msg_id
+                                == request.header.msg_id
+                        {
+                            println!(
+                                "--- {:?}: {} ---\n{}",
+                                jupyter_message.channel,
+                                jupyter_message.header.msg_type,
+                                serde_json::to_string_pretty(&jupyter_message.content).unwrap()
+                            );
+
+                            // Stop listening when the kernel becomes idle
+                            if jupyter_message.header.msg_type == "status"
+                                && jupyter_message.content["execution_state"] == "idle"
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {
+                        debug!("Ignoring message {:?}", ws_message);
                     }
                 }
             }
@@ -314,7 +387,27 @@ fn main() {
             );
         }
         Some(Commands::Execute { session_id, code }) => {
-            // TODO
+            let session_id = match session_id {
+                Some(session_id) => session_id,
+                None => {
+                    let result = rt.block_on(client.list_sessions());
+                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
+                        if let Some(session) = sessions.sessions.first() {
+                            session.session_id.clone()
+                        } else {
+                            eprintln!("No sessions available to execute code");
+                            return;
+                        }
+                    } else {
+                        eprintln!("Failed to list sessions");
+                        return;
+                    }
+                }
+            };
+            let ws_stream = rt
+                .block_on(connect_to_session(base_url, session_id))
+                .unwrap();
+            rt.block_on(execute_request(ws_stream, code));
         }
         Some(Commands::Info { session_id }) => {
             let session_id = match session_id {
