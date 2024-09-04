@@ -7,12 +7,16 @@
 
 //! Wraps Jupyter kernel sessions.
 
-use std::sync::Arc;
+use std::{process::Stdio, sync::Arc};
 
 use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Utc};
 use kallichore_api::models;
-use kcshared::{kernel_message::KernelMessage, websocket_message::WebsocketMessage};
+use kcshared::{
+    kernel_message::{KernelMessage, OutputStream},
+    websocket_message::WebsocketMessage,
+};
+use tokio::io::{AsyncBufReadExt, AsyncRead};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -96,6 +100,8 @@ impl KernelSession {
             .args(&self.argv[1..])
             .current_dir(self.model.working_directory.clone())
             .envs(&self.model.env)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
         {
             Ok(child) => child,
@@ -108,6 +114,19 @@ impl KernelSession {
                 return Err(e.into());
             }
         };
+
+        // Capture the stdout and stderr of the child process and forward it to
+        // the WebSocket
+        let stdout = child
+            .stdout
+            .take()
+            .expect("Failed to get stdout of child process");
+        Self::stream_output(stdout, OutputStream::Stdout, self.ws_json_tx.clone());
+        let stderr = child
+            .stderr
+            .take()
+            .expect("Failed to get stderr of child process");
+        Self::stream_output(stderr, OutputStream::Stderr, self.ws_json_tx.clone());
 
         // Get the process ID of the child process
         let pid = child.id();
@@ -145,5 +164,46 @@ impl KernelSession {
         });
 
         Ok(())
+    }
+
+    /// Stream output from a child process to the WebSocket.
+    ///
+    /// This function reads lines from a stream and sends them to the WebSocket. It's used to forward
+    /// the stdout and stderr of a child process to the client.
+    ///
+    /// # Arguments
+    ///
+    /// - `stream`: The stream to read from
+    /// - `kind`: The kind of output (stdout or stderr)
+    /// - `ws_json_tx`: The channel to send JSON messages to the WebSocket
+    fn stream_output<T: AsyncRead + Unpin + Send + 'static>(
+        stream: T,
+        kind: OutputStream,
+        ws_json_tx: Sender<WebsocketMessage>,
+    ) {
+        tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(Box::pin(stream));
+            let mut buffer = String::new();
+            loop {
+                buffer.clear();
+                match reader.read_line(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let message = WebsocketMessage::Kernel(KernelMessage::Output(
+                            kind.clone(),
+                            buffer.to_string(),
+                        ));
+                        ws_json_tx
+                            .send(message)
+                            .await
+                            .expect("Failed to send standard stream message to client");
+                    }
+                    Err(e) => {
+                        log::error!("Failed to read from standard stream: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
     }
 }
