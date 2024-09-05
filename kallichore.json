@@ -204,8 +204,10 @@
         "enum": [
           "uninitialized",
           "starting",
+          "ready",
           "idle",
           "busy",
+          "offline",
           "exited"
         ]
       },
@@ -245,6 +247,31 @@
           "argv",
           "working_directory",
           "env"
+        ]
+      },
+      "execution_queue": {
+        "type": "object",
+        "description": "The execution queue for a session",
+        "properties": {
+          "active": {
+            "type": "object",
+            "description": "The execution request currently being evaluated, if any"
+          },
+          "length": {
+            "type": "integer",
+            "description": "The number of items in the pending queue"
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The queue of pending execution requests"
+          }
+        },
+        "required": [
+          "length",
+          "pending"
         ]
       },
       "sessionList": {
@@ -290,6 +317,9 @@
                   "type": "string",
                   "description": "The session's current working directory"
                 },
+                "execution_queue": {
+                  "$ref": "#/components/schemas/execution_queue"
+                },
                 "status": {
                   "$ref": "#/components/schemas/status"
                 }
@@ -301,6 +331,7 @@
                 "started",
                 "connected",
                 "working_directory",
+                "execution_queue",
                 "status"
               ]
             }

@@ -135,8 +135,10 @@ components:
       enum:
       - uninitialized
       - starting
+      - ready
       - idle
       - busy
+      - offline
       - exited
       type: string
     session:
@@ -167,6 +169,30 @@ components:
       - username
       - working_directory
       type: object
+    execution_queue:
+      description: The execution queue for a session
+      example:
+        pending:
+        - "{}"
+        - "{}"
+        length: 1
+        active: "{}"
+      properties:
+        active:
+          description: "The execution request currently being evaluated, if any"
+          type: object
+        length:
+          description: The number of items in the pending queue
+          type: integer
+        pending:
+          description: The queue of pending execution requests
+          items:
+            type: object
+          type: array
+      required:
+      - length
+      - pending
+      type: object
     sessionList:
       example:
         total: 0
@@ -180,6 +206,12 @@ components:
           - argv
           - argv
           username: username
+          execution_queue:
+            pending:
+            - "{}"
+            - "{}"
+            length: 1
+            active: "{}"
           status: uninitialized
         - connected: true
           process_id: 6
@@ -190,6 +222,12 @@ components:
           - argv
           - argv
           username: username
+          execution_queue:
+            pending:
+            - "{}"
+            - "{}"
+            length: 1
+            active: "{}"
           status: uninitialized
       properties:
         total:
@@ -223,6 +261,12 @@ components:
         - argv
         - argv
         username: username
+        execution_queue:
+          pending:
+          - "{}"
+          - "{}"
+          length: 1
+          active: "{}"
         status: uninitialized
       properties:
         session_id:
@@ -250,11 +294,14 @@ components:
         working_directory:
           description: The session's current working directory
           type: string
+        execution_queue:
+          $ref: '#/components/schemas/execution_queue'
         status:
           $ref: '#/components/schemas/status'
       required:
       - argv
       - connected
+      - execution_queue
       - session_id
       - started
       - status

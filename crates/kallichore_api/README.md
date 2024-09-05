@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-09-03T14:29:54.755363-07:00[America/Los_Angeles]
+- Build date: 2024-09-05T12:41:42.313920-07:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -109,6 +109,7 @@ Method | HTTP request | Description
 ## Documentation For Models
 
  - [Error](docs/Error.md)
+ - [ExecutionQueue](docs/ExecutionQueue.md)
  - [NewSession200Response](docs/NewSession200Response.md)
  - [Session](docs/Session.md)
  - [SessionList](docs/SessionList.md)

@@ -169,6 +169,175 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+/// The execution queue for a session
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ExecutionQueue {
+    /// The execution request currently being evaluated, if any
+    #[serde(rename = "active")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<serde_json::Value>,
+
+    /// The number of items in the pending queue
+    #[serde(rename = "length")]
+    pub length: i32,
+
+    /// The queue of pending execution requests
+    #[serde(rename = "pending")]
+    pub pending: Vec<serde_json::Value>,
+}
+
+impl ExecutionQueue {
+    #[allow(clippy::new_without_default)]
+    pub fn new(length: i32, pending: Vec<serde_json::Value>) -> ExecutionQueue {
+        ExecutionQueue {
+            active: None,
+            length,
+            pending,
+        }
+    }
+}
+
+/// Converts the ExecutionQueue value to the Query Parameters representation (style=form, explode=false)
+/// specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde serializer
+impl std::string::ToString for ExecutionQueue {
+    fn to_string(&self) -> String {
+        let params: Vec<Option<String>> = vec![
+            // Skipping active in query parameter serialization
+            Some("length".to_string()),
+            Some(self.length.to_string()),
+            // Skipping pending in query parameter serialization
+        ];
+
+        params.into_iter().flatten().collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ExecutionQueue value
+/// as specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ExecutionQueue {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub active: Vec<serde_json::Value>,
+            pub length: Vec<i32>,
+            pub pending: Vec<Vec<serde_json::Value>>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ExecutionQueue".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "active" => intermediate_rep.active.push(
+                        <serde_json::Value as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "length" => intermediate_rep.length.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    "pending" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in ExecutionQueue"
+                                .to_string(),
+                        )
+                    }
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ExecutionQueue".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ExecutionQueue {
+            active: intermediate_rep.active.into_iter().next(),
+            length: intermediate_rep
+                .length
+                .into_iter()
+                .next()
+                .ok_or_else(|| "length missing in ExecutionQueue".to_string())?,
+            pending: intermediate_rep
+                .pending
+                .into_iter()
+                .next()
+                .ok_or_else(|| "pending missing in ExecutionQueue".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ExecutionQueue> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ExecutionQueue>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ExecutionQueue>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for ExecutionQueue - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<ExecutionQueue> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <ExecutionQueue as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into ExecutionQueue - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct NewSession200Response {
@@ -707,6 +876,9 @@ pub struct SessionListSessionsInner {
     #[serde(rename = "working_directory")]
     pub working_directory: String,
 
+    #[serde(rename = "execution_queue")]
+    pub execution_queue: models::ExecutionQueue,
+
     #[serde(rename = "status")]
     pub status: models::Status,
 }
@@ -720,6 +892,7 @@ impl SessionListSessionsInner {
         connected: bool,
         started: chrono::DateTime<chrono::Utc>,
         working_directory: String,
+        execution_queue: models::ExecutionQueue,
         status: models::Status,
     ) -> SessionListSessionsInner {
         SessionListSessionsInner {
@@ -730,6 +903,7 @@ impl SessionListSessionsInner {
             connected,
             started,
             working_directory,
+            execution_queue,
             status,
         }
     }
@@ -761,6 +935,8 @@ impl std::string::ToString for SessionListSessionsInner {
             // Skipping started in query parameter serialization
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
+            // Skipping execution_queue in query parameter serialization
+
             // Skipping status in query parameter serialization
         ];
 
@@ -786,6 +962,7 @@ impl std::str::FromStr for SessionListSessionsInner {
             pub connected: Vec<bool>,
             pub started: Vec<chrono::DateTime<chrono::Utc>>,
             pub working_directory: Vec<String>,
+            pub execution_queue: Vec<models::ExecutionQueue>,
             pub status: Vec<models::Status>,
         }
 
@@ -821,6 +998,8 @@ impl std::str::FromStr for SessionListSessionsInner {
                     "started" => intermediate_rep.started.push(<chrono::DateTime::<chrono::Utc> as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     #[allow(clippy::redundant_clone)]
                     "working_directory" => intermediate_rep.working_directory.push(<String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
+                    #[allow(clippy::redundant_clone)]
+                    "execution_queue" => intermediate_rep.execution_queue.push(<models::ExecutionQueue as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     #[allow(clippy::redundant_clone)]
                     "status" => intermediate_rep.status.push(<models::Status as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?),
                     _ => return std::result::Result::Err("Unexpected key while parsing SessionListSessionsInner".to_string())
@@ -866,6 +1045,11 @@ impl std::str::FromStr for SessionListSessionsInner {
                 .ok_or_else(|| {
                     "working_directory missing in SessionListSessionsInner".to_string()
                 })?,
+            execution_queue: intermediate_rep
+                .execution_queue
+                .into_iter()
+                .next()
+                .ok_or_else(|| "execution_queue missing in SessionListSessionsInner".to_string())?,
             status: intermediate_rep
                 .status
                 .into_iter()
@@ -939,10 +1123,14 @@ pub enum Status {
     Uninitialized,
     #[serde(rename = "starting")]
     Starting,
+    #[serde(rename = "ready")]
+    Ready,
     #[serde(rename = "idle")]
     Idle,
     #[serde(rename = "busy")]
     Busy,
+    #[serde(rename = "offline")]
+    Offline,
     #[serde(rename = "exited")]
     Exited,
 }
@@ -952,8 +1140,10 @@ impl std::fmt::Display for Status {
         match *self {
             Status::Uninitialized => write!(f, "uninitialized"),
             Status::Starting => write!(f, "starting"),
+            Status::Ready => write!(f, "ready"),
             Status::Idle => write!(f, "idle"),
             Status::Busy => write!(f, "busy"),
+            Status::Offline => write!(f, "offline"),
             Status::Exited => write!(f, "exited"),
         }
     }
@@ -966,8 +1156,10 @@ impl std::str::FromStr for Status {
         match s {
             "uninitialized" => std::result::Result::Ok(Status::Uninitialized),
             "starting" => std::result::Result::Ok(Status::Starting),
+            "ready" => std::result::Result::Ok(Status::Ready),
             "idle" => std::result::Result::Ok(Status::Idle),
             "busy" => std::result::Result::Ok(Status::Busy),
+            "offline" => std::result::Result::Ok(Status::Offline),
             "exited" => std::result::Result::Ok(Status::Exited),
             _ => std::result::Result::Err(format!("Value not valid: {}", s)),
         }
