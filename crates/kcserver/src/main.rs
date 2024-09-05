@@ -15,6 +15,7 @@ mod client_session;
 mod connection_file;
 mod error;
 mod execution_queue;
+mod jupyter_messages;
 mod kernel_connection;
 mod kernel_session;
 mod kernel_state;

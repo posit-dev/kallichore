@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use async_channel::Receiver;
 use async_channel::Sender;
-use bytes::Bytes;
 use futures::SinkExt;
 use futures::StreamExt;
 use hyper::upgrade::Upgraded;
@@ -19,18 +18,14 @@ use tokio::select;
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use zeromq::ZmqMessage;
 
 use crate::kernel_connection::KernelConnection;
 use crate::kernel_state::KernelState;
-use crate::wire_message::WireMessage;
-use crate::wire_message::ZmqChannelMessage;
-use crate::wire_message::MSG_DELIM;
 
 pub struct ClientSession {
     pub connection: KernelConnection,
     ws_json_rx: Receiver<WebsocketMessage>,
-    ws_zmq_tx: Sender<ZmqChannelMessage>,
+    ws_zmq_tx: Sender<JupyterMessage>,
     state: Arc<RwLock<KernelState>>,
 }
 
@@ -38,7 +33,7 @@ impl ClientSession {
     pub fn new(
         connection: KernelConnection,
         ws_json_rx: Receiver<WebsocketMessage>,
-        ws_zmq_tx: Sender<ZmqChannelMessage>,
+        ws_zmq_tx: Sender<JupyterMessage>,
         state: Arc<RwLock<KernelState>>,
     ) -> Self {
         Self {
@@ -69,30 +64,8 @@ impl ClientSession {
             channel_message.header.msg_type.clone()
         );
 
-        // Convert the message to a wire message
-        let channel = channel_message.channel.clone();
-        let wire_message = WireMessage::from_jupyter(
-            channel_message,
-            self.connection.session_id.clone(),
-            self.connection.username.clone(),
-            self.connection.hmac_key.clone(),
-        )
-        .unwrap();
-
-        let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
-        for part in wire_message.parts {
-            zmq_mesage.push_back(Bytes::from(part));
-        }
-
         log::trace!("Sending message to Jupyter");
-        match self
-            .ws_zmq_tx
-            .send(ZmqChannelMessage {
-                channel,
-                message: zmq_mesage,
-            })
-            .await
-        {
+        match self.ws_zmq_tx.send(channel_message).await {
             Ok(_) => {
                 log::trace!("Sent message to Jupyter");
             }

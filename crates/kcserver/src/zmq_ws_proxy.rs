@@ -8,16 +8,21 @@
 use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
+use bytes::Bytes;
 use kallichore_api::models;
-use kcshared::{jupyter_message::JupyterChannel, websocket_message::WebsocketMessage};
+use kcshared::{
+    jupyter_message::{JupyterChannel, JupyterMessage},
+    websocket_message::WebsocketMessage,
+};
 use serde::Deserialize;
 use tokio::{select, sync::RwLock};
 use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
 
 use crate::{
     connection_file::ConnectionFile,
+    kernel_connection::KernelConnection,
     kernel_state::KernelState,
-    wire_message::{WireMessage, ZmqChannelMessage},
+    wire_message::{WireMessage, MSG_DELIM},
 };
 
 #[derive(Deserialize)]
@@ -32,8 +37,9 @@ pub struct ZmqWsProxy {
     pub control_socket: DealerSocket,
     pub stdin_socket: DealerSocket,
     pub connection_file: ConnectionFile,
+    pub connection: KernelConnection,
     pub ws_json_tx: Sender<WebsocketMessage>,
-    pub ws_zmq_rx: Receiver<ZmqChannelMessage>,
+    pub ws_zmq_rx: Receiver<JupyterMessage>,
     pub state: Arc<RwLock<KernelState>>,
 }
 
@@ -47,16 +53,16 @@ impl ZmqWsProxy {
     ///
     /// - `connection_file`: The connection file for the kernel (names the sockets
     ///    and ports)
+    /// - `connection`: The connection information for the kernel
     /// - `state`: The current state of the kernel
     /// - `ws_json_tx`: A channel to send JSON messages to the WebSocket
     /// - `ws_zmq_rx`: A channel to receive messages from the WebSocket
-    ///
-    /// Async; does not return until the connection is closed.
     pub fn new(
         connection_file: ConnectionFile,
+        connection: KernelConnection,
         state: Arc<RwLock<KernelState>>,
         ws_json_tx: Sender<WebsocketMessage>,
-        ws_zmq_rx: Receiver<ZmqChannelMessage>,
+        ws_zmq_rx: Receiver<JupyterMessage>,
     ) -> Self {
         Self {
             shell_socket: DealerSocket::new(),
@@ -65,6 +71,7 @@ impl ZmqWsProxy {
             control_socket: DealerSocket::new(),
             stdin_socket: DealerSocket::new(),
             connection_file,
+            connection,
             ws_json_tx,
             ws_zmq_rx,
             state,
@@ -208,26 +215,39 @@ impl ZmqWsProxy {
         }
     }
 
-    async fn forward_ws(&mut self, msg: ZmqChannelMessage) -> Result<(), anyhow::Error> {
-        match msg.channel {
+    async fn forward_ws(&mut self, msg: JupyterMessage) -> Result<(), anyhow::Error> {
+        // Convert the message to a wire message
+        let channel = msg.channel.clone();
+        let wire_message = WireMessage::from_jupyter(
+            msg,
+            self.connection.session_id.clone(),
+            self.connection.username.clone(),
+            self.connection.hmac_key.clone(),
+        )?;
+
+        let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
+        for part in wire_message.parts {
+            zmq_mesage.push_back(Bytes::from(part));
+        }
+        match channel {
             JupyterChannel::Shell => {
                 log::trace!("Sending message to shell socket");
-                self.shell_socket.send(msg.message).await?;
+                self.shell_socket.send(zmq_mesage).await?;
                 log::trace!("Sent message to shell socket");
             }
             JupyterChannel::Control => {
                 log::trace!("Sending message to control socket");
                 // TODO: When an interrupt is sent, we need to clear the execution queue
-                self.control_socket.send(msg.message).await?;
+                self.control_socket.send(zmq_mesage).await?;
                 log::trace!("Sent message to control socket");
             }
             JupyterChannel::Stdin => {
                 log::trace!("Sending message to stdin socket");
-                self.stdin_socket.send(msg.message).await?;
+                self.stdin_socket.send(zmq_mesage).await?;
                 log::trace!("Sent message to stdin socket");
             }
             _ => {
-                log::error!("Unsupported channel: {:?}", msg.channel);
+                log::error!("Unsupported channel: {:?}", channel);
             }
         }
         Ok(())

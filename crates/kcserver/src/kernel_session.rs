@@ -13,16 +13,14 @@ use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Utc};
 use kallichore_api::models;
 use kcshared::{
+    jupyter_message::JupyterMessage,
     kernel_message::{KernelMessage, OutputStream},
     websocket_message::WebsocketMessage,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead};
 use tokio::sync::RwLock;
 
-use crate::{
-    connection_file, kernel_connection::KernelConnection, kernel_state::KernelState,
-    wire_message::ZmqChannelMessage,
-};
+use crate::{connection_file, kernel_connection::KernelConnection, kernel_state::KernelState};
 
 /// A Jupyter kernel session.
 ///
@@ -54,10 +52,10 @@ pub struct KernelSession {
     pub ws_json_rx: Receiver<WebsocketMessage>,
 
     /// The channel to send ZMQ messages to the kernel
-    pub ws_zmq_tx: Sender<ZmqChannelMessage>,
+    pub ws_zmq_tx: Sender<JupyterMessage>,
 
     /// The channel to receive ZMQ messages from the kernel
-    pub ws_zmq_rx: Receiver<ZmqChannelMessage>,
+    pub ws_zmq_rx: Receiver<JupyterMessage>,
 }
 
 impl KernelSession {
@@ -66,7 +64,7 @@ impl KernelSession {
         session: models::Session,
         connection_file: connection_file::ConnectionFile,
     ) -> Result<Self, anyhow::Error> {
-        let (zmq_tx, zmq_rx) = async_channel::unbounded::<ZmqChannelMessage>();
+        let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
             session.working_directory.clone(),

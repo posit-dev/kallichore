@@ -250,7 +250,13 @@ where
         // TODO: This proxy should not be started until we actually attempt to
         // start the kernel?
         tokio::spawn(async move {
-            let mut proxy = ZmqWsProxy::new(connection_file, kernel_state, ws_json_tx, ws_zmq_rx);
+            let mut proxy = ZmqWsProxy::new(
+                connection_file,
+                connection.clone(),
+                kernel_state,
+                ws_json_tx,
+                ws_zmq_rx,
+            );
             match proxy.connect().await {
                 Ok(_) => (),
                 Err(e) => {
