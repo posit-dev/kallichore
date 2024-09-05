@@ -14,21 +14,16 @@ use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage},
     websocket_message::WebsocketMessage,
 };
-use serde::Deserialize;
 use tokio::{select, sync::RwLock};
 use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
 
 use crate::{
     connection_file::ConnectionFile,
+    jupyter_messages::{ExecutionState, JupyterMsg},
     kernel_connection::KernelConnection,
     kernel_state::KernelState,
     wire_message::{WireMessage, MSG_DELIM},
 };
-
-#[derive(Deserialize)]
-struct StatusMessage {
-    execution_state: String,
-}
 
 pub struct ZmqWsProxy {
     pub shell_socket: DealerSocket,
@@ -271,22 +266,24 @@ impl ZmqWsProxy {
         // not a valid Jupyter message.
         let message = message.to_jupyter(channel)?;
 
-        // Update the kernel state if the message is a status message
-        if channel == JupyterChannel::IOPub {
-            match serde_json::from_value::<StatusMessage>(message.content.clone()) {
-                Ok(status_message) => {
-                    let mut state = self.state.write().await;
-                    match status_message.execution_state.as_str() {
-                        "busy" => {
-                            state.set_status(models::Status::Busy).await;
-                        }
-                        "idle" => {
-                            state.set_status(models::Status::Idle).await;
-                        }
-                        _ => {}
-                    };
-                }
-                Err(_) => {}
+        let jupyter = JupyterMsg::from(message.clone());
+        match jupyter {
+            JupyterMsg::Status(status) => {
+                let mut state = self.state.write().await;
+                match status.execution_state {
+                    ExecutionState::Busy => {
+                        state.set_status(models::Status::Busy).await;
+                    }
+                    ExecutionState::Idle => {
+                        state.set_status(models::Status::Idle).await;
+                    }
+                };
+            }
+            JupyterMsg::ExecuteRequest(_) => {
+                // TODO: Process request
+            }
+            _ => {
+                // Do nothing for other message types (let the message pass through)
             }
         }
 
