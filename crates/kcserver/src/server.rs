@@ -29,6 +29,7 @@ use std::{any, env};
 use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
+use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -282,8 +283,61 @@ where
         _context: &C,
     ) -> Result<KillSessionResponse, ApiError> {
         info!("kill session: {}", session_id);
-        // TODO
-        Ok(KillSessionResponse::Killed(serde_json::Value::Null))
+        // Get the kernel session with the given ID
+        let kernel_sessions = self.kernel_sessions.clone();
+        let kernel_session = {
+            let kernel_sessions = kernel_sessions.read().unwrap();
+            let kernel_session = match kernel_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+            {
+                Some(s) => s,
+                None => {
+                    let err = KSError::SessionNotFound(session_id.clone());
+                    err.log();
+                    return Ok(KillSessionResponse::KillFailed(err.to_json(None)));
+                }
+            };
+            kernel_session.clone()
+        };
+
+        // Ensure that the kernel hasn't already exited
+        let status = {
+            let state = kernel_session.state.read().await;
+            state.status.clone()
+        };
+        if status == models::Status::Exited {
+            let err = KSError::SessionNotRunning(session_id.clone());
+            err.log();
+            return Ok(KillSessionResponse::KillFailed(err.to_json(None)));
+        }
+
+        // Get the current PID of the kernel process
+        let pid = {
+            let state = kernel_session.state.read().await;
+            state.process_id
+        };
+        match pid {
+            Some(pid) => {
+                // Kill the process
+                let mut system = System::new();
+                let pid = Pid::from_u32(pid);
+                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]));
+                if let Some(process) = system.process(pid) {
+                    process.kill();
+                    Ok(KillSessionResponse::Killed(serde_json::Value::Null))
+                } else {
+                    let err = KSError::ProcessNotFound(session_id.clone());
+                    err.log();
+                    return Ok(KillSessionResponse::KillFailed(err.to_json(None)));
+                }
+            }
+            None => {
+                let err = KSError::ProcessNotFound(session_id.clone());
+                err.log();
+                Ok(KillSessionResponse::KillFailed(err.to_json(None)))
+            }
+        }
     }
 
     async fn start_session(

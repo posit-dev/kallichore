@@ -89,6 +89,14 @@ enum Commands {
         #[arg(short, long)]
         session_id: Option<String>,
     },
+
+    /// Kill a running session
+    Kill {
+        /// The session to shut kill. Optional; if not provided, the first
+        /// running session will be used
+        #[arg(short, long)]
+        session_id: Option<String>,
+    },
 }
 
 use log::{debug, trace};
@@ -411,6 +419,31 @@ fn main() {
                 .block_on(connect_to_session(base_url, session_id))
                 .unwrap();
             rt.block_on(execute_request(ws_stream, code));
+        }
+        Some(Commands::Kill { session_id }) => {
+            let session_id = match session_id {
+                Some(session_id) => session_id,
+                None => {
+                    let result = rt.block_on(client.list_sessions());
+                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
+                        if let Some(session) = sessions.sessions.first() {
+                            session.session_id.clone()
+                        } else {
+                            eprintln!("No sessions available to kill");
+                            return;
+                        }
+                    } else {
+                        eprintln!("Failed to list sessions");
+                        return;
+                    }
+                }
+            };
+            let result = rt.block_on(client.kill_session(session_id.clone()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
         }
         Some(Commands::Info { session_id }) => {
             let session_id = match session_id {
