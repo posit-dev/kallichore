@@ -231,6 +231,7 @@ pub async fn zmq_ws_proxy(
                             },
                             JupyterChannel::Control => {
                                 log::trace!("Sending message to control socket");
+                                // TODO: When an interrupt is sent, we need to clear the execution queue
                                 control_socket.send(msg.message).await?;
                                 log::trace!("Sent message to control socket");
                             },

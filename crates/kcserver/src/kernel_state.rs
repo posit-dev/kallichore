@@ -9,6 +9,8 @@ use async_channel::Sender;
 use kallichore_api::models;
 use kcshared::{kernel_message::KernelMessage, websocket_message::WebsocketMessage};
 
+use crate::execution_queue::ExecutionQueue;
+
 /// The mutable state of the kernel.
 ///
 /// Does not implement the Clone trait; only one instance of the kernel state
@@ -27,6 +29,9 @@ pub struct KernelState {
     /// The current process ID of the kernel, or None if the kernel is not running.
     pub process_id: Option<u32>,
 
+    /// The execution queue for the kernel.
+    pub execution_queue: ExecutionQueue,
+
     /// A channel to send JSON messages to the WebSocket, for automatically
     /// publishing kernel status updates.
     ws_json_tx: Sender<WebsocketMessage>,
@@ -40,6 +45,7 @@ impl KernelState {
             working_directory,
             connected: false,
             process_id: None,
+            execution_queue: ExecutionQueue::new(),
             ws_json_tx,
         }
     }
