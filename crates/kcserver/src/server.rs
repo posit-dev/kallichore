@@ -87,7 +87,7 @@ use crate::client_session::ClientSession;
 use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
-use crate::zmq_ws_proxy;
+use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 
 #[async_trait]
 impl<C> Api<C> for Server<C>
@@ -250,15 +250,15 @@ where
         // TODO: This proxy should not be started until we actually attempt to
         // start the kernel?
         tokio::spawn(async move {
-            match zmq_ws_proxy::zmq_ws_proxy(
-                connection,
-                connection_file,
-                kernel_state,
-                ws_json_tx,
-                ws_zmq_rx,
-            )
-            .await
-            {
+            let mut proxy = ZmqWsProxy::new(connection_file, kernel_state, ws_json_tx, ws_zmq_rx);
+            match proxy.connect().await {
+                Ok(_) => (),
+                Err(e) => {
+                    let error = KSError::SessionConnectionFailed(connection.session_id, e);
+                    error.log();
+                }
+            }
+            match proxy.listen().await {
                 Ok(_) => (),
                 Err(e) => {
                     let error = KSError::SessionStartFailed(e);
