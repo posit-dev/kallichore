@@ -80,6 +80,10 @@ enum Commands {
         /// The code to execute
         #[arg(short, long)]
         code: String,
+
+        /// Whether to wait for execution to finish
+        #[arg(short, long)]
+        wait: bool,
     },
 
     /// Shut down a running session
@@ -204,7 +208,11 @@ async fn get_kernel_info(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) 
     write.close().await.expect("Failed to close connection");
 }
 
-async fn execute_request(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>, code: String) {
+async fn execute_request(
+    ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    code: String,
+    wait: bool,
+) {
     let (mut write, mut read) = ws_stream.split();
 
     let request = JupyterMessage {
@@ -233,6 +241,11 @@ async fn execute_request(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>, 
         ))
         .await
         .expect("Failed to send message");
+
+    // If we're not waiting for the result, return early
+    if !wait {
+        return;
+    }
 
     // Wait for a reply to the execute request
     loop {
@@ -397,7 +410,11 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
-        Some(Commands::Execute { session_id, code }) => {
+        Some(Commands::Execute {
+            session_id,
+            code,
+            wait,
+        }) => {
             let session_id = match session_id {
                 Some(session_id) => session_id,
                 None => {
@@ -418,7 +435,7 @@ fn main() {
             let ws_stream = rt
                 .block_on(connect_to_session(base_url, session_id))
                 .unwrap();
-            rt.block_on(execute_request(ws_stream, code));
+            rt.block_on(execute_request(ws_stream, code, wait));
         }
         Some(Commands::Kill { session_id }) => {
             let session_id = match session_id {

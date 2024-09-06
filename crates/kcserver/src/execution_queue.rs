@@ -100,11 +100,6 @@ impl ExecutionQueue {
             })
             .collect();
 
-        // Reverse the order of the pending requests; VecDeque's iterator
-        // returns front to back, but we want to return the queue in the order
-        // it will be executed (back to front)
-        let pending: Vec<serde_json::Value> = pending.into_iter().rev().collect();
-
         // Serialize the active request and the vector of pending requests
         models::ExecutionQueue {
             active: match &self.active {
