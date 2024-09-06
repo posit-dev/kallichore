@@ -319,9 +319,10 @@ where
             return Ok(KillSessionResponse::KillFailed(err.to_json(None)));
         }
 
-        // Get the current PID of the kernel process
+        // Clear the execution queue and get the process ID
         let pid = {
-            let state = kernel_session.state.read().await;
+            let mut state = kernel_session.state.write().await;
+            state.execution_queue.clear();
             state.process_id
         };
         match pid {

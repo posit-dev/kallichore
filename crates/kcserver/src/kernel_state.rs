@@ -54,6 +54,11 @@ impl KernelState {
     pub async fn set_status(&mut self, status: models::Status) {
         self.status = status;
 
+        // If entering the Exited status, clear the execution queue
+        if status == models::Status::Exited {
+            self.execution_queue.clear();
+        }
+
         // Publish the new status to the WebSocket
         let status_message = WebsocketMessage::Kernel(KernelMessage::Status(status.clone()));
         self.ws_json_tx.send(status_message).await.unwrap();

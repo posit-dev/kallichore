@@ -13,10 +13,13 @@ use serde::Deserialize;
 #[allow(dead_code)]
 pub enum JupyterMsg {
     ExecuteRequest(JupyterExecuteRequest),
+    InterruptRequest,
+    ShutdownRequest,
     Status(JupyterStatus),
     Other,
 }
 
+/// Convert a JupyterMessage (generic type) into a JupyterMsg (specific type)
 impl From<JupyterMessage> for JupyterMsg {
     fn from(msg: JupyterMessage) -> Self {
         match msg.header.msg_type.as_str() {
@@ -29,6 +32,8 @@ impl From<JupyterMessage> for JupyterMsg {
                 Ok(content) => JupyterMsg::Status(content),
                 Err(_) => JupyterMsg::Other,
             },
+            "interrupt_request" => JupyterMsg::InterruptRequest,
+            "shutdown_request" => JupyterMsg::ShutdownRequest,
             _ => JupyterMsg::Other,
         }
     }

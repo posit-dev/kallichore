@@ -221,9 +221,21 @@ impl ZmqWsProxy {
                     return Ok(());
                 }
             }
+            JupyterMsg::InterruptRequest => {
+                // Clear the execution queue; an interrupt should cancel any
+                // pending requests
+                log::debug!("Interrupting kernel");
+                let mut state = self.state.write().await;
+                state.execution_queue.clear();
+            }
+            JupyterMsg::ShutdownRequest => {
+                // Clear the execution queue and shut down the kernel
+                log::debug!("Shutting down kernel");
+                let mut state = self.state.write().await;
+                state.execution_queue.clear();
+            }
             _ => {
                 // Do nothing for other message types
-                // TODO: Clear the execution queue when an interrupt is sent
             }
         }
         // Convert the message to a wire message
@@ -238,7 +250,6 @@ impl ZmqWsProxy {
             }
             JupyterChannel::Control => {
                 log::trace!("Sending message to control socket");
-                // TODO: When an interrupt is sent, we need to clear the execution queue
                 self.control_socket.send(zmq_message).await?;
                 log::trace!("Sent message to control socket");
             }
