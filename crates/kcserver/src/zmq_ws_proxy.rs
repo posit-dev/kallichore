@@ -15,10 +15,11 @@ use kcshared::{
     websocket_message::WebsocketMessage,
 };
 use tokio::{select, sync::RwLock};
-use zeromq::{DealerSocket, ReqSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
+use zeromq::{DealerSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
 
 use crate::{
     connection_file::ConnectionFile,
+    heartbeat::HeartbeatMonitor,
     jupyter_messages::{ExecutionState, JupyterMsg},
     kernel_connection::KernelConnection,
     kernel_state::KernelState,
@@ -27,12 +28,12 @@ use crate::{
 
 pub struct ZmqWsProxy {
     pub shell_socket: DealerSocket,
-    pub hb_socket: ReqSocket,
     pub iopub_socket: SubSocket,
     pub control_socket: DealerSocket,
     pub stdin_socket: DealerSocket,
     pub connection_file: ConnectionFile,
     pub connection: KernelConnection,
+    pub heartbeat: HeartbeatMonitor,
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
     pub state: Arc<RwLock<KernelState>>,
@@ -59,12 +60,14 @@ impl ZmqWsProxy {
         ws_json_tx: Sender<WebsocketMessage>,
         ws_zmq_rx: Receiver<JupyterMessage>,
     ) -> Self {
+        let session_id = connection.session_id.clone();
+        let hb_address = format!("tcp://{}:{}", connection_file.ip, connection_file.hb_port);
         Self {
             shell_socket: DealerSocket::new(),
-            hb_socket: ReqSocket::new(),
             iopub_socket: SubSocket::new(),
             control_socket: DealerSocket::new(),
             stdin_socket: DealerSocket::new(),
+            heartbeat: HeartbeatMonitor::new(state.clone(), session_id, hb_address),
             connection_file,
             connection,
             ws_json_tx,
@@ -85,22 +88,9 @@ impl ZmqWsProxy {
             .await?;
 
         log::trace!(
-            "Connected to shell socket on port {}",
+            "[session {}] Connected to shell socket on port {}",
+            self.connection.session_id,
             self.connection_file.shell_port
-        );
-
-        self.hb_socket
-            .connect(
-                format!(
-                    "tcp://{}:{}",
-                    self.connection_file.ip, self.connection_file.hb_port
-                )
-                .as_str(),
-            )
-            .await?;
-        log::trace!(
-            "Connected to heartbeat socket on port {}",
-            self.connection_file.hb_port
         );
 
         self.iopub_socket
@@ -113,7 +103,8 @@ impl ZmqWsProxy {
             )
             .await?;
         log::trace!(
-            "Connected to iopub socket on port {}",
+            "[session {}] Connected to iopub socket on port {}",
+            self.connection.session_id,
             self.connection_file.iopub_port
         );
 
@@ -130,7 +121,8 @@ impl ZmqWsProxy {
             )
             .await?;
         log::trace!(
-            "Connected to control socket on port {}",
+            "[session {}] Connected to control socket on port {}",
+            self.connection.session_id,
             self.connection_file.control_port
         );
 
@@ -144,14 +136,19 @@ impl ZmqWsProxy {
             )
             .await?;
         log::trace!(
-            "Connected to stdin socket on port {}",
+            "[session {}] Connected to stdin socket on port {}",
+            self.connection.session_id,
             self.connection_file.stdin_port
         );
+
+        // Sockets are connected; start the heartbeat monitor
+        self.heartbeat.monitor();
 
         Ok(())
     }
 
     pub async fn listen(&mut self) -> Result<(), anyhow::Error> {
+        let session_id = self.connection.session_id.clone();
         // Wait for a message from any socket
         loop {
             select! {
@@ -161,7 +158,7 @@ impl ZmqWsProxy {
                             self.forward_zmq(JupyterChannel::Shell, msg).await?;
                         },
                         Err(e) => {
-                            log::error!("Failed to receive message from shell socket: {}", e);
+                            log::error!("[session {}] Failed to receive message from shell socket: {}", session_id, e);
                         },
                     }
                 },
@@ -171,7 +168,7 @@ impl ZmqWsProxy {
                             self.forward_zmq(JupyterChannel::IOPub, msg).await?;
                         },
                         Err(e) => {
-                            log::error!("Failed to receive message from iopub socket: {}", e);
+                            log::error!("[session {}] Failed to receive message from iopub socket: {}", session_id, e);
                         },
                     }
                 },
@@ -181,7 +178,7 @@ impl ZmqWsProxy {
                             self.forward_zmq(JupyterChannel::Control, msg).await?;
                         },
                         Err(e) => {
-                            log::error!("Failed to receive message from control socket: {}", e);
+                            log::error!("[session {}] Failed to receive message from control socket: {}", session_id, e);
                         },
                     }
                 },
@@ -191,7 +188,7 @@ impl ZmqWsProxy {
                             self.forward_zmq(JupyterChannel::Stdin, msg).await?;
                         },
                         Err(e) => {
-                            log::error!("Failed to receive message from iopub socket: {}", e);
+                            log::error!("[session {}] Failed to receive message from iopub socket: {}", session_id, e);
                         },
                     }
                 },
@@ -199,10 +196,10 @@ impl ZmqWsProxy {
                     match ws_msg {
                         Ok(msg) => {
                             self.forward_ws(msg).await?;
-                            log::trace!("Received message from websocket");
+                            log::trace!("[session {}] Received message from websocket", session_id);
                         }
                         Err(e) => {
-                            log::error!("Failed to receive message from websocket: {}", e);
+                            log::error!("[session {}] Failed to receive message from websocket: {}", session_id, e);
                         },
                     }
                 }
@@ -231,13 +228,19 @@ impl ZmqWsProxy {
             JupyterMsg::InterruptRequest => {
                 // Clear the execution queue; an interrupt should cancel any
                 // pending requests
-                log::debug!("Interrupting kernel");
+                log::debug!(
+                    "[session {}] Interrupting kernel",
+                    self.connection.session_id
+                );
                 let mut state = self.state.write().await;
                 state.execution_queue.clear();
             }
             JupyterMsg::ShutdownRequest => {
                 // Clear the execution queue and shut down the kernel
-                log::debug!("Shutting down kernel");
+                log::debug!(
+                    "[session {}] Shutting down kernel",
+                    self.connection.session_id
+                );
                 let mut state = self.state.write().await;
                 state.execution_queue.clear();
             }
