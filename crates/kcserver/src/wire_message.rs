@@ -8,13 +8,13 @@
 /// Separates ZeroMQ socket identities from the message body payload.
 pub const MSG_DELIM: &[u8] = b"<IDS|MSG>";
 
+use bytes::Bytes;
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
-use sha2::Sha256;
 use zeromq::ZmqMessage;
 
-use crate::wire_message_header::WireMessageHeader;
+use crate::{kernel_connection::KernelConnection, wire_message_header::WireMessageHeader};
 
-use hmac::{Hmac, Mac};
+use hmac::Mac;
 
 pub struct WireMessage {
     /// The parts of the message, as an array of byte arrays
@@ -25,11 +25,12 @@ impl WireMessage {
     /// Create a new wire message from a Jupyter message.
     pub fn from_jupyter(
         msg: JupyterMessage,
-        session: String,
-        username: String,
-        hmac_key: Hmac<Sha256>,
+        connection: KernelConnection,
     ) -> Result<Self, anyhow::Error> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
+        let username = connection.username.clone();
+        let session = connection.session_id.clone();
+        let hmac_key = connection.hmac_key.clone();
 
         // Derive a wire message header from the Jupyter message header
         let header = WireMessageHeader::new(msg.header, session.clone(), username.clone());
@@ -105,5 +106,15 @@ impl From<ZmqMessage> for WireMessage {
     fn from(msg: ZmqMessage) -> Self {
         let parts: Vec<Vec<u8>> = msg.iter().map(|frame| frame.to_vec()).collect();
         Self { parts }
+    }
+}
+
+impl Into<ZmqMessage> for WireMessage {
+    fn into(self) -> ZmqMessage {
+        let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
+        for part in self.parts {
+            zmq_mesage.push_back(Bytes::from(part));
+        }
+        zmq_mesage
     }
 }

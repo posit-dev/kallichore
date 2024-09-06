@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
-use bytes::Bytes;
 use kallichore_api::models;
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage},
@@ -22,7 +21,7 @@ use crate::{
     jupyter_messages::{ExecutionState, JupyterMsg},
     kernel_connection::KernelConnection,
     kernel_state::KernelState,
-    wire_message::{WireMessage, MSG_DELIM},
+    wire_message::WireMessage,
 };
 
 pub struct ZmqWsProxy {
@@ -211,34 +210,41 @@ impl ZmqWsProxy {
     }
 
     async fn forward_ws(&mut self, msg: JupyterMessage) -> Result<(), anyhow::Error> {
+        let jupyter = JupyterMsg::from(msg.clone());
+        match jupyter {
+            JupyterMsg::ExecuteRequest(_) => {
+                // Queue the message for execution
+                let mut state = self.state.write().await;
+                if !state.execution_queue.process_request(msg.clone()) {
+                    // The request was queued for later execution; don't deliver
+                    // it to the socket now.
+                    return Ok(());
+                }
+            }
+            _ => {
+                // Do nothing for other message types
+                // TODO: Clear the execution queue when an interrupt is sent
+            }
+        }
         // Convert the message to a wire message
         let channel = msg.channel.clone();
-        let wire_message = WireMessage::from_jupyter(
-            msg,
-            self.connection.session_id.clone(),
-            self.connection.username.clone(),
-            self.connection.hmac_key.clone(),
-        )?;
-
-        let mut zmq_mesage = ZmqMessage::from(MSG_DELIM.to_vec());
-        for part in wire_message.parts {
-            zmq_mesage.push_back(Bytes::from(part));
-        }
+        let wire_message = WireMessage::from_jupyter(msg, self.connection.clone())?;
+        let zmq_message: ZmqMessage = wire_message.into();
         match channel {
             JupyterChannel::Shell => {
                 log::trace!("Sending message to shell socket");
-                self.shell_socket.send(zmq_mesage).await?;
+                self.shell_socket.send(zmq_message).await?;
                 log::trace!("Sent message to shell socket");
             }
             JupyterChannel::Control => {
                 log::trace!("Sending message to control socket");
                 // TODO: When an interrupt is sent, we need to clear the execution queue
-                self.control_socket.send(zmq_mesage).await?;
+                self.control_socket.send(zmq_message).await?;
                 log::trace!("Sent message to control socket");
             }
             JupyterChannel::Stdin => {
                 log::trace!("Sending message to stdin socket");
-                self.stdin_socket.send(zmq_mesage).await?;
+                self.stdin_socket.send(zmq_message).await?;
                 log::trace!("Sent message to stdin socket");
             }
             _ => {
@@ -255,7 +261,7 @@ impl ZmqWsProxy {
     /// - `state`: The current state of the kernel
     /// - `ws_json_tx`: The channel to send JSON messages to the WebSocket
     async fn forward_zmq(
-        &self,
+        &mut self,
         channel: JupyterChannel,
         message: ZmqMessage,
     ) -> Result<(), anyhow::Error> {
@@ -269,18 +275,37 @@ impl ZmqWsProxy {
         let jupyter = JupyterMsg::from(message.clone());
         match jupyter {
             JupyterMsg::Status(status) => {
-                let mut state = self.state.write().await;
-                match status.execution_state {
-                    ExecutionState::Busy => {
-                        state.set_status(models::Status::Busy).await;
-                    }
-                    ExecutionState::Idle => {
-                        state.set_status(models::Status::Idle).await;
-                    }
+                // Write the new status to the kernel state
+                let state = {
+                    let mut state = self.state.write().await;
+                    match status.execution_state {
+                        ExecutionState::Busy => {
+                            state.set_status(models::Status::Busy).await;
+                        }
+                        ExecutionState::Idle => {
+                            state.set_status(models::Status::Idle).await;
+                        }
+                    };
+                    status.execution_state
                 };
-            }
-            JupyterMsg::ExecuteRequest(_) => {
-                // TODO: Process request
+                // If the kernel is now idle, process the next message in the queue
+                match state {
+                    ExecutionState::Idle => {
+                        let mut state = self.state.write().await;
+                        match state.execution_queue.next_request() {
+                            Some(request) => {
+                                // Send the next request to the kernel
+                                let message =
+                                    WireMessage::from_jupyter(request, self.connection.clone())?;
+                                self.shell_socket.send(message.into()).await?;
+                            }
+                            None => {
+                                // No more messages in the queue
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
             _ => {
                 // Do nothing for other message types (let the message pass through)
