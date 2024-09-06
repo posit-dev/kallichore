@@ -11,6 +11,7 @@ use async_channel::{Receiver, Sender};
 use kallichore_api::models;
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage},
+    kernel_message::KernelMessage,
     websocket_message::WebsocketMessage,
 };
 use tokio::{select, sync::RwLock};
@@ -216,8 +217,14 @@ impl ZmqWsProxy {
                 // Queue the message for execution
                 let mut state = self.state.write().await;
                 if !state.execution_queue.process_request(msg.clone()) {
-                    // The request was queued for later execution; don't deliver
-                    // it to the socket now.
+                    // The request was queued for later execution and should not
+                    // be processed right now; don't deliver it to the socket.
+                    // Instead, just tell the client that we have queued the
+                    // request.
+                    let queued = KernelMessage::ExecutionQueued(msg.header.msg_id.clone());
+                    self.ws_json_tx
+                        .send(WebsocketMessage::Kernel(queued))
+                        .await?;
                     return Ok(());
                 }
             }
