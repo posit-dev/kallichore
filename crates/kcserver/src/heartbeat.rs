@@ -70,7 +70,13 @@ impl HeartbeatMonitor {
                     );
                 }
             }
+
+            // Whether the kernel is currently offline
             let mut offline = false;
+
+            // Whether this is the first heartbeat
+            let mut initial = true;
+
             loop {
                 // Send the heartbeat payload to the server
                 log::trace!("[session {}] Sending heartbeat to kernel.", session_id);
@@ -85,6 +91,8 @@ impl HeartbeatMonitor {
                             session_id,
                             response
                         );
+
+                        // If the kernel was offline, mark it as online
                         if offline {
                             offline = false;
                             log::trace!(
@@ -96,6 +104,20 @@ impl HeartbeatMonitor {
                             // is idle, just that it's back online. Should we
                             // instead cache the previous status and restore it?
                             state.set_status(Status::Idle).await;
+                        }
+
+                        // If this is the first heartbeat, mark the kernel as
+                        // ready if it was starting
+                        if initial {
+                            initial = false;
+                            log::trace!(
+                                "[session {}] Received initial heartbeat, marking kernel as ready",
+                                session_id
+                            );
+                            let mut state = state.write().await;
+                            if state.status == Status::Starting {
+                                state.set_status(Status::Ready).await;
+                            }
                         }
                         response
                     }
