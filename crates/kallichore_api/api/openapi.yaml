@@ -91,6 +91,30 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Kill failed
       summary: Force quit session
+  /sessions/{session_id}/interrupt:
+    get:
+      operationId: interrupt-session
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Interrupted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Interrupt failed
+      summary: Interrupt session
   /sessions/{session_id}/channels:
     get:
       operationId: channels-websocket
@@ -141,6 +165,12 @@ components:
       - offline
       - exited
       type: string
+    interrupt_mode:
+      description: The mechansim for interrupting the session
+      enum:
+      - signal
+      - message
+      type: string
     session:
       properties:
         session_id:
@@ -162,6 +192,8 @@ components:
             type: string
           description: Environment variables to set for the session
           type: object
+        interrupt_mode:
+          $ref: '#/components/schemas/interrupt_mode'
       required:
       - argv
       - env

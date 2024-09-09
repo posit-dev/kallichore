@@ -29,8 +29,8 @@ pub use crate::context;
 type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
 
 use crate::{
-    Api, ChannelsWebsocketResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
-    StartSessionResponse,
+    Api, ChannelsWebsocketResponse, InterruptSessionResponse, KillSessionResponse,
+    ListSessionsResponse, NewSessionResponse, StartSessionResponse,
 };
 
 mod paths {
@@ -40,6 +40,7 @@ mod paths {
         pub static ref GLOBAL_REGEX_SET: regex::RegexSet = regex::RegexSet::new(vec![
             r"^/sessions$",
             r"^/sessions/(?P<session_id>[^/?#]*)/channels$",
+            r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/kill$",
             r"^/sessions/(?P<session_id>[^/?#]*)/start$"
         ])
@@ -53,14 +54,21 @@ mod paths {
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/channels$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CHANNELS");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 2;
+    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 2;
+    lazy_static! {
+        pub static ref REGEX_SESSIONS_SESSION_ID_INTERRUPT: regex::Regex =
+            #[allow(clippy::invalid_regex)]
+            regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$")
+                .expect("Unable to create regex for SESSIONS_SESSION_ID_INTERRUPT");
+    }
+    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 3;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_KILL: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/kill$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_KILL");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 3;
+    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 4;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_START: regex::Regex =
             #[allow(clippy::invalid_regex)]
@@ -255,6 +263,81 @@ where
                     Ok(response)
                 }
 
+                // InterruptSession - GET /sessions/{session_id}/interrupt
+                hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_SESSIONS_SESSION_ID_INTERRUPT
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE SESSIONS_SESSION_ID_INTERRUPT in set but failed match against \"{}\"", path, paths::REGEX_SESSIONS_SESSION_ID_INTERRUPT.as_str())
+                    );
+
+                    let param_session_id = match percent_encoding::percent_decode(path_params["session_id"].as_bytes()).decode_utf8() {
+                    Ok(param_session_id) => match param_session_id.parse::<String>() {
+                        Ok(param_session_id) => param_session_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
+                    let result = api_impl.interrupt_session(param_session_id, &context).await;
+                    let mut response = Response::new(Body::empty());
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            InterruptSessionResponse::Interrupted(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for INTERRUPT_SESSION_INTERRUPTED"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                            InterruptSessionResponse::InterruptFailed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for INTERRUPT_SESSION_INTERRUPT_FAILED"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = Body::from("An internal error occurred");
+                        }
+                    }
+
+                    Ok(response)
+                }
+
                 // KillSession - GET /sessions/{session_id}/kill
                 hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => {
                     // Path parameters
@@ -376,7 +459,9 @@ where
                     // Body parameters (note that non-required body parameters will ignore garbage
                     // values, rather than causing a 400 response). Produce warning header and logs for
                     // any unused fields.
+                    // --- Start Kallichore ---
                     let body = request.into_body();
+                    // --- End Kallichore ---
                     let result = body.into_raw().await;
                     match result {
                             Ok(body) => {
@@ -541,6 +626,7 @@ where
 
                 _ if path.matched(paths::ID_SESSIONS) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => method_not_allowed(),
+                _ if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_START) => method_not_allowed(),
                 _ => Ok(Response::builder()
@@ -562,6 +648,10 @@ impl<T> RequestParser<T> for ApiRequestParser {
             // ChannelsWebsocket - GET /sessions/{session_id}/channels
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                 Some("ChannelsWebsocket")
+            }
+            // InterruptSession - GET /sessions/{session_id}/interrupt
+            hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
+                Some("InterruptSession")
             }
             // KillSession - GET /sessions/{session_id}/kill
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => {

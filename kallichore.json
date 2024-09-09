@@ -146,6 +146,42 @@
         }
       }
     },
+    "/sessions/{session_id}/interrupt": {
+      "get": {
+        "operationId": "interrupt-session",
+        "summary": "Interrupt session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Interrupted",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Interrupt failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sessions/{session_id}/channels": {
       "get": {
         "operationId": "channels-websocket",
@@ -211,6 +247,14 @@
           "exited"
         ]
       },
+      "interrupt_mode": {
+        "type": "string",
+        "description": "The mechansim for interrupting the session",
+        "enum": [
+          "signal",
+          "message"
+        ]
+      },
       "session": {
         "type": "object",
         "properties": {
@@ -239,6 +283,9 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "interrupt_mode": {
+            "$ref": "#/components/schemas/interrupt_mode"
           }
         },
         "required": [

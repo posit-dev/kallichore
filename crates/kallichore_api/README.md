@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-09-05T12:41:42.313920-07:00[America/Los_Angeles]
+- Build date: 2024-09-09T08:27:05.450352-07:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -63,6 +63,7 @@ To run a client, follow one of the following simple steps:
 
 ```
 cargo run --example client ChannelsWebsocket
+cargo run --example client InterruptSession
 cargo run --example client KillSession
 cargo run --example client ListSessions
 cargo run --example client StartSession
@@ -100,6 +101,7 @@ All URIs are relative to *http://localhost*
 Method | HTTP request | Description
 ------------- | ------------- | -------------
 [**channels-websocket**](docs/default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+[**interrupt-session**](docs/default_api.md#interrupt-session) | **GET** /sessions/{session_id}/interrupt | Interrupt session
 [**kill-session**](docs/default_api.md#kill-session) | **GET** /sessions/{session_id}/kill | Force quit session
 [**list-sessions**](docs/default_api.md#list-sessions) | **GET** /sessions | List active sessions
 [**new-session**](docs/default_api.md#new-session) | **PUT** /sessions | Create a new session
@@ -110,6 +112,7 @@ Method | HTTP request | Description
 
  - [Error](docs/Error.md)
  - [ExecutionQueue](docs/ExecutionQueue.md)
+ - [InterruptMode](docs/InterruptMode.md)
  - [NewSession200Response](docs/NewSession200Response.md)
  - [Session](docs/Session.md)
  - [SessionList](docs/SessionList.md)

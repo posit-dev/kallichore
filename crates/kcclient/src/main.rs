@@ -377,6 +377,7 @@ fn main() {
                 username: String::from("testuser"),
                 working_directory: working_directory.to_string_lossy().to_string(),
                 env,
+                interrupt_mode: Some(models::InterruptMode::Message),
             };
             info!(
                 "Creating new session for '{}' kernel ({}) with id {}",

@@ -5,6 +5,7 @@ README.md
 api/openapi.yaml
 docs/Error.md
 docs/ExecutionQueue.md
+docs/InterruptMode.md
 docs/NewSession200Response.md
 docs/Session.md
 docs/SessionList.md

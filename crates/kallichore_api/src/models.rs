@@ -338,6 +338,44 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+/// The mechansim for interrupting the session
+/// Enumeration of values.
+/// Since this enum's variants do not hold data, we can easily define them as `#[repr(C)]`
+/// which helps with FFI.
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
+pub enum InterruptMode {
+    #[serde(rename = "signal")]
+    Signal,
+    #[serde(rename = "message")]
+    Message,
+}
+
+impl std::fmt::Display for InterruptMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            InterruptMode::Signal => write!(f, "signal"),
+            InterruptMode::Message => write!(f, "message"),
+        }
+    }
+}
+
+impl std::str::FromStr for InterruptMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "signal" => std::result::Result::Ok(InterruptMode::Signal),
+            "message" => std::result::Result::Ok(InterruptMode::Message),
+            _ => std::result::Result::Err(format!("Value not valid: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct NewSession200Response {
@@ -498,6 +536,10 @@ pub struct Session {
     /// Environment variables to set for the session
     #[serde(rename = "env")]
     pub env: std::collections::HashMap<String, String>,
+
+    #[serde(rename = "interrupt_mode")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interrupt_mode: Option<models::InterruptMode>,
 }
 
 impl Session {
@@ -515,6 +557,7 @@ impl Session {
             argv,
             working_directory,
             env,
+            interrupt_mode: None,
         }
     }
 }
@@ -540,6 +583,8 @@ impl std::string::ToString for Session {
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
             // Skipping env in query parameter serialization
+
+            // Skipping interrupt_mode in query parameter serialization
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -562,6 +607,7 @@ impl std::str::FromStr for Session {
             pub argv: Vec<Vec<String>>,
             pub working_directory: Vec<String>,
             pub env: Vec<std::collections::HashMap<String, String>>,
+            pub interrupt_mode: Vec<models::InterruptMode>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -607,6 +653,11 @@ impl std::str::FromStr for Session {
                                 .to_string(),
                         )
                     }
+                    #[allow(clippy::redundant_clone)]
+                    "interrupt_mode" => intermediate_rep.interrupt_mode.push(
+                        <models::InterruptMode as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing Session".to_string(),
@@ -646,6 +697,7 @@ impl std::str::FromStr for Session {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "env missing in Session".to_string())?,
+            interrupt_mode: intermediate_rep.interrupt_mode.into_iter().next(),
         })
     }
 }

@@ -40,6 +40,15 @@ pub enum ChannelsWebsocketResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum InterruptSessionResponse {
+    /// Interrupted
+    Interrupted(serde_json::Value),
+    /// Interrupt failed
+    InterruptFailed(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum KillSessionResponse {
     /// Killed
     Killed(serde_json::Value),
@@ -88,6 +97,13 @@ pub trait Api<C: Send + Sync> {
         session_id: String,
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
+
+    /// Interrupt session
+    async fn interrupt_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<InterruptSessionResponse, ApiError>;
 
     /// Force quit session
     async fn kill_session(
@@ -140,6 +156,12 @@ pub trait ApiNoContext<C: Send + Sync> {
         &self,
         session_id: String,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
+
+    /// Interrupt session
+    async fn interrupt_session(
+        &self,
+        session_id: String,
+    ) -> Result<InterruptSessionResponse, ApiError>;
 
     /// Force quit session
     async fn kill_session(&self, session_id: String) -> Result<KillSessionResponse, ApiError>;
@@ -195,6 +217,15 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         let context = self.context().clone();
         self.api().channels_websocket(session_id, &context).await
+    }
+
+    /// Interrupt session
+    async fn interrupt_session(
+        &self,
+        session_id: String,
+    ) -> Result<InterruptSessionResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().interrupt_session(session_id, &context).await
     }
 
     /// Force quit session

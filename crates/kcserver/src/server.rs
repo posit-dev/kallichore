@@ -37,8 +37,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
-    models, ChannelsWebsocketResponse, KillSessionResponse, NewSessionResponse,
-    StartSessionResponse,
+    models, ChannelsWebsocketResponse, InterruptSessionResponse, KillSessionResponse,
+    NewSessionResponse, StartSessionResponse,
 };
 
 pub async fn create(addr: &str) {
@@ -227,6 +227,7 @@ where
             working_directory: session.working_directory.clone(),
             username: session.username.clone(),
             env: session.env.clone(),
+            interrupt_mode: session.interrupt_mode.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
@@ -380,6 +381,14 @@ where
                 Ok(StartSessionResponse::StartFailed(error.to_json(None)))
             }
         }
+    }
+
+    async fn interrupt_session(
+        &self,
+        _session_id: String,
+        _context: &C,
+    ) -> Result<InterruptSessionResponse, ApiError> {
+        unimplemented!();
     }
 
     async fn channels_websocket_request(
