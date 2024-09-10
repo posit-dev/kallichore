@@ -48,6 +48,7 @@ pub struct ConnectionFile {
 
 impl ConnectionFile {
     /// Create a ConnectionFile by parsing the contents of a connection file.
+    #[allow(dead_code)]
     pub fn from_file<P: AsRef<Path>>(connection_file: P) -> Result<Self, Box<dyn Error>> {
         let file = File::open(connection_file)?;
         let reader = BufReader::new(file);
@@ -127,6 +128,7 @@ impl ConnectionFile {
     /// the port, given the other parameters in the connection file.
     ///
     /// Example: `32` => `"tcp://127.0.0.1:32"`
+    #[allow(dead_code)]
     pub fn endpoint(&self, port: u16) -> String {
         format!("{}://{}:{}", self.transport, self.ip, port)
     }

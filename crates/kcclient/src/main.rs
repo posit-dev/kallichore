@@ -346,9 +346,8 @@ fn main() {
             let mut jupyter_dir = base_dir.home_dir().join("Library").join("Jupyter");
 
             #[cfg(not(target_os = "macos"))]
-            let mut jupyter_dir = directories::ProjectDirs::from("Jupyter", "", "")
-                .unwrap()
-                .data_dir();
+            let jupyter_dir = directories::ProjectDirs::from("Jupyter", "", "").unwrap();
+            let mut jupyter_dir = jupyter_dir.data_dir();
 
             let kernel_spec_json = jupyter_dir
                 .join("kernels")
