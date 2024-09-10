@@ -1,0 +1,317 @@
+name: "Build Kallichore Release"
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+
+jobs:
+    # Extract the current version of Kallichore from its Cargo.toml file.
+    get_version:
+        name: Determine Kallichore Version
+        runs-on: ubuntu-latest
+        outputs:
+            KALLICHORE_VERSION: ${{ steps.extract_version.outputs.result }}
+        steps:
+            # Checkout sources
+            - name: Checkout sources
+              uses: actions/checkout@v4
+
+            # Extract version
+            - name: Determine Version
+              id: extract_version
+              run: |
+                  VERSION=$(cat crates/kcserver/Cargo.toml | grep '^version' | sed -e "s/[^.0-9]//g")
+                  echo "Kallichore version: ${VERSION}"
+                  echo "result=${VERSION}" >> $GITHUB_OUTPUT
+
+    # Check to see whether we have already released this version. If we have, we will skip the
+    # release process later on.
+    check_release:
+        name: Check for Existing Release
+        runs-on: ubuntu-latest
+        needs: [get_version]
+        outputs:
+            EXISTING_RELEASE: ${{ steps.release_flag.outputs.result }}
+        steps:
+            - name: Check for existing release tag
+              uses: mukunku/tag-exists-action@v1.3.0
+              id: check_tag
+              with:
+                  tag: ${{ needs.get_version.outputs.KALLICHORE_VERSION }}
+
+            - name: Set release flag
+              id: release_flag
+              run: |
+                  echo "Existing ${{ needs.get_version.outputs.KALLICHORE_VERSION }} release: ${{steps.check_tag.outputs.exists}}"
+                  echo "result=${{steps.check_tag.outputs.exists}}" >> $GITHUB_OUTPUT
+
+    do_release:
+        name: Trigger a new release
+        if: ${{ needs.check_release.outputs.EXISTING_RELEASE == 'false' }}
+        runs-on: ubuntu-latest
+        needs: [check_release]
+        steps:
+            - name: Dummy step
+              run: echo ""
+
+    # Build Kallichore for macOS. Both arm64 (Apple Silicon) and x64 (Intel) hosts.
+    build_macos:
+        name: Build macOS
+        runs-on: [self-hosted-production, macos, arm64]
+        needs: [do_release, get_version]
+        timeout-minutes: 40
+
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        strategy:
+            max-parallel: 1
+            matrix:
+                arch: [arm64, x64]
+                flavor: [debug, release]
+                include:
+                    - arch: arm64
+                      arch_terminal: arm64
+                      homebrew_folder: /opt/homebrew
+                      rust_target_prefix: aarch64
+                    - arch: x64
+                      arch_terminal: x86_64
+                      homebrew_folder: /usr/local
+                      rust_target_prefix: x86_64
+
+        steps:
+            - name: Install Rust toolchain
+              run: |
+                rustup update --no-self-update stable
+                rustup default stable
+
+            # Checkout sources
+            - name: Checkout sources
+              uses: actions/checkout@v4
+
+            # These are already installed for both architectures, but would be required if we switch off
+            # a self-hosted runner, so we may as well leave them in
+            - name: Install zeromq dependencies
+              id: install_zeromq_dependencies
+              run: |
+                  arch -${{matrix.arch_terminal}} /bin/bash -c "${{matrix.homebrew_folder}}/bin/brew install pkg-config"
+                  arch -${{matrix.arch_terminal}} /bin/bash -c "${{matrix.homebrew_folder}}/bin/brew install libsodium"
+
+            # Zeromq calls whatever pkg-config version is findable on the PATH to be able to locate
+            # libsodium, so we have to ensure the x86_64 version is first on the PATH when compiling for
+            # that architecture, so that it finds the x86_64 version of libsodium for zeromq to link against.
+            - name: Update PATH to pkg-config for zeromq
+              id: update_path_for_zeromq
+              if: matrix.arch == 'x64'
+              run: |
+                  echo "${{matrix.homebrew_folder}}/bin" >> $GITHUB_PATH
+
+            # Compile
+            - name: Compile Kallichore (${{ matrix.arch }})
+              env:
+                  npm_config_arch: ${{ matrix.arch }}
+                  KALLICHORE_BUILD_TYPE: ${{ matrix.flavor }}
+                  RUST_TARGET: ${{ matrix.rust_target_prefix }}-apple-darwin
+                  CARGO_FLAGS:
+                  PKG_CONFIG_ALLOW_CROSS: 1
+              run: |
+                  cargo clean
+                  cargo build ${{ matrix.flavor == 'release' && '--release' || '' }} --target ${{ matrix.rust_target_prefix }}-apple-darwin
+
+            # Compress server to a zip file
+            - name: Create archive
+              run: |
+                  # Enter the build directory
+                  pushd target/${{ matrix.rust_target_prefix }}-apple-darwin/${{ matrix.flavor }}
+
+                  # Compress the server to an archive
+                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-${{ matrix.arch }}.zip"
+                  zip -Xry $ARCHIVE kcserver
+
+                  popd
+
+            # Create build artifact
+            - name: Upload client archive
+              uses: actions/upload-artifact@v3
+              with:
+                  name: kallichore-${{ matrix.flavor }}-darwin-${{ matrix.arch }}-archive
+                  path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-${{ matrix.arch }}.zip
+
+    build_windows:
+        name: Build Windows
+        runs-on: windows-latest
+        timeout-minutes: 40
+        needs: [do_release, get_version]
+
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        strategy:
+            matrix:
+                arch: [x64]
+                flavor: [debug, release]
+                include:
+                    - arch: x64
+                      rust_target_prefix: x86_64
+
+        steps:
+            - name: Checkout sources
+              uses: actions/checkout@v4
+
+            - name: Compile Kallichore
+              env:
+                  Kallichore_BUILD_TYPE: ${{ matrix.flavor }}
+                  RUST_TARGET: ${{ matrix.rust_target_prefix }}-pc-windows-msvc
+              shell: cmd
+              run: |
+                  cargo clean
+                  cargo build ${{ matrix.flavor == 'release' && '--release' || '' }} --target ${{ matrix.rust_target_prefix }}-pc-windows-msvc
+
+            - name: Create archive
+              shell: pwsh
+              run: |
+                  # Compress the server to an archive
+                  $params = @{
+                    Path = "target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\${{ matrix.flavor }}\kcserver.exe", "LICENSE"
+                    DestinationPath = "kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip"
+                  }
+                  Compress-Archive @params
+
+            - name: Upload client archive
+              uses: actions/upload-artifact@v3
+              with:
+                  name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-archive
+                  path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip
+
+    build_linux:
+        name: "Build Linux"
+        uses: ./.github/workflows/release-linux.yml
+        needs: [do_release, get_version]
+        secrets: inherit
+        with:
+            version: ${{ needs.get_version.outputs.KALLICHORE_VERSION }}
+
+    create_release:
+        name: Create Release
+        runs-on: [self-hosted, macos, arm64]
+        needs: [do_release, get_version, build_macos, build_windows, build_linux]
+        env:
+            GITHUB_TOKEN: ${{ github.token }}
+        outputs:
+            upload_url: ${{ steps.create_release.outputs.upload_url }}
+        steps:
+            - name: Create release
+              uses: actions/create-release@v1
+              id: create_release
+              with:
+                  draft: false
+                  prerelease: true
+                  release_name: ${{ needs.get_version.outputs.KALLICHORE_VERSION }}
+                  tag_name: ${{ needs.get_version.outputs.KALLICHORE_VERSION }}
+
+    # Uploads binaries, if we created a release
+    upload_release_binaries:
+        name: Upload Release Binaries
+        runs-on: [self-hosted, macos, arm64]
+        needs: [create_release, get_version]
+        env:
+            GITHUB_TOKEN: ${{ github.token }}
+            DEBUG_FLAG: ${{ matrix.flavor == 'debug' && '-debug' || '' }}
+
+        strategy:
+            max-parallel: 1
+            matrix:
+                flavor: [debug, release]
+
+        steps:
+            # Download all binaries
+            - name: Download macOS arm64 kernel (${{ matrix.flavor }})
+              uses: actions/download-artifact@v3
+              with:
+                  name: kallichore-${{ matrix.flavor }}-darwin-arm64-archive
+
+            - name: Download macOS x64 kernel (${{ matrix.flavor}})
+              uses: actions/download-artifact@v3
+              with:
+                  name: kallichore-${{ matrix.flavor }}-darwin-x64-archive
+
+            - name: Download Windows x64 kernel (${{ matrix.flavor}})
+              uses: actions/download-artifact@v3
+              with:
+                  name: kallichore-${{ matrix.flavor }}-windows-x64-archive
+
+            - name: Download Linux x64 kernel (${{ matrix.flavor}})
+              uses: actions/download-artifact@v3
+              with:
+                  name: kallichore-${{ matrix.flavor }}-linux-x64-archive
+
+
+            # Combine macOS binaries to a single binary with lipo
+            - name: Create macOS universal binary
+              run: |
+                  # Decompress x64 builds
+                  rm -rf x64 && mkdir x64 && pushd x64
+                  unzip ../kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-x64.zip
+                  popd
+
+                  # Decompress arm64 build
+                  rm -rf arm64 && mkdir arm64 && pushd arm64
+                  unzip ../kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-arm64.zip
+                  popd
+
+                  # Create a universal binary
+                  lipo -create x64/kcserver arm64/kcserver -output kcserver
+
+                  # Compress and bundle licenses
+                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-universal.zip"
+                  [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
+                  zip -Xry $ARCHIVE kcserver LICENSE
+
+            - name: Upload macOS release artifact (universal)
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ github.token }}
+              with:
+                  upload_url: ${{ needs.create_release.outputs.upload_url }}
+                  asset_path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-universal.zip
+                  asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-universal.zip
+                  asset_content_type: application/octet-stream
+
+            - name: Upload Windows release artifact (x64)
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ github.token }}
+              with:
+                  upload_url: ${{ needs.create_release.outputs.upload_url }}
+                  asset_path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-x64.zip
+                  asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-windows-x64.zip
+                  asset_content_type: application/octet-stream
+
+            - name: Upload Linux release artifacts (x64)
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ github.token }}
+              with:
+                  upload_url: ${{ needs.create_release.outputs.upload_url }}
+                  asset_path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-linux-x64.zip
+                  asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-linux-x64.zip
+                  asset_content_type: application/octet-stream
+
+    status:
+        if: ${{ failure() }}
+        runs-on: self-hosted
+        needs: [build_macos, build_windows, get_version]
+        steps:
+            - name: Notify slack if build fails
+              uses: slackapi/slack-github-action@v1.24.0
+              id: slack-failure
+              with:
+                  payload: |
+                      {
+                        "message": "Kallichore build ${{ needs.get_version.outputs.KALLICHORE_VERSION }} failed",
+                        "status": "Failure",
+                        "run_url": "https://github.com/posit-dev/positron/actions/runs/${{ github.run_id }}"
+                      }
+              env:
+                  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
