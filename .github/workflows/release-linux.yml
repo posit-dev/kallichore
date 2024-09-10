@@ -1,0 +1,59 @@
+name: "Build Kallichore Linux Release"
+
+on:
+    workflow_call:
+      inputs:
+        version:
+          required: false
+          description: "The Kallichore version"
+          default: ${{ github.sha }}
+          type: string
+    workflow_dispatch:
+
+jobs:
+    build_linux:
+        name: Build Linux
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+
+        env:
+            DEBUG_FLAG: ${{ matrix.flavor == 'debug' && '-debug' || '' }}
+
+        strategy:
+            matrix:
+                arch: [x64]
+                flavor: [debug, release]
+
+        steps:
+            - name: Checkout sources
+              uses: actions/checkout@v4
+
+            - name: Setup Build Environment
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y cargo
+
+            - name: Compile Kallichore (${{ matrix.flavor }})
+              run: |
+                  cargo clean
+                  cargo build ${{ matrix.flavor == 'release' && '--release' || '' }}
+
+            # Compress kernel to a zip file
+            - name: Create archive
+              run: |
+                  # Enter the build directory
+                  pushd target/${{ matrix.flavor }}
+
+                  # Compress the kernel to an archive
+                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-x64.zip"
+                  [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
+                  zip -Xry $ARCHIVE kallichore LICENSE
+
+                  popd
+
+            - name: Upload archive
+              uses: actions/upload-artifact@v3
+              with:
+                  name: kallichore-${{ matrix.flavor }}-linux-x64-archive
+                  path: kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-x64.zip
+
