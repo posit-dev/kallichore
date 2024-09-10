@@ -13,9 +13,9 @@
 use directories::BaseDirs;
 #[allow(unused_imports)]
 use futures::{future, stream, SinkExt, Stream};
-use kallichore_api::NewSessionResponse;
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
+use kallichore_api::{InterruptSessionResponse, NewSessionResponse};
 
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
@@ -89,6 +89,14 @@ enum Commands {
     /// Shut down a running session
     Shutdown {
         /// The session to shut down. Optional; if not provided, the first
+        /// running session will be used
+        #[arg(short, long)]
+        session_id: Option<String>,
+    },
+
+    /// Interrupt a running session
+    Interrupt {
+        /// The session to interrupt. Optional; if not provided, the first
         /// running session will be used
         #[arg(short, long)]
         session_id: Option<String>,
@@ -509,6 +517,39 @@ fn main() {
             let ws_stream = rt.block_on(connect_to_session(base_url, session_id.clone()));
             rt.block_on(request_shutdown(ws_stream.unwrap()));
             println!("Shutdown requested for session {} ", session_id);
+        }
+        Some(Commands::Interrupt { session_id }) => {
+            let session_id = match session_id {
+                Some(session_id) => session_id,
+                None => {
+                    let result = rt.block_on(client.list_sessions());
+                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
+                        if let Some(session) = sessions.sessions.first() {
+                            session.session_id.clone()
+                        } else {
+                            eprintln!("No sessions available to interrupt");
+                            return;
+                        }
+                    } else {
+                        eprintln!("Failed to list sessions");
+                        return;
+                    }
+                }
+            };
+            log::info!("Interrupting session '{}'", session_id.clone());
+            match rt.block_on(client.interrupt_session(session_id.clone())) {
+                Ok(resp) => match resp {
+                    InterruptSessionResponse::Interrupted(_) => {
+                        println!("Session {} interrupted", session_id);
+                    }
+                    InterruptSessionResponse::InterruptFailed(error) => {
+                        println!("{}", serde_json::to_string_pretty(&error).unwrap());
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to interrupt session: {:?}", e);
+                }
+            }
         }
         None => {
             eprintln!("No command specified");
