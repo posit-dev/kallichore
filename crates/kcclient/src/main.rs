@@ -10,6 +10,8 @@
 //! Kallichore Client
 #![allow(missing_docs, unused_variables, trivial_casts)]
 
+use std::path::PathBuf;
+
 use directories::BaseDirs;
 #[allow(unused_imports)]
 use futures::{future, stream, SinkExt, Stream};
@@ -298,6 +300,21 @@ async fn execute_request(
     write.close().await.expect("Failed to close connection");
 }
 
+#[cfg(target_os = "macos")]
+fn jupyter_dir() -> PathBuf {
+    // On macOS, Jupyter doens't follow the XDG Base Directory
+    // Specification; it stores its data in `~/Library/Jupyter` instead
+    // of the "correct" XDG location in `~/Library/Application Support`.
+    let base_dir = BaseDirs::new().unwrap();
+    base_dir.home_dir().join("Library").join("Jupyter")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn jupyter_dir() -> PathBuf {
+    let dir = directories::ProjectDirs::from("Jupyter", "", "").unwrap();
+    dir.data_dir().to_path_buf()
+}
+
 // rt may be unused if there are no examples
 #[allow(unused_mut)]
 fn main() {
@@ -339,17 +356,7 @@ fn main() {
         Some(Commands::Start { kernel }) => {
             let base_dir = BaseDirs::new().unwrap();
 
-            // On macOS, Jupyter doens't follow XDG Base Directory
-            // Specification; it stores its data in `~/Library/Jupyter` instead
-            // of the "correct" XDG location in `~/Library/Application Support`.
-            #[cfg(target_os = "macos")]
-            let mut jupyter_dir = base_dir.home_dir().join("Library").join("Jupyter");
-
-            #[cfg(not(target_os = "macos"))]
-            let jupyter_dir = directories::ProjectDirs::from("Jupyter", "", "").unwrap();
-            let mut jupyter_dir = jupyter_dir.data_dir();
-
-            let kernel_spec_json = jupyter_dir
+            let kernel_spec_json = jupyter_dir()
                 .join("kernels")
                 .join(kernel.clone())
                 .join("kernel.json");
