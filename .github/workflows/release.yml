@@ -226,22 +226,22 @@ jobs:
 
         steps:
             # Download all binaries
-            - name: Download macOS arm64 kernel (${{ matrix.flavor }})
+            - name: Download Kallichore for macOS arm64 server (${{ matrix.flavor }})
               uses: actions/download-artifact@v3
               with:
                   name: kallichore-${{ matrix.flavor }}-darwin-arm64-archive
 
-            - name: Download macOS x64 kernel (${{ matrix.flavor}})
+            - name: Download Kallichore for macOS x64 (${{ matrix.flavor}})
               uses: actions/download-artifact@v3
               with:
                   name: kallichore-${{ matrix.flavor }}-darwin-x64-archive
 
-            - name: Download Windows x64 kernel (${{ matrix.flavor}})
+            - name: Download Kallichore for Windows x64 (${{ matrix.flavor}})
               uses: actions/download-artifact@v3
               with:
                   name: kallichore-${{ matrix.flavor }}-windows-x64-archive
 
-            - name: Download Linux x64 kernel (${{ matrix.flavor}})
+            - name: Download Kallichore for Linux x64 (${{ matrix.flavor}})
               uses: actions/download-artifact@v3
               with:
                   name: kallichore-${{ matrix.flavor }}-linux-x64-archive
@@ -265,8 +265,7 @@ jobs:
 
                   # Compress and bundle licenses
                   ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-universal.zip"
-                  [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
-                  zip -Xry $ARCHIVE kcserver LICENSE
+                  zip -Xry $ARCHIVE kcserver
 
             - name: Upload macOS release artifact (universal)
               uses: actions/upload-release-asset@v1
