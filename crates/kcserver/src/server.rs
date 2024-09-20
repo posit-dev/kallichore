@@ -167,7 +167,10 @@ where
         let connection_file = match ConnectionFile::generate(String::from("127.0.0.1")) {
             Ok(connection_file) => connection_file,
             Err(e) => {
-                let error = KSError::SessionStartFailed(e);
+                let error = KSError::SessionCreateFailed(
+                    new_session_id.clone(),
+                    anyhow!("Couldn't create connection file: {}", e),
+                );
                 error.log();
                 return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
             }
@@ -181,16 +184,19 @@ where
         // Combine the temporary directory with the file name to get the full path
         let connection_path: PathBuf = temp_dir.join(connection_file_name);
         if let Err(err) = connection_file.to_file(connection_path.clone()) {
-            let error = KSError::SessionStartFailed(anyhow!(
-                "Failed to write connection file {}: {}",
-                connection_path.to_string_lossy(),
-                err
-            ));
+            let error = KSError::SessionCreateFailed(
+                new_session_id.clone(),
+                anyhow!(
+                    "Failed to write connection file {}: {}",
+                    connection_path.to_string_lossy(),
+                    err
+                ),
+            );
             error.log();
             return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
         }
 
-        log::trace!(
+        log::debug!(
             "Created connection file for session {} at {:?}",
             new_session_id.clone(),
             connection_path
@@ -201,7 +207,7 @@ where
         log_file_name.push(".txt");
         let log_path: PathBuf = temp_dir.join(log_file_name);
 
-        log::trace!(
+        log::debug!(
             "Created log file for session {} at {:?}",
             new_session_id.clone(),
             log_path
@@ -234,7 +240,10 @@ where
         let kernel_session = match KernelSession::new(session, connection_file.clone()) {
             Ok(kernel_session) => kernel_session,
             Err(e) => {
-                let error = KSError::SessionStartFailed(e);
+                let error = KSError::SessionCreateFailed(
+                    new_session_id.clone(),
+                    anyhow!("Kernel session couldn't be established: {}", e),
+                );
                 return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
             }
         };
@@ -261,14 +270,14 @@ where
             match proxy.connect().await {
                 Ok(_) => (),
                 Err(e) => {
-                    let error = KSError::SessionConnectionFailed(connection.session_id, e);
+                    let error = KSError::SessionConnectionFailed(connection.session_id.clone(), e);
                     error.log();
                 }
             }
             match proxy.listen().await {
                 Ok(_) => (),
                 Err(e) => {
-                    let error = KSError::SessionStartFailed(e);
+                    let error = KSError::SessionConnectionFailed(connection.session_id.clone(), e);
                     error.log();
                 }
             }
