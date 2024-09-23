@@ -52,7 +52,19 @@ impl ClientSession {
         let channel_message = match channel_message {
             Ok(channel_message) => channel_message,
             Err(e) => {
-                log::error!("Failed to parse Jupyter message: {}", e);
+                // Convert the vector to a string for logging
+                let data = match String::from_utf8(data) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        log::error!("Failed to convert message to string: {}", e);
+                        return;
+                    }
+                };
+                log::error!(
+                    "Failed to parse Jupyter message: {}. Raw message: {:?}",
+                    e,
+                    data
+                );
                 return;
             }
         };

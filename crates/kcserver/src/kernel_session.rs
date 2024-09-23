@@ -93,6 +93,11 @@ impl KernelSession {
             state.set_status(models::Status::Starting).await;
         }
 
+        log::debug!(
+            "Starting kernel for session {}: {:?}",
+            self.model.session_id,
+            self.argv
+        );
         // Attempt to actually start the kernel process
         let mut child = match tokio::process::Command::new(&self.argv[0])
             .args(&self.argv[1..])
