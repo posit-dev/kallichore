@@ -29,8 +29,8 @@ pub use crate::context;
 type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
 
 use crate::{
-    Api, ChannelsWebsocketResponse, InterruptSessionResponse, KillSessionResponse,
-    ListSessionsResponse, NewSessionResponse, StartSessionResponse,
+    Api, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, StartSessionResponse,
 };
 
 mod paths {
@@ -39,6 +39,7 @@ mod paths {
     lazy_static! {
         pub static ref GLOBAL_REGEX_SET: regex::RegexSet = regex::RegexSet::new(vec![
             r"^/sessions$",
+            r"^/sessions/(?P<session_id>[^/?#]*)$",
             r"^/sessions/(?P<session_id>[^/?#]*)/channels$",
             r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/kill$",
@@ -47,28 +48,35 @@ mod paths {
         .expect("Unable to create global regex set");
     }
     pub(crate) static ID_SESSIONS: usize = 0;
-    pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 1;
+    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 1;
+    lazy_static! {
+        pub static ref REGEX_SESSIONS_SESSION_ID: regex::Regex =
+            #[allow(clippy::invalid_regex)]
+            regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)$")
+                .expect("Unable to create regex for SESSIONS_SESSION_ID");
+    }
+    pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 2;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_CHANNELS: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/channels$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CHANNELS");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 2;
+    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 3;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_INTERRUPT: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_INTERRUPT");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 3;
+    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 4;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_KILL: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/kill$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_KILL");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 4;
+    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 5;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_START: regex::Regex =
             #[allow(clippy::invalid_regex)]
@@ -259,6 +267,81 @@ where
                             *response.body_mut() = Body::from("An internal error occurred");
                         }
                     } */
+
+                    Ok(response)
+                }
+
+                // GetSession - GET /sessions/{session_id}
+                hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID) => {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_SESSIONS_SESSION_ID
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE SESSIONS_SESSION_ID in set but failed match against \"{}\"", path, paths::REGEX_SESSIONS_SESSION_ID.as_str())
+                    );
+
+                    let param_session_id = match percent_encoding::percent_decode(path_params["session_id"].as_bytes()).decode_utf8() {
+                    Ok(param_session_id) => match param_session_id.parse::<String>() {
+                        Ok(param_session_id) => param_session_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
+                    let result = api_impl.get_session(param_session_id, &context).await;
+                    let mut response = Response::new(Body::empty());
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            GetSessionResponse::SessionDetails(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for GET_SESSION_SESSION_DETAILS"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                            GetSessionResponse::FailedToGetSession(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for GET_SESSION_FAILED_TO_GET_SESSION"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = Body::from("An internal error occurred");
+                        }
+                    }
 
                     Ok(response)
                 }
@@ -466,32 +549,32 @@ where
                     match result {
                             Ok(body) => {
                                 let mut unused_elements = Vec::new();
-                                let param_session: Option<models::Session> = if !body.is_empty() {
+                                let param_new_session: Option<models::NewSession> = if !body.is_empty() {
                                     let deserializer = &mut serde_json::Deserializer::from_slice(&body);
                                     let handle_unknown_field = |path: serde_ignored::Path<'_>| {
                                         warn!("Ignoring unknown field in body: {}", path);
                                         unused_elements.push(path.to_string());
                                     };
                                     match serde_ignored::deserialize(deserializer, handle_unknown_field) {
-                                        Ok(param_session) => param_session,
+                                        Ok(param_new_session) => param_new_session,
                                         Err(e) => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from(format!("Couldn't parse body parameter Session - doesn't match schema: {}", e)))
-                                                        .expect("Unable to create Bad Request response for invalid body parameter Session due to schema")),
+                                                        .body(Body::from(format!("Couldn't parse body parameter NewSession - doesn't match schema: {}", e)))
+                                                        .expect("Unable to create Bad Request response for invalid body parameter NewSession due to schema")),
                                     }
                                 } else {
                                     None
                                 };
-                                let param_session = match param_session {
-                                    Some(param_session) => param_session,
+                                let param_new_session = match param_new_session {
+                                    Some(param_new_session) => param_new_session,
                                     None => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from("Missing required body parameter Session"))
-                                                        .expect("Unable to create Bad Request response for missing body parameter Session")),
+                                                        .body(Body::from("Missing required body parameter NewSession"))
+                                                        .expect("Unable to create Bad Request response for missing body parameter NewSession")),
                                 };
 
                                 let result = api_impl.new_session(
-                                            param_session,
+                                            param_new_session,
                                         &context
                                     ).await;
                                 let mut response = Response::new(Body::empty());
@@ -544,8 +627,8 @@ where
                             },
                             Err(e) => Ok(Response::builder()
                                                 .status(StatusCode::BAD_REQUEST)
-                                                .body(Body::from(format!("Couldn't read body parameter Session: {}", e)))
-                                                .expect("Unable to create Bad Request response due to unable to read body parameter Session")),
+                                                .body(Body::from(format!("Couldn't read body parameter NewSession: {}", e)))
+                                                .expect("Unable to create Bad Request response due to unable to read body parameter NewSession")),
                         }
                 }
 
@@ -625,6 +708,7 @@ where
                 }
 
                 _ if path.matched(paths::ID_SESSIONS) => method_not_allowed(),
+                _ if path.matched(paths::ID_SESSIONS_SESSION_ID) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => method_not_allowed(),
@@ -649,6 +733,8 @@ impl<T> RequestParser<T> for ApiRequestParser {
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                 Some("ChannelsWebsocket")
             }
+            // GetSession - GET /sessions/{session_id}
+            hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID) => Some("GetSession"),
             // InterruptSession - GET /sessions/{session_id}/interrupt
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
                 Some("InterruptSession")

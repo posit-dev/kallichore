@@ -22,7 +22,7 @@ pub struct KernelConnection {
 }
 
 impl KernelConnection {
-    pub fn from_session(session: &models::Session, key: String) -> Result<Self, anyhow::Error> {
+    pub fn from_session(session: &models::NewSession, key: String) -> Result<Self, anyhow::Error> {
         // Create a new random HMAC key to sign messages for this session
         let hmac_key = Hmac::<Sha256>::new_from_slice(key.as_bytes())?;
 

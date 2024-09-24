@@ -36,7 +36,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/session"
+                "$ref": "#/components/schemas/newSession"
               }
             }
           }
@@ -63,6 +63,44 @@
           },
           "400": {
             "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}": {
+      "get": {
+        "operationId": "get-session",
+        "summary": "Get session details",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/activeSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Failed to get session",
             "content": {
               "application/json": {
                 "schema": {
@@ -255,12 +293,20 @@
           "message"
         ]
       },
-      "session": {
+      "newSession": {
         "type": "object",
         "properties": {
           "session_id": {
             "type": "string",
             "description": "A unique identifier for the session"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "A human-readable name for the session"
+          },
+          "language": {
+            "type": "string",
+            "description": "The interpreter language"
           },
           "username": {
             "type": "string",
@@ -289,11 +335,14 @@
           }
         },
         "required": [
+          "argv",
+          "display_name",
+          "env",
+          "interrupt_mode",
+          "language",
           "session_id",
           "username",
-          "argv",
-          "working_directory",
-          "env"
+          "working_directory"
         ]
       },
       "execution_queue": {
@@ -321,6 +370,80 @@
           "pending"
         ]
       },
+      "activeSession": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "A unique identifier for the session"
+          },
+          "argv": {
+            "type": "array",
+            "description": "The program and command-line parameters for the session",
+            "items": {
+              "type": "string"
+            }
+          },
+          "process_id": {
+            "type": "integer",
+            "description": "The underlying process ID of the session, if the session is running."
+          },
+          "username": {
+            "type": "string",
+            "description": "The username of the user who owns the session"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "A human-readable name for the session"
+          },
+          "language": {
+            "type": "string",
+            "description": "The interpreter language"
+          },
+          "interrupt_mode": {
+            "$ref": "#/components/schemas/interrupt_mode"
+          },
+          "initial_env": {
+            "type": "object",
+            "description": "The environment variables set when the session was started",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "connected": {
+            "type": "boolean",
+            "description": "Whether the session is connected to a client"
+          },
+          "started": {
+            "type": "string",
+            "format": "date-time",
+            "description": "An ISO 8601 timestamp of when the session was started"
+          },
+          "working_directory": {
+            "type": "string",
+            "description": "The session's current working directory"
+          },
+          "execution_queue": {
+            "$ref": "#/components/schemas/execution_queue"
+          },
+          "status": {
+            "$ref": "#/components/schemas/status"
+          }
+        },
+        "required": [
+          "argv",
+          "connected",
+          "display_name",
+          "execution_queue",
+          "interrupt_mode",
+          "language",
+          "session_id",
+          "started",
+          "status",
+          "username",
+          "working_directory"
+        ]
+      },
       "sessionList": {
         "type": "object",
         "properties": {
@@ -330,57 +453,7 @@
           "sessions": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "session_id": {
-                  "type": "string",
-                  "description": "A unique identifier for the session"
-                },
-                "argv": {
-                  "type": "array",
-                  "description": "The program and command-line parameters for the session",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "process_id": {
-                  "type": "integer",
-                  "description": "The underlying process ID of the session, if the session is running."
-                },
-                "username": {
-                  "type": "string",
-                  "description": "The username of the user who owns the session"
-                },
-                "connected": {
-                  "type": "boolean",
-                  "description": "Whether the session is connected to a client"
-                },
-                "started": {
-                  "type": "string",
-                  "format": "date-time",
-                  "description": "An ISO 8601 timestamp of when the session was started"
-                },
-                "working_directory": {
-                  "type": "string",
-                  "description": "The session's current working directory"
-                },
-                "execution_queue": {
-                  "$ref": "#/components/schemas/execution_queue"
-                },
-                "status": {
-                  "$ref": "#/components/schemas/status"
-                }
-              },
-              "required": [
-                "session_id",
-                "argv",
-                "username",
-                "started",
-                "connected",
-                "working_directory",
-                "execution_queue",
-                "status"
-              ]
+              "$ref": "#/components/schemas/activeSession"
             }
           }
         },

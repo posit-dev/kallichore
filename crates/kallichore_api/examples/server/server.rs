@@ -100,8 +100,8 @@ impl<C> Server<C> {
 
 use kallichore_api::server::MakeService;
 use kallichore_api::{
-    Api, ChannelsWebsocketResponse, InterruptSessionResponse, KillSessionResponse,
-    ListSessionsResponse, NewSessionResponse, StartSessionResponse,
+    Api, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -119,6 +119,20 @@ where
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         info!(
             "channels_websocket(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
+
+    /// Get session details
+    async fn get_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionResponse, ApiError> {
+        info!(
+            "get_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
             context.get().0.clone()
         );
@@ -162,12 +176,12 @@ where
     /// Create a new session
     async fn new_session(
         &self,
-        session: models::Session,
+        new_session: models::NewSession,
         context: &C,
     ) -> Result<NewSessionResponse, ApiError> {
         info!(
             "new_session({:?}) - X-Span-ID: {:?}",
-            session,
+            new_session,
             context.get().0.clone()
         );
         Err(ApiError("Generic failure".into()))

@@ -385,13 +385,15 @@ fn main() {
                 }
             }
 
-            let session = models::Session {
+            let session = models::NewSession {
                 session_id: session_id.clone(),
                 argv: kernel_spec.argv,
+                display_name: format!("{} - {}", kernel_spec.display_name, session_id.clone()),
+                language: kernel_spec.language,
                 username: String::from("testuser"),
                 working_directory: working_directory.to_string_lossy().to_string(),
                 env,
-                interrupt_mode: Some(models::InterruptMode::Message),
+                interrupt_mode: models::InterruptMode::Message,
             };
             info!(
                 "Creating new session for '{}' kernel ({}) with id {}",

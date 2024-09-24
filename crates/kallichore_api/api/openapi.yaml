@@ -27,7 +27,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/session'
+              $ref: '#/components/schemas/newSession'
         required: true
       responses:
         "200":
@@ -43,6 +43,31 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Invalid request
       summary: Create a new session
+  /sessions/{session_id}:
+    get:
+      operationId: get-session
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/activeSession'
+          description: Session details
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Failed to get session
+      summary: Get session details
   /sessions/{session_id}/start:
     get:
       operationId: start-session
@@ -171,10 +196,16 @@ components:
       - signal
       - message
       type: string
-    session:
+    newSession:
       properties:
         session_id:
           description: A unique identifier for the session
+          type: string
+        display_name:
+          description: A human-readable name for the session
+          type: string
+        language:
+          description: The interpreter language
           type: string
         username:
           description: The username of the user who owns the session
@@ -196,7 +227,10 @@ components:
           $ref: '#/components/schemas/interrupt_mode'
       required:
       - argv
+      - display_name
       - env
+      - interrupt_mode
+      - language
       - session_id
       - username
       - working_directory
@@ -225,80 +259,28 @@ components:
       - length
       - pending
       type: object
-    sessionList:
+    activeSession:
       example:
-        total: 0
-        sessions:
-        - connected: true
-          process_id: 6
-          session_id: session_id
-          started: 2000-01-23T04:56:07.000+00:00
-          working_directory: working_directory
-          argv:
-          - argv
-          - argv
-          username: username
-          execution_queue:
-            pending:
-            - "{}"
-            - "{}"
-            length: 1
-            active: "{}"
-          status: uninitialized
-        - connected: true
-          process_id: 6
-          session_id: session_id
-          started: 2000-01-23T04:56:07.000+00:00
-          working_directory: working_directory
-          argv:
-          - argv
-          - argv
-          username: username
-          execution_queue:
-            pending:
-            - "{}"
-            - "{}"
-            length: 1
-            active: "{}"
-          status: uninitialized
-      properties:
-        total:
-          type: integer
-        sessions:
-          items:
-            $ref: '#/components/schemas/sessionList_sessions_inner'
-          type: array
-      required:
-      - sessions
-      - total
-      type: object
-    new_session_200_response:
-      example:
-        session_id: session_id
-      properties:
-        session_id:
-          description: A unique identifier for the session
-          type: string
-      required:
-      - session_id
-      type: object
-    sessionList_sessions_inner:
-      example:
-        connected: true
         process_id: 6
         session_id: session_id
+        language: language
         started: 2000-01-23T04:56:07.000+00:00
         working_directory: working_directory
+        display_name: display_name
         argv:
         - argv
         - argv
-        username: username
         execution_queue:
           pending:
           - "{}"
           - "{}"
           length: 1
           active: "{}"
+        interrupt_mode: signal
+        connected: true
+        initial_env:
+          key: initial_env
+        username: username
         status: uninitialized
       properties:
         session_id:
@@ -316,6 +298,19 @@ components:
         username:
           description: The username of the user who owns the session
           type: string
+        display_name:
+          description: A human-readable name for the session
+          type: string
+        language:
+          description: The interpreter language
+          type: string
+        interrupt_mode:
+          $ref: '#/components/schemas/interrupt_mode'
+        initial_env:
+          additionalProperties:
+            type: string
+          description: The environment variables set when the session was started
+          type: object
         connected:
           description: Whether the session is connected to a client
           type: boolean
@@ -333,11 +328,81 @@ components:
       required:
       - argv
       - connected
+      - display_name
       - execution_queue
+      - interrupt_mode
+      - language
       - session_id
       - started
       - status
       - username
       - working_directory
+      type: object
+    sessionList:
+      example:
+        total: 0
+        sessions:
+        - process_id: 6
+          session_id: session_id
+          language: language
+          started: 2000-01-23T04:56:07.000+00:00
+          working_directory: working_directory
+          display_name: display_name
+          argv:
+          - argv
+          - argv
+          execution_queue:
+            pending:
+            - "{}"
+            - "{}"
+            length: 1
+            active: "{}"
+          interrupt_mode: signal
+          connected: true
+          initial_env:
+            key: initial_env
+          username: username
+          status: uninitialized
+        - process_id: 6
+          session_id: session_id
+          language: language
+          started: 2000-01-23T04:56:07.000+00:00
+          working_directory: working_directory
+          display_name: display_name
+          argv:
+          - argv
+          - argv
+          execution_queue:
+            pending:
+            - "{}"
+            - "{}"
+            length: 1
+            active: "{}"
+          interrupt_mode: signal
+          connected: true
+          initial_env:
+            key: initial_env
+          username: username
+          status: uninitialized
+      properties:
+        total:
+          type: integer
+        sessions:
+          items:
+            $ref: '#/components/schemas/activeSession'
+          type: array
+      required:
+      - sessions
+      - total
+      type: object
+    new_session_200_response:
+      example:
+        session_id: session_id
+      properties:
+        session_id:
+          description: A unique identifier for the session
+          type: string
+      required:
+      - session_id
       type: object
 

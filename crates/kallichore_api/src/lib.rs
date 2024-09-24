@@ -40,6 +40,15 @@ pub enum ChannelsWebsocketResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum GetSessionResponse {
+    /// Session details
+    SessionDetails(models::ActiveSession),
+    /// Failed to get session
+    FailedToGetSession(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum InterruptSessionResponse {
     /// Interrupted
     Interrupted(serde_json::Value),
@@ -98,6 +107,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Get session details
+    async fn get_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionResponse, ApiError>;
+
     /// Interrupt session
     async fn interrupt_session(
         &self,
@@ -118,7 +134,7 @@ pub trait Api<C: Send + Sync> {
     /// Create a new session
     async fn new_session(
         &self,
-        session: models::Session,
+        new_session: models::NewSession,
         context: &C,
     ) -> Result<NewSessionResponse, ApiError>;
 
@@ -157,6 +173,9 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Get session details
+    async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError>;
+
     /// Interrupt session
     async fn interrupt_session(
         &self,
@@ -170,7 +189,10 @@ pub trait ApiNoContext<C: Send + Sync> {
     async fn list_sessions(&self) -> Result<ListSessionsResponse, ApiError>;
 
     /// Create a new session
-    async fn new_session(&self, session: models::Session) -> Result<NewSessionResponse, ApiError>;
+    async fn new_session(
+        &self,
+        new_session: models::NewSession,
+    ) -> Result<NewSessionResponse, ApiError>;
 
     /// Start a session
     async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError>;
@@ -219,6 +241,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().channels_websocket(session_id, &context).await
     }
 
+    /// Get session details
+    async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().get_session(session_id, &context).await
+    }
+
     /// Interrupt session
     async fn interrupt_session(
         &self,
@@ -241,9 +269,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     }
 
     /// Create a new session
-    async fn new_session(&self, session: models::Session) -> Result<NewSessionResponse, ApiError> {
+    async fn new_session(
+        &self,
+        new_session: models::NewSession,
+    ) -> Result<NewSessionResponse, ApiError> {
         let context = self.context().clone();
-        self.api().new_session(session, &context).await
+        self.api().new_session(new_session, &context).await
     }
 
     /// Start a session

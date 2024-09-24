@@ -33,7 +33,7 @@ pub struct KernelSession {
     pub connection: KernelConnection,
 
     /// The session model that was used to create this session
-    pub model: models::Session,
+    pub model: models::NewSession,
 
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
@@ -61,7 +61,7 @@ pub struct KernelSession {
 impl KernelSession {
     /// Create a new kernel session.
     pub fn new(
-        session: models::Session,
+        session: models::NewSession,
         connection_file: connection_file::ConnectionFile,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();

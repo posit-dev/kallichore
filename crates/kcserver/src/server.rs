@@ -37,8 +37,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
-    models, ChannelsWebsocketResponse, InterruptSessionResponse, KillSessionResponse,
-    NewSessionResponse, StartSessionResponse,
+    models, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, NewSessionResponse, StartSessionResponse,
 };
 
 pub async fn create(addr: &str) {
@@ -94,6 +94,20 @@ impl<C> Api<C> for Server<C>
 where
     C: Has<XSpanIdString> + Send + Sync,
 {
+    /// Get session details
+    async fn get_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionResponse, ApiError> {
+        info!(
+            "get_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
+
     /// List active sessions
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError> {
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
@@ -105,12 +119,16 @@ where
         };
 
         // Create a list of session metadata
-        let mut result: Vec<models::SessionListSessionsInner> = Vec::new();
+        let mut result: Vec<models::ActiveSession> = Vec::new();
         for s in sessions.iter() {
             let state = s.state.read().await;
-            result.push(models::SessionListSessionsInner {
+            result.push(models::ActiveSession {
                 session_id: s.connection.session_id.clone(),
                 username: s.connection.username.clone(),
+                display_name: s.model.display_name.clone(),
+                language: s.model.language.clone(),
+                interrupt_mode: s.model.interrupt_mode.clone(),
+                initial_env: Some(s.model.env.clone()),
                 argv: s.argv.clone(),
                 process_id: match state.process_id {
                     Some(pid) => Some(pid as i32),
@@ -134,7 +152,7 @@ where
 
     async fn new_session(
         &self,
-        session: models::Session,
+        session: models::NewSession,
         context: &C,
     ) -> Result<NewSessionResponse, ApiError> {
         info!(
@@ -227,9 +245,11 @@ where
             })
             .collect();
 
-        let session = models::Session {
+        let session = models::NewSession {
             session_id: session_id.session_id.clone(),
             argv: args,
+            display_name: session.display_name.clone(),
+            language: session.language.clone(),
             working_directory: session.working_directory.clone(),
             username: session.username.clone(),
             env: session.env.clone(),
