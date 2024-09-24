@@ -13,10 +13,13 @@ use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Utc};
 use kallichore_api::models;
 use kcshared::{
-    jupyter_message::JupyterMessage,
+    jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_message::{KernelMessage, OutputStream},
     websocket_message::WebsocketMessage,
 };
+use rand::Rng;
+use std::iter;
+use sysinfo::{Pid, Signal, System};
 use tokio::io::{AsyncBufReadExt, AsyncRead};
 use tokio::sync::RwLock;
 
@@ -190,6 +193,47 @@ impl KernelSession {
             status: state.status,
             execution_queue: state.execution_queue.to_json(),
         }
+    }
+
+    pub async fn interrupt(&self) -> Result<(), anyhow::Error> {
+        match self.model.interrupt_mode {
+            models::InterruptMode::Signal => {
+                let pid = self.state.read().await.process_id.unwrap_or(0);
+                if pid == 0 {
+                    return Err(anyhow::anyhow!("No process ID to interrupt"));
+                }
+                let mut system = System::new();
+                let pid = Pid::from_u32(pid);
+                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]));
+                if let Some(process) = system.process(pid) {
+                    process.kill_with(Signal::Interrupt);
+                } else {
+                    return Err(anyhow::anyhow!("Process {} not found", pid));
+                }
+            }
+            models::InterruptMode::Message => {
+                let msg = JupyterMessage {
+                    header: JupyterMessageHeader {
+                        msg_id: self.make_message_id(),
+                        msg_type: "interrupt_request".to_string(),
+                    },
+                    parent_header: None,
+                    metadata: serde_json::Value::Null,
+                    content: serde_json::Value::Null,
+                    channel: JupyterChannel::Control,
+                    buffers: vec![],
+                };
+                self.ws_zmq_tx.send(msg).await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn make_message_id(&self) -> String {
+        let mut rng = rand::thread_rng();
+        iter::repeat_with(|| format!("{:x}", rng.gen_range(0..16)))
+            .take(10)
+            .collect()
     }
 
     /// Stream output from a child process to the WebSocket.

@@ -413,10 +413,41 @@ where
 
     async fn interrupt_session(
         &self,
-        _session_id: String,
+        session_id: String,
         _context: &C,
     ) -> Result<InterruptSessionResponse, ApiError> {
-        unimplemented!();
+        info!("interrupt session: {}", session_id);
+        let kernel_sessions = self.kernel_sessions.clone();
+        let kernel_session = {
+            let kernel_sessions = kernel_sessions.read().unwrap();
+            let kernel_session = match kernel_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+            {
+                Some(s) => s,
+                None => {
+                    let err = KSError::SessionNotFound(session_id.clone());
+                    err.log();
+                    return Ok(InterruptSessionResponse::InterruptFailed(
+                        err.to_json(Some("Can't interrupt session (not found)".to_string())),
+                    ));
+                }
+            };
+            kernel_session.clone()
+        };
+
+        match kernel_session.interrupt().await {
+            Ok(_) => Ok(InterruptSessionResponse::Interrupted(
+                serde_json::Value::Null,
+            )),
+            Err(e) => {
+                let error = KSError::SessionInterruptFailed(session_id, e);
+                error.log();
+                Ok(InterruptSessionResponse::InterruptFailed(
+                    error.to_json(None),
+                ))
+            }
+        }
     }
 
     async fn channels_websocket_request(

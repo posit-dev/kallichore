@@ -24,6 +24,7 @@ pub enum KSError {
     SessionStartFailed(anyhow::Error),
     SessionConnectionFailed(String, anyhow::Error),
     SessionCreateFailed(String, anyhow::Error),
+    SessionInterruptFailed(String, anyhow::Error),
 }
 
 impl fmt::Display for KSError {
@@ -53,6 +54,9 @@ impl fmt::Display for KSError {
             }
             KSError::SessionCreateFailed(session_id, err) => {
                 write!(f, "Failed to create session {}: {}", session_id, err)
+            }
+            KSError::SessionInterruptFailed(session_id, err) => {
+                write!(f, "Failed to interrupt session {}: {}", session_id, err)
             }
         }
     }
