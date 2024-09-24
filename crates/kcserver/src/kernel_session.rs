@@ -218,8 +218,8 @@ impl KernelSession {
                         msg_type: "interrupt_request".to_string(),
                     },
                     parent_header: None,
-                    metadata: serde_json::Value::Null,
-                    content: serde_json::Value::Null,
+                    metadata: serde_json::json!({}),
+                    content: serde_json::json!({}),
                     channel: JupyterChannel::Control,
                     buffers: vec![],
                 };
