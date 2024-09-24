@@ -105,7 +105,24 @@ where
             session_id,
             context.get().0.clone()
         );
-        Err(ApiError("Generic failure".into()))
+        let session = {
+            let kernel_sessions = self.kernel_sessions.read().unwrap();
+            let kernel_session = match kernel_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+            {
+                Some(s) => s,
+                None => {
+                    let err = KSError::SessionNotFound(session_id.clone());
+                    err.log();
+                    return Ok(GetSessionResponse::FailedToGetSession(err.to_json(None)));
+                }
+            };
+            kernel_session.clone()
+        };
+        return Ok(GetSessionResponse::SessionDetails(
+            session.as_active_session().await,
+        ));
     }
 
     /// List active sessions
@@ -121,25 +138,7 @@ where
         // Create a list of session metadata
         let mut result: Vec<models::ActiveSession> = Vec::new();
         for s in sessions.iter() {
-            let state = s.state.read().await;
-            result.push(models::ActiveSession {
-                session_id: s.connection.session_id.clone(),
-                username: s.connection.username.clone(),
-                display_name: s.model.display_name.clone(),
-                language: s.model.language.clone(),
-                interrupt_mode: s.model.interrupt_mode.clone(),
-                initial_env: Some(s.model.env.clone()),
-                argv: s.argv.clone(),
-                process_id: match state.process_id {
-                    Some(pid) => Some(pid as i32),
-                    None => None,
-                },
-                connected: state.connected,
-                working_directory: state.working_directory.clone(),
-                started: s.started.clone(),
-                status: state.status,
-                execution_queue: state.execution_queue.to_json(),
-            });
+            result.push(s.as_active_session().await);
         }
         let session_list = models::SessionList {
             total: result.len() as i32,

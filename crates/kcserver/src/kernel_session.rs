@@ -169,6 +169,29 @@ impl KernelSession {
         Ok(())
     }
 
+    /// Format this session as an active session.
+    pub async fn as_active_session(&self) -> models::ActiveSession {
+        let state = self.state.read().await;
+        models::ActiveSession {
+            session_id: self.connection.session_id.clone(),
+            username: self.connection.username.clone(),
+            display_name: self.model.display_name.clone(),
+            language: self.model.language.clone(),
+            interrupt_mode: self.model.interrupt_mode.clone(),
+            initial_env: Some(self.model.env.clone()),
+            argv: self.argv.clone(),
+            process_id: match state.process_id {
+                Some(pid) => Some(pid as i32),
+                None => None,
+            },
+            connected: state.connected,
+            working_directory: state.working_directory.clone(),
+            started: self.started.clone(),
+            status: state.status,
+            execution_queue: state.execution_queue.to_json(),
+        }
+    }
+
     /// Stream output from a child process to the WebSocket.
     ///
     /// This function reads lines from a stream and sends them to the WebSocket. It's used to forward

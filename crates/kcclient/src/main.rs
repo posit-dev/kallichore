@@ -497,6 +497,16 @@ fn main() {
                     }
                 }
             };
+            // Get details for the named session
+            let details = rt.block_on(client.get_session(session_id.clone()));
+            match details {
+                Ok(details) => {
+                    println!("{}", serde_json::to_string_pretty(&details).unwrap());
+                }
+                Err(e) => {
+                    eprintln!("Failed to get session details: {:?}", e);
+                }
+            }
             log::info!("Getting kernel info from  session '{}'", session_id);
             let ws_stream = rt
                 .block_on(connect_to_session(base_url, session_id))
