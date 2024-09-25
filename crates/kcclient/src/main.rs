@@ -17,7 +17,7 @@ use directories::BaseDirs;
 use futures::{future, stream, SinkExt, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
-use kallichore_api::{InterruptSessionResponse, NewSessionResponse};
+use kallichore_api::{InterruptSessionResponse, NewSessionResponse, RestartSessionResponse};
 
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
@@ -86,6 +86,22 @@ enum Commands {
         /// Whether to wait for execution to finish
         #[arg(short, long)]
         wait: bool,
+    },
+
+    /// Restart a running session
+    Restart {
+        /// The session to restart. Optional; if not provided, the first
+        /// running session will be used
+        #[arg(short, long)]
+        session_id: Option<String>,
+    },
+
+    /// Listen to events from a running session
+    Listen {
+        /// The session to interrupt. Optional; if not provided, the first
+        /// running session will be used
+        #[arg(short, long)]
+        session_id: Option<String>,
     },
 
     /// Shut down a running session
@@ -163,6 +179,28 @@ async fn request_shutdown(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>)
         .expect("Failed to send message");
 }
 
+async fn listen(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) {
+    let (mut _write, mut read) = ws_stream.split();
+    loop {
+        match read.next().await {
+            Some(message) => {
+                let data = message.unwrap().into_data();
+                let payload = String::from_utf8_lossy(&data);
+                let message = serde_json::from_str::<WebsocketMessage>(&payload).unwrap();
+                // print a timestamp
+                println!(
+                    "[{}] {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    serde_json::to_string_pretty(&message).unwrap()
+                );
+            }
+            None => {
+                debug!("No message received");
+                break;
+            }
+        }
+    }
+}
 async fn get_kernel_info(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) {
     let (mut write, mut read) = ws_stream.split();
 
@@ -535,6 +573,63 @@ fn main() {
             let ws_stream = rt.block_on(connect_to_session(base_url, session_id.clone()));
             rt.block_on(request_shutdown(ws_stream.unwrap()));
             println!("Shutdown requested for session {} ", session_id);
+        }
+        Some(Commands::Listen { session_id }) => {
+            let session_id = match session_id {
+                Some(session_id) => session_id,
+                None => {
+                    let result = rt.block_on(client.list_sessions());
+                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
+                        if let Some(session) = sessions.sessions.first() {
+                            session.session_id.clone()
+                        } else {
+                            eprintln!("No sessions available to listen to");
+                            return;
+                        }
+                    } else {
+                        eprintln!("Failed to list sessions");
+                        return;
+                    }
+                }
+            };
+            let ws_stream = rt
+                .block_on(connect_to_session(base_url, session_id.clone()))
+                .unwrap();
+            println!("Listening to session {} (^C to exit)", session_id.clone());
+            rt.block_on(listen(ws_stream))
+        }
+        Some(Commands::Restart { session_id }) => {
+            let session_id = match session_id {
+                Some(session_id) => session_id,
+                None => {
+                    let result = rt.block_on(client.list_sessions());
+                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
+                        if let Some(session) = sessions.sessions.first() {
+                            session.session_id.clone()
+                        } else {
+                            eprintln!("No sessions available to restart");
+                            return;
+                        }
+                    } else {
+                        eprintln!("Failed to list sessions");
+                        return;
+                    }
+                }
+            };
+            log::info!("Restarting session '{}'", session_id.clone());
+            match rt.block_on(client.restart_session(session_id.clone())) {
+                Ok(resp) => match resp {
+                    RestartSessionResponse::Restarted(_) => {
+                        println!("Session {} restarted", session_id);
+                    }
+                    RestartSessionResponse::RestartFailed(error) => {
+                        println!("{}", serde_json::to_string_pretty(&error).unwrap());
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to restart session: {:?}", e);
+                }
+            }
         }
         Some(Commands::Interrupt { session_id }) => {
             let session_id = match session_id {
