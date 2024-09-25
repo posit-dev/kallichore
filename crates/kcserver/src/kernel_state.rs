@@ -23,6 +23,9 @@ pub struct KernelState {
     /// Whether the kernel is connected to a client.
     pub connected: bool,
 
+    /// Whether the kernel is currently restarting.
+    pub restarting: bool,
+
     /// The current working directory of the kernel.
     pub working_directory: String,
 
@@ -44,6 +47,7 @@ impl KernelState {
             status: models::Status::Idle,
             working_directory,
             connected: false,
+            restarting: false,
             process_id: None,
             execution_queue: ExecutionQueue::new(),
             ws_json_tx,
@@ -54,9 +58,12 @@ impl KernelState {
     pub async fn set_status(&mut self, status: models::Status) {
         self.status = status;
 
-        // If entering the Exited status, clear the execution queue
+        // When exiting ...
         if status == models::Status::Exited {
+            // ... clear the execution queue
             self.execution_queue.clear();
+            // ... clear the process ID (no longer running)
+            self.process_id = None;
         }
 
         // Publish the new status to the WebSocket

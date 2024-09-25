@@ -452,10 +452,32 @@ where
 
     async fn restart_session(
         &self,
-        _session_id: String,
+        session_id: String,
         _context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
-        unimplemented!()
+        let session = {
+            let kernel_sessions = self.kernel_sessions.read().unwrap();
+            let kernel_session = match kernel_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+            {
+                Some(s) => s,
+                None => {
+                    let err = KSError::SessionNotFound(session_id.clone());
+                    err.log();
+                    return Ok(RestartSessionResponse::RestartFailed(err.to_json(None)));
+                }
+            };
+            kernel_session.clone()
+        };
+        match session.restart().await {
+            Ok(_) => Ok(RestartSessionResponse::Restarted(serde_json::Value::Null)),
+            Err(e) => {
+                let error = KSError::SessionStartFailed(e);
+                error.log();
+                Ok(RestartSessionResponse::RestartFailed(error.to_json(None)))
+            }
+        }
     }
 
     async fn channels_websocket_request(

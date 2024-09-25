@@ -101,6 +101,7 @@ impl KernelSession {
             self.model.session_id,
             self.argv
         );
+
         // Attempt to actually start the kernel process
         let mut child = match tokio::process::Command::new(&self.argv[0])
             .args(&self.argv[1..])
@@ -143,31 +144,80 @@ impl KernelSession {
         }
 
         // Prepare the data needed in the thread that waits for the child process to exit
-        let kernel_state = self.state.clone();
-        let session_id = self.model.session_id.clone();
-        let ws_json_tx = self.ws_json_tx.clone();
+        let kernel = self.clone();
         tokio::spawn(async move {
-            // Actually run the kernel! This will block until the kernel exits.
-            let status = child.wait().await.expect("Failed to wait on child process");
-
-            log::info!(
-                "Child process for session {} exited with status: {}",
-                session_id,
-                status
-            );
-            {
-                // update the status of the session
-                let mut state = kernel_state.write().await;
-                state.set_status(models::Status::Exited).await;
-            }
-
-            let code = status.code().unwrap_or(-1);
-            let event = WebsocketMessage::Kernel(KernelMessage::Exited(code));
-            ws_json_tx
-                .send(event)
-                .await
-                .expect("Failed to send exit event to client");
+            kernel.run_child(child).await;
+            ()
         });
+
+        Ok(())
+    }
+
+    async fn run_child(&self, mut child: tokio::process::Child) {
+        // Actually run the kernel! This will block until the kernel exits.
+        let status = child.wait().await.expect("Failed to wait on child process");
+
+        log::info!(
+            "Child process for session {} exited with status: {}",
+            self.connection.session_id,
+            status
+        );
+        {
+            // update the status of the session
+            let mut state = self.state.write().await;
+            state.set_status(models::Status::Exited).await;
+        }
+
+        let code = status.code().unwrap_or(-1);
+        let event = WebsocketMessage::Kernel(KernelMessage::Exited(code));
+        self.ws_json_tx
+            .send(event)
+            .await
+            .expect("Failed to send exit event to client");
+    }
+
+    pub async fn restart(&self) -> Result<(), anyhow::Error> {
+        // Enter the restarting state.
+        {
+            let mut state = self.state.write().await;
+            if state.restarting {
+                return Err(anyhow::anyhow!("Kernel is already restarting"));
+            }
+            state.restarting = true;
+        }
+
+        // Make and send the shutdown request.
+        let msg = JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_id: self.make_message_id(),
+                msg_type: "shutdown_request".to_string(),
+            },
+            parent_header: None,
+            metadata: serde_json::json!({}),
+            content: serde_json::json!({
+                "restart": true, // Restart the kernel
+            }),
+            channel: JupyterChannel::Control,
+            buffers: vec![],
+        };
+
+        match self.ws_zmq_tx.send(msg).await {
+            Ok(_) => {
+                log::debug!("Preparing for restart; sent shutdown request to kernel");
+            }
+            Err(e) => {
+                // Leave the restarting state since we failed to send the
+                // shutdown request.
+                {
+                    let mut state = self.state.write().await;
+                    state.restarting = false;
+                }
+                return Err(anyhow::anyhow!(
+                    "Failed to send shutdown request to kernel: {}",
+                    e
+                ));
+            }
+        }
 
         Ok(())
     }
@@ -257,7 +307,10 @@ impl KernelSession {
             loop {
                 buffer.clear();
                 match reader.read_line(&mut buffer).await {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        log::debug!("End of output stream (kind: {:?})", kind);
+                        break;
+                    }
                     Ok(_) => {
                         let message = WebsocketMessage::Kernel(KernelMessage::Output(
                             kind.clone(),
