@@ -10,6 +10,7 @@ Method | HTTP request | Description
 **kill-session**](default_api.md#kill-session) | **GET** /sessions/{session_id}/kill | Force quit session
 **list-sessions**](default_api.md#list-sessions) | **GET** /sessions | List active sessions
 **new-session**](default_api.md#new-session) | **PUT** /sessions | Create a new session
+**restart-session**](default_api.md#restart-session) | **GET** /sessions/{session_id}/restart | Restart a session
 **start-session**](default_api.md#start-session) | **GET** /sessions/{session_id}/start | Start a session
 
 
@@ -156,6 +157,31 @@ No authorization required
 ### HTTP request headers
 
  - **Content-Type**: application/json
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **restart-session**
+> serde_json::Value restart-session(session_id)
+Restart a session
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **session_id** | **String**|  | 
+
+### Return type
+
+[**serde_json::Value**](AnyType.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
  - **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)

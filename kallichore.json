@@ -148,6 +148,42 @@
         }
       }
     },
+    "/sessions/{session_id}/restart": {
+      "get": {
+        "operationId": "restart-session",
+        "summary": "Restart a session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Restarted",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Restart failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sessions/{session_id}/kill": {
       "get": {
         "operationId": "kill-session",

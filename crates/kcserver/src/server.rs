@@ -38,7 +38,7 @@ use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
     models, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, NewSessionResponse, StartSessionResponse,
+    KillSessionResponse, NewSessionResponse, RestartSessionResponse, StartSessionResponse,
 };
 
 pub async fn create(addr: &str) {
@@ -448,6 +448,14 @@ where
                 ))
             }
         }
+    }
+
+    async fn restart_session(
+        &self,
+        _session_id: String,
+        _context: &C,
+    ) -> Result<RestartSessionResponse, ApiError> {
+        unimplemented!()
     }
 
     async fn channels_websocket_request(

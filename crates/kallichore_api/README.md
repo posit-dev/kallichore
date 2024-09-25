@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-09-23T17:05:53.710460-07:00[America/Los_Angeles]
+- Build date: 2024-09-25T14:42:25.050758-07:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -67,6 +67,7 @@ cargo run --example client GetSession
 cargo run --example client InterruptSession
 cargo run --example client KillSession
 cargo run --example client ListSessions
+cargo run --example client RestartSession
 cargo run --example client StartSession
 ```
 
@@ -107,6 +108,7 @@ Method | HTTP request | Description
 [**kill-session**](docs/default_api.md#kill-session) | **GET** /sessions/{session_id}/kill | Force quit session
 [**list-sessions**](docs/default_api.md#list-sessions) | **GET** /sessions | List active sessions
 [**new-session**](docs/default_api.md#new-session) | **PUT** /sessions | Create a new session
+[**restart-session**](docs/default_api.md#restart-session) | **GET** /sessions/{session_id}/restart | Restart a session
 [**start-session**](docs/default_api.md#start-session) | **GET** /sessions/{session_id}/start | Start a session
 
 

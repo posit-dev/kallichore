@@ -92,6 +92,30 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Start failed
       summary: Start a session
+  /sessions/{session_id}/restart:
+    get:
+      operationId: restart-session
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Restarted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Restart failed
+      summary: Restart a session
   /sessions/{session_id}/kill:
     get:
       operationId: kill-session

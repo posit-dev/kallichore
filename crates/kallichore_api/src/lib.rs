@@ -82,6 +82,15 @@ pub enum NewSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum RestartSessionResponse {
+    /// Restarted
+    Restarted(serde_json::Value),
+    /// Restart failed
+    RestartFailed(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum StartSessionResponse {
     /// Started
     Started(serde_json::Value),
@@ -138,6 +147,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<NewSessionResponse, ApiError>;
 
+    /// Restart a session
+    async fn restart_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<RestartSessionResponse, ApiError>;
+
     /// Start a session
     async fn start_session(
         &self,
@@ -193,6 +209,10 @@ pub trait ApiNoContext<C: Send + Sync> {
         &self,
         new_session: models::NewSession,
     ) -> Result<NewSessionResponse, ApiError>;
+
+    /// Restart a session
+    async fn restart_session(&self, session_id: String)
+        -> Result<RestartSessionResponse, ApiError>;
 
     /// Start a session
     async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError>;
@@ -277,12 +297,20 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().new_session(new_session, &context).await
     }
 
+    /// Restart a session
+    async fn restart_session(
+        &self,
+        session_id: String,
+    ) -> Result<RestartSessionResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().restart_session(session_id, &context).await
+    }
+
     /// Start a session
     async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError> {
         let context = self.context().clone();
         self.api().start_session(session_id, &context).await
     }
-
     // --- Start Kallichore ---
     /// Upgrade a websocket request for channel communication
     async fn channels_websocket_request(
