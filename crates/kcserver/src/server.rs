@@ -286,10 +286,7 @@ where
         };
 
         let mut sessions = sessions.write().unwrap();
-        let connection = kernel_session.connection.clone();
-        let ws_json_tx = kernel_session.ws_json_tx.clone();
-        let ws_zmq_rx = kernel_session.ws_zmq_rx.clone();
-        let kernel_state = kernel_session.state.clone();
+        let new_session = kernel_session.clone();
         sessions.push(kernel_session);
 
         // Start the ZeroMQ/WebSocket proxy
@@ -299,22 +296,29 @@ where
         tokio::spawn(async move {
             let mut proxy = ZmqWsProxy::new(
                 connection_file,
-                connection.clone(),
-                kernel_state,
-                ws_json_tx,
-                ws_zmq_rx,
+                new_session.connection.clone(),
+                new_session.state,
+                new_session.ws_json_tx,
+                new_session.ws_zmq_rx,
+                new_session.status_rx,
             );
             match proxy.connect().await {
                 Ok(_) => (),
                 Err(e) => {
-                    let error = KSError::SessionConnectionFailed(connection.session_id.clone(), e);
+                    let error = KSError::SessionConnectionFailed(
+                        new_session.connection.session_id.clone(),
+                        e,
+                    );
                     error.log();
                 }
             }
             match proxy.listen().await {
                 Ok(_) => (),
                 Err(e) => {
-                    let error = KSError::SessionConnectionFailed(connection.session_id.clone(), e);
+                    let error = KSError::SessionConnectionFailed(
+                        new_session.connection.session_id.clone(),
+                        e,
+                    );
                     error.log();
                 }
             }

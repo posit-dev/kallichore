@@ -130,7 +130,7 @@ impl HeartbeatMonitor {
                             // cause a receive error (the other end of the
                             // socket is gone). We can just stop the heartbeat
                             // monitor.
-                            log::trace!(
+                            log::debug!(
                                 "[session {}] Stopping heartbeat monitor (kernel exited).",
                                 session_id
                             );
@@ -162,7 +162,7 @@ impl HeartbeatMonitor {
                 // Check to see if the kernel is still running; if not, stop the monitor
                 let state = state.read().await;
                 if state.status == Status::Exited {
-                    log::trace!(
+                    log::debug!(
                         "[session {}] Stopping heartbeat monitor (kernel exited).",
                         session_id
                     );

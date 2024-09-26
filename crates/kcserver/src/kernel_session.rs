@@ -59,6 +59,9 @@ pub struct KernelSession {
 
     /// The channel to receive ZMQ messages from the kernel
     pub ws_zmq_rx: Receiver<JupyterMessage>,
+
+    /// The channel to receive status updates
+    pub status_rx: Receiver<models::Status>,
 }
 
 impl KernelSession {
@@ -69,9 +72,10 @@ impl KernelSession {
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
+        let (status_tx, status_rx) = async_channel::unbounded::<models::Status>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
             session.working_directory.clone(),
-            json_tx.clone(),
+            status_tx.clone(),
         )));
         let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
         let started = Utc::now();
@@ -83,6 +87,7 @@ impl KernelSession {
             ws_json_rx: json_rx,
             ws_zmq_tx: zmq_tx,
             ws_zmq_rx: zmq_rx,
+            status_rx,
             connection,
             started,
         };
@@ -147,7 +152,6 @@ impl KernelSession {
         let kernel = self.clone();
         tokio::spawn(async move {
             kernel.run_child(child).await;
-            ()
         });
 
         Ok(())
@@ -219,7 +223,52 @@ impl KernelSession {
             }
         }
 
+        // Spawn a task to wait for the kernel to exit; when it does, complete
+        // the restart by starting it again.
+        let session = self.clone();
+        tokio::spawn(async move {
+            log::debug!(
+                "[session {}] Waiting for kernel to exit before restarting",
+                session.connection.session_id
+            );
+            session.complete_restart().await;
+        });
         Ok(())
+    }
+
+    async fn complete_restart(&self) {
+        loop {
+            let status = self.status_rx.recv().await.unwrap();
+            if status == models::Status::Exited {
+                log::debug!(
+                    "[session {}] Kernel exited; restarting",
+                    self.connection.session_id
+                );
+                break;
+            } else {
+                // Ignore any status updates that aren't the kernel exiting,
+                // but since we expect the next status to be the kernel
+                // exiting, log it.
+                log::debug!(
+                    "[session {}] Restarting: '{}' status received while waiting for exit",
+                    self.connection.session_id,
+                    status
+                );
+            }
+        }
+        // Make sure the kernel is still restarting.
+        {
+            let state = self.state.read().await;
+            if !state.restarting {
+                log::debug!(
+                    "[session {}] Kernel is no longer restarting; stopping restart",
+                    self.connection.session_id
+                );
+                return;
+            }
+        }
+
+        self.start().await.expect("Failed to restart kernel");
     }
 
     /// Format this session as an active session.

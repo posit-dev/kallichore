@@ -7,7 +7,6 @@
 
 use async_channel::Sender;
 use kallichore_api::models;
-use kcshared::{kernel_message::KernelMessage, websocket_message::WebsocketMessage};
 
 use crate::execution_queue::ExecutionQueue;
 
@@ -35,14 +34,13 @@ pub struct KernelState {
     /// The execution queue for the kernel.
     pub execution_queue: ExecutionQueue,
 
-    /// A channel to send JSON messages to the WebSocket, for automatically
-    /// publishing kernel status updates.
-    ws_json_tx: Sender<WebsocketMessage>,
+    /// A channel to publish status updates
+    ws_status_tx: Sender<models::Status>,
 }
 
 impl KernelState {
     /// Create a new kernel state.
-    pub fn new(working_directory: String, ws_json_tx: Sender<WebsocketMessage>) -> Self {
+    pub fn new(working_directory: String, ws_status_tx: Sender<models::Status>) -> Self {
         KernelState {
             status: models::Status::Idle,
             working_directory,
@@ -50,7 +48,7 @@ impl KernelState {
             restarting: false,
             process_id: None,
             execution_queue: ExecutionQueue::new(),
-            ws_json_tx,
+            ws_status_tx,
         }
     }
 
@@ -66,8 +64,13 @@ impl KernelState {
             self.process_id = None;
         }
 
-        // Publish the new status to the WebSocket
+        // Publish the new status to the status stream (for internal use)
+        self.ws_status_tx.send(status.clone()).await.unwrap();
+
+        // Publish the new status to the WebSocket (for the client)
+        /*
         let status_message = WebsocketMessage::Kernel(KernelMessage::Status(status.clone()));
         self.ws_json_tx.send(status_message).await.unwrap();
+        */
     }
 }

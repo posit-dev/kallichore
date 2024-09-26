@@ -83,7 +83,7 @@ impl ConnectionFile {
             Some(port) => port,
             None => {
                 return Err(anyhow::anyhow!(
-                    "Failed to pick stdin port (no unused ports)"
+                    "Failed to pick shell port (no unused ports)"
                 ))
             }
         };

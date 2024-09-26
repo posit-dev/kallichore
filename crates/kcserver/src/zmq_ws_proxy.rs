@@ -36,6 +36,7 @@ pub struct ZmqWsProxy {
     pub heartbeat: HeartbeatMonitor,
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
+    pub status_rx: Receiver<models::Status>,
     pub state: Arc<RwLock<KernelState>>,
 }
 
@@ -59,6 +60,7 @@ impl ZmqWsProxy {
         state: Arc<RwLock<KernelState>>,
         ws_json_tx: Sender<WebsocketMessage>,
         ws_zmq_rx: Receiver<JupyterMessage>,
+        status_rx: Receiver<models::Status>,
     ) -> Self {
         let session_id = connection.session_id.clone();
         let hb_address = format!("tcp://{}:{}", connection_file.ip, connection_file.hb_port);
@@ -72,6 +74,7 @@ impl ZmqWsProxy {
             connection,
             ws_json_tx,
             ws_zmq_rx,
+            status_rx,
             state,
         }
     }
@@ -149,6 +152,10 @@ impl ZmqWsProxy {
 
     pub async fn listen(&mut self) -> Result<(), anyhow::Error> {
         let session_id = self.connection.session_id.clone();
+        log::debug!(
+            "[session {}] Starting ZeroMQ-WebSocket proxy",
+            self.connection.session_id
+        );
         // Wait for a message from any socket
         loop {
             select! {
@@ -159,6 +166,7 @@ impl ZmqWsProxy {
                         },
                         Err(e) => {
                             log::error!("[session {}] Failed to receive message from shell socket: {}", session_id, e);
+                            break;
                         },
                     }
                 },
@@ -169,6 +177,7 @@ impl ZmqWsProxy {
                         },
                         Err(e) => {
                             log::error!("[session {}] Failed to receive message from iopub socket: {}", session_id, e);
+                            break;
                         },
                     }
                 },
@@ -179,6 +188,7 @@ impl ZmqWsProxy {
                         },
                         Err(e) => {
                             log::error!("[session {}] Failed to receive message from control socket: {}", session_id, e);
+                            break;
                         },
                     }
                 },
@@ -188,7 +198,8 @@ impl ZmqWsProxy {
                             self.forward_zmq(JupyterChannel::Stdin, msg).await?;
                         },
                         Err(e) => {
-                            log::error!("[session {}] Failed to receive message from iopub socket: {}", session_id, e);
+                            log::error!("[session {}] Failed to receive message from stdin socket: {}", session_id, e);
+                            break;
                         },
                     }
                 },
@@ -200,11 +211,34 @@ impl ZmqWsProxy {
                         }
                         Err(e) => {
                             log::error!("[session {}] Failed to receive message from websocket: {}", session_id, e);
+                            break;
                         },
+                    }
+                },
+                status = self.status_rx.recv() => {
+                    match status {
+                        Ok(status) => {
+                            let status_message = WebsocketMessage::Kernel(KernelMessage::Status(status.clone()));
+                            self.ws_json_tx.send(status_message).await.unwrap();
+
+                            if status == models::Status::Exited {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("[session {}] Failed to receive status message: {}", session_id, e);
+                            break;
+                        }
                     }
                 }
             };
         }
+        log::debug!(
+            "[session {}] Ending ZeroMQ-WebSocket proxy",
+            self.connection.session_id
+        );
+
+        Ok(())
     }
 
     async fn forward_ws(&mut self, msg: JupyterMessage) -> Result<(), anyhow::Error> {
