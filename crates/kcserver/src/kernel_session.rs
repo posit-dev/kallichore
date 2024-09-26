@@ -11,6 +11,7 @@ use std::{process::Stdio, sync::Arc};
 
 use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Utc};
+use event_listener::Event;
 use kallichore_api::models;
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
@@ -62,6 +63,9 @@ pub struct KernelSession {
 
     /// The channel to receive status updates
     pub status_rx: Receiver<models::Status>,
+
+    /// The exit event
+    pub exit_event: Arc<Event>,
 }
 
 impl KernelSession {
@@ -90,6 +94,7 @@ impl KernelSession {
             status_rx,
             connection,
             started,
+            exit_event: Arc::new(Event::new()),
         };
         Ok(kernel_session)
     }
@@ -121,6 +126,7 @@ impl KernelSession {
                 log::error!("Failed to start kernel: {}", e);
                 {
                     let mut state = self.state.write().await;
+                    self.exit_event.notify(usize::MAX);
                     state.set_status(models::Status::Exited).await;
                 }
                 return Err(e.into());
@@ -171,6 +177,9 @@ impl KernelSession {
             let mut state = self.state.write().await;
             state.set_status(models::Status::Exited).await;
         }
+
+        // Notify anyone listening that the kernel has exited
+        self.exit_event.notify(usize::MAX);
 
         let code = status.code().unwrap_or(-1);
         let event = WebsocketMessage::Kernel(KernelMessage::Exited(code));
@@ -237,25 +246,10 @@ impl KernelSession {
     }
 
     async fn complete_restart(&self) {
-        loop {
-            let status = self.status_rx.recv().await.unwrap();
-            if status == models::Status::Exited {
-                log::debug!(
-                    "[session {}] Kernel exited; restarting",
-                    self.connection.session_id
-                );
-                break;
-            } else {
-                // Ignore any status updates that aren't the kernel exiting,
-                // but since we expect the next status to be the kernel
-                // exiting, log it.
-                log::debug!(
-                    "[session {}] Restarting: '{}' status received while waiting for exit",
-                    self.connection.session_id,
-                    status
-                );
-            }
-        }
+        // Wait for the kernel to exit
+        let listener = self.exit_event.listen();
+        listener.await;
+
         // Make sure the kernel is still restarting.
         {
             let state = self.state.read().await;

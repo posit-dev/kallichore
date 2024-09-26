@@ -230,7 +230,7 @@ impl ZmqWsProxy {
                             break;
                         }
                     }
-                }
+                },
             };
         }
         log::debug!(
