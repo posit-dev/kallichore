@@ -76,6 +76,30 @@ impl<C> Server<C> {
             client_sessions: Arc::new(RwLock::new(vec![])),
         }
     }
+
+    /// Look up a kernel session by its session ID.
+    ///
+    /// # Arguments
+    ///
+    /// - `session_id`: The session ID to look up.
+    ///
+    /// # Returns
+    ///
+    /// The kernel session with the given session ID, or an error if no such
+    /// session exists.
+    fn find_session(&self, session_id: String) -> Result<KernelSession, KSError> {
+        let kernel_sessions = self.kernel_sessions.read().unwrap();
+        let kernel_session = match kernel_sessions
+            .iter()
+            .find(|s| s.connection.session_id == session_id)
+        {
+            Some(s) => s,
+            None => {
+                return Err(KSError::SessionNotFound(session_id.clone()));
+            }
+        };
+        Ok(kernel_session.clone())
+    }
 }
 
 use kallichore_api::server::MakeService;
@@ -88,6 +112,8 @@ use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
+
+impl<C> Server<C> {}
 
 #[async_trait]
 impl<C> Api<C> for Server<C>
@@ -105,20 +131,12 @@ where
             session_id,
             context.get().0.clone()
         );
-        let session = {
-            let kernel_sessions = self.kernel_sessions.read().unwrap();
-            let kernel_session = match kernel_sessions
-                .iter()
-                .find(|s| s.connection.session_id == session_id)
-            {
-                Some(s) => s,
-                None => {
-                    let err = KSError::SessionNotFound(session_id.clone());
-                    err.log();
-                    return Ok(GetSessionResponse::FailedToGetSession(err.to_json(None)));
-                }
-            };
-            kernel_session.clone()
+        let session = match self.find_session(session_id.clone()) {
+            Ok(kernel_session) => kernel_session,
+            Err(err) => {
+                err.log();
+                return Ok(GetSessionResponse::FailedToGetSession(err.to_json(None)));
+            }
         };
         return Ok(GetSessionResponse::SessionDetails(
             session.as_active_session().await,
@@ -320,21 +338,13 @@ where
     ) -> Result<KillSessionResponse, ApiError> {
         info!("kill session: {}", session_id);
         // Get the kernel session with the given ID
-        let kernel_sessions = self.kernel_sessions.clone();
-        let kernel_session = {
-            let kernel_sessions = kernel_sessions.read().unwrap();
-            let kernel_session = match kernel_sessions
-                .iter()
-                .find(|s| s.connection.session_id == session_id)
-            {
-                Some(s) => s,
-                None => {
-                    let err = KSError::SessionNotFound(session_id.clone());
-                    err.log();
-                    return Ok(KillSessionResponse::KillFailed(err.to_json(None)));
-                }
-            };
-            kernel_session.clone()
+
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Ok(kernel_session) => kernel_session,
+            Err(err) => {
+                err.log();
+                return Ok(KillSessionResponse::KillFailed(err.to_json(None)));
+            }
         };
 
         // Ensure that the kernel hasn't already exited
@@ -358,19 +368,28 @@ where
             Some(pid) => {
                 // Kill the process
                 let mut system = System::new();
-                let pid = Pid::from_u32(pid);
-                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]));
-                if let Some(process) = system.process(pid) {
-                    process.kill();
-                    Ok(KillSessionResponse::Killed(serde_json::Value::Null))
+                let process_id = Pid::from_u32(pid);
+                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[process_id]));
+                if let Some(process) = system.process(process_id) {
+                    if process.kill() {
+                        Ok(KillSessionResponse::Killed(serde_json::Value::Null))
+                    } else {
+                        let err = KSError::ProcessNotFound(pid, session_id.clone());
+                        err.log();
+                        Ok(KillSessionResponse::KillFailed(err.to_json(Some(
+                            String::from("Failed to send kill signal to process"),
+                        ))))
+                    }
                 } else {
-                    let err = KSError::ProcessNotFound(session_id.clone());
+                    let err = KSError::ProcessNotFound(pid, session_id.clone());
                     err.log();
-                    return Ok(KillSessionResponse::KillFailed(err.to_json(None)));
+                    return Ok(KillSessionResponse::KillFailed(
+                        err.to_json(Some(String::from("Could not look up process details"))),
+                    ));
                 }
             }
             None => {
-                let err = KSError::ProcessNotFound(session_id.clone());
+                let err = KSError::NoProcess(session_id.clone());
                 err.log();
                 Ok(KillSessionResponse::KillFailed(err.to_json(None)))
             }
@@ -383,24 +402,16 @@ where
         _context: &C,
     ) -> Result<StartSessionResponse, ApiError> {
         info!("start session: {}", session_id);
-        let kernel_sessions = self.kernel_sessions.clone();
-        let kernel_session = {
-            let kernel_sessions = kernel_sessions.read().unwrap();
-            let kernel_session = match kernel_sessions
-                .iter()
-                .find(|s| s.connection.session_id == session_id)
-            {
-                Some(s) => s,
-                None => {
-                    let err = KSError::SessionNotFound(session_id.clone());
-                    err.log();
-                    return Ok(StartSessionResponse::StartFailed(err.to_json(Some(
-                        "Starting a session requires a valid session ID; create the session before starting it.".to_string(),
-                    ))));
-                }
-            };
-            kernel_session.clone()
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Ok(kernel_session) => kernel_session,
+            Err(err) => {
+                err.log();
+                return Ok(StartSessionResponse::StartFailed(err.to_json(Some(
+                    String::from("Session must be created before it can be started."),
+                ))));
+            }
         };
+
         match kernel_session.start().await {
             Ok(_) => Ok(StartSessionResponse::Started(serde_json::Value::Null)),
             Err(e) => {
@@ -417,23 +428,12 @@ where
         _context: &C,
     ) -> Result<InterruptSessionResponse, ApiError> {
         info!("interrupt session: {}", session_id);
-        let kernel_sessions = self.kernel_sessions.clone();
-        let kernel_session = {
-            let kernel_sessions = kernel_sessions.read().unwrap();
-            let kernel_session = match kernel_sessions
-                .iter()
-                .find(|s| s.connection.session_id == session_id)
-            {
-                Some(s) => s,
-                None => {
-                    let err = KSError::SessionNotFound(session_id.clone());
-                    err.log();
-                    return Ok(InterruptSessionResponse::InterruptFailed(
-                        err.to_json(Some("Can't interrupt session (not found)".to_string())),
-                    ));
-                }
-            };
-            kernel_session.clone()
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Ok(kernel_session) => kernel_session,
+            Err(err) => {
+                err.log();
+                return Ok(InterruptSessionResponse::InterruptFailed(err.to_json(None)));
+            }
         };
 
         match kernel_session.interrupt().await {
@@ -455,20 +455,12 @@ where
         session_id: String,
         _context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
-        let session = {
-            let kernel_sessions = self.kernel_sessions.read().unwrap();
-            let kernel_session = match kernel_sessions
-                .iter()
-                .find(|s| s.connection.session_id == session_id)
-            {
-                Some(s) => s,
-                None => {
-                    let err = KSError::SessionNotFound(session_id.clone());
-                    err.log();
-                    return Ok(RestartSessionResponse::RestartFailed(err.to_json(None)));
-                }
-            };
-            kernel_session.clone()
+        let session = match self.find_session(session_id.clone()) {
+            Ok(kernel_session) => kernel_session,
+            Err(err) => {
+                err.log();
+                return Ok(RestartSessionResponse::RestartFailed(err.to_json(None)));
+            }
         };
         match session.restart().await {
             Ok(_) => Ok(RestartSessionResponse::Restarted(serde_json::Value::Null)),

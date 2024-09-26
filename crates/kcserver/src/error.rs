@@ -20,11 +20,12 @@ pub enum KSError {
     SessionNotFound(String),
     SessionConnected(String),
     SessionNotRunning(String),
-    ProcessNotFound(String),
+    ProcessNotFound(u32, String),
     SessionStartFailed(anyhow::Error),
     SessionConnectionFailed(String, anyhow::Error),
     SessionCreateFailed(String, anyhow::Error),
     SessionInterruptFailed(String, anyhow::Error),
+    NoProcess(String),
 }
 
 impl fmt::Display for KSError {
@@ -43,8 +44,8 @@ impl fmt::Display for KSError {
             KSError::SessionStartFailed(err) => {
                 write!(f, "Failed to start session: {}", err)
             }
-            KSError::ProcessNotFound(session_id) => {
-                write!(f, "Can't find a process for session {}", session_id)
+            KSError::ProcessNotFound(pid, session_id) => {
+                write!(f, "Can't find process {} for session {}", pid, session_id)
             }
             KSError::SessionNotFound(session_id) => {
                 write!(f, "Session {} not found", session_id)
@@ -57,6 +58,13 @@ impl fmt::Display for KSError {
             }
             KSError::SessionInterruptFailed(session_id, err) => {
                 write!(f, "Failed to interrupt session {}: {}", session_id, err)
+            }
+            KSError::NoProcess(session_id) => {
+                write!(
+                    f,
+                    "There is no process associated with session {} (has it exited?)",
+                    session_id
+                )
             }
         }
     }
