@@ -321,7 +321,7 @@ impl ZmqWsProxy {
         message: ZmqMessage,
     ) -> Result<(), anyhow::Error> {
         // (1) convert the raw parts/frames of the message into a `WireMessage`.
-        let message = WireMessage::from(message);
+        let message = WireMessage::from_zmq(channel, message);
 
         // (2) convert it into a Jupyter message; this can fail if the message is
         // not a valid Jupyter message.
