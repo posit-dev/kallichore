@@ -24,7 +24,10 @@ use sysinfo::{Pid, Signal, System};
 use tokio::io::{AsyncBufReadExt, AsyncRead};
 use tokio::sync::RwLock;
 
-use crate::{connection_file, kernel_connection::KernelConnection, kernel_state::KernelState};
+use crate::{
+    connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
+    kernel_state::KernelState, zmq_ws_proxy::ZmqWsProxy,
+};
 
 /// A Jupyter kernel session.
 ///
@@ -35,6 +38,9 @@ use crate::{connection_file, kernel_connection::KernelConnection, kernel_state::
 pub struct KernelSession {
     /// Metadata about the session
     pub connection: KernelConnection,
+
+    /// The connection file for the kernel
+    pub connection_file: ConnectionFile,
 
     /// The session model that was used to create this session
     pub model: models::NewSession,
@@ -72,7 +78,7 @@ impl KernelSession {
     /// Create a new kernel session.
     pub fn new(
         session: models::NewSession,
-        connection_file: connection_file::ConnectionFile,
+        connection_file: ConnectionFile,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
@@ -95,6 +101,7 @@ impl KernelSession {
             connection,
             started,
             exit_event: Arc::new(Event::new()),
+            connection_file,
         };
         Ok(kernel_session)
     }
@@ -154,7 +161,13 @@ impl KernelSession {
             state.process_id = pid;
         }
 
-        // Prepare the data needed in the thread that waits for the child process to exit
+        // Spawn the ZeroMQ proxy thread
+        let kernel = self.clone();
+        tokio::spawn(async move {
+            kernel.start_zmq_proxy().await;
+        });
+
+        // Spawn a task to wait for the child process to exit
         let kernel = self.clone();
         tokio::spawn(async move {
             kernel.run_child(child).await;
@@ -371,5 +384,30 @@ impl KernelSession {
                 }
             }
         });
+    }
+
+    pub async fn start_zmq_proxy(&self) {
+        let mut proxy = ZmqWsProxy::new(
+            self.connection_file.clone(),
+            self.connection.clone(),
+            self.state.clone(),
+            self.ws_json_tx.clone(),
+            self.ws_zmq_rx.clone(),
+            self.status_rx.clone(),
+        );
+        match proxy.connect().await {
+            Ok(_) => (),
+            Err(e) => {
+                let error = KSError::SessionConnectionFailed(self.connection.session_id.clone(), e);
+                error.log();
+            }
+        }
+        match proxy.listen().await {
+            Ok(_) => (),
+            Err(e) => {
+                let error = KSError::SessionConnectionFailed(self.connection.session_id.clone(), e);
+                error.log();
+            }
+        }
     }
 }

@@ -54,6 +54,7 @@ impl KernelState {
 
     /// Set the kernel's status.
     pub async fn set_status(&mut self, status: models::Status) {
+        log::debug!("Status '{}' => '{}'", self.status, status);
         self.status = status;
 
         // When exiting ...
@@ -66,11 +67,5 @@ impl KernelState {
 
         // Publish the new status to the status stream (for internal use)
         self.ws_status_tx.send(status.clone()).await.unwrap();
-
-        // Publish the new status to the WebSocket (for the client)
-        /*
-        let status_message = WebsocketMessage::Kernel(KernelMessage::Status(status.clone()));
-        self.ws_json_tx.send(status_message).await.unwrap();
-        */
     }
 }
