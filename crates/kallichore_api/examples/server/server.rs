@@ -102,7 +102,7 @@ use kallichore_api::server::MakeService;
 use kallichore_api::{
     Api, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
     KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    StartSessionResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -204,7 +204,6 @@ where
         Err(ApiError("Generic failure".into()))
     }
     // --- End Kallichore ---
-
     /// Restart a session
     async fn restart_session(
         &self,
@@ -214,6 +213,15 @@ where
         info!(
             "restart_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
+
+    ///
+    async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {
+        info!(
+            "shutdown_server() - X-Span-ID: {:?}",
             context.get().0.clone()
         );
         Err(ApiError("Generic failure".into()))

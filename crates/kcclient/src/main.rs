@@ -622,6 +622,9 @@ fn main() {
                     RestartSessionResponse::Restarted(_) => {
                         println!("Session {} restarted", session_id);
                     }
+                    RestartSessionResponse::SessionNotFound => {
+                        println!("Session {} doesn't exist", session_id);
+                    }
                     RestartSessionResponse::RestartFailed(error) => {
                         println!("{}", serde_json::to_string_pretty(&error).unwrap());
                     }
@@ -654,6 +657,9 @@ fn main() {
                 Ok(resp) => match resp {
                     InterruptSessionResponse::Interrupted(_) => {
                         println!("Session {} interrupted", session_id);
+                    }
+                    InterruptSessionResponse::SessionNotFound => {
+                        println!("Session {} doesn't exist", session_id);
                     }
                     InterruptSessionResponse::InterruptFailed(error) => {
                         println!("{}", serde_json::to_string_pretty(&error).unwrap());

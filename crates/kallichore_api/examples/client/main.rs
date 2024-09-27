@@ -7,7 +7,7 @@ use futures::{future, stream, Stream};
 use kallichore_api::{
     models, Api, ApiNoContext, ChannelsWebsocketResponse, Client, ContextWrapperExt,
     GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    NewSessionResponse, RestartSessionResponse, StartSessionResponse,
+    NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 #[allow(unused_imports)]
@@ -40,6 +40,7 @@ fn main() {
                     "KillSession",
                     "ListSessions",
                     "RestartSession",
+                    "ShutdownServer",
                     "StartSession",
                 ])
                 .required(true)
@@ -146,6 +147,14 @@ fn main() {
         */
         Some("RestartSession") => {
             let result = rt.block_on(client.restart_session("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
+        Some("ShutdownServer") => {
+            let result = rt.block_on(client.shutdown_server());
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,

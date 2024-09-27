@@ -36,6 +36,8 @@ pub enum ChannelsWebsocketResponse {
     UpgradeConnectionToAWebsocket,
     /// Invalid request
     InvalidRequest(models::Error),
+    /// Session not found
+    SessionNotFound,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -45,6 +47,8 @@ pub enum GetSessionResponse {
     SessionDetails(models::ActiveSession),
     /// Failed to get session
     FailedToGetSession(models::Error),
+    /// Session not found
+    SessionNotFound,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -54,6 +58,8 @@ pub enum InterruptSessionResponse {
     Interrupted(serde_json::Value),
     /// Interrupt failed
     InterruptFailed(models::Error),
+    /// Session not found
+    SessionNotFound,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -63,6 +69,8 @@ pub enum KillSessionResponse {
     Killed(serde_json::Value),
     /// Kill failed
     KillFailed(models::Error),
+    /// Session not found
+    SessionNotFound,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -87,6 +95,17 @@ pub enum RestartSessionResponse {
     Restarted(serde_json::Value),
     /// Restart failed
     RestartFailed(models::Error),
+    /// Session not found
+    SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum ShutdownServerResponse {
+    /// Shutting down
+    ShuttingDown(serde_json::Value),
+    /// Shutdown failed
+    ShutdownFailed(models::Error),
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -96,6 +115,8 @@ pub enum StartSessionResponse {
     Started(serde_json::Value),
     /// Start failed
     StartFailed(models::Error),
+    /// Session not found
+    SessionNotFound,
 }
 
 /// API
@@ -153,6 +174,9 @@ pub trait Api<C: Send + Sync> {
         session_id: String,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError>;
+
+    ///
+    async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError>;
 
     /// Start a session
     async fn start_session(
@@ -213,6 +237,9 @@ pub trait ApiNoContext<C: Send + Sync> {
     /// Restart a session
     async fn restart_session(&self, session_id: String)
         -> Result<RestartSessionResponse, ApiError>;
+
+    ///
+    async fn shutdown_server(&self) -> Result<ShutdownServerResponse, ApiError>;
 
     /// Start a session
     async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError>;
@@ -306,11 +333,18 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().restart_session(session_id, &context).await
     }
 
+    ///
+    async fn shutdown_server(&self) -> Result<ShutdownServerResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().shutdown_server(&context).await
+    }
+
     /// Start a session
     async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError> {
         let context = self.context().clone();
         self.api().start_session(session_id, &context).await
     }
+
     // --- Start Kallichore ---
     /// Upgrade a websocket request for channel communication
     async fn channels_websocket_request(

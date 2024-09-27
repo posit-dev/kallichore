@@ -67,6 +67,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/error'
           description: Failed to get session
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
       summary: Get session details
   /sessions/{session_id}/start:
     get:
@@ -91,6 +95,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/error'
           description: Start failed
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
       summary: Start a session
   /sessions/{session_id}/restart:
     get:
@@ -115,6 +123,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/error'
           description: Restart failed
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
       summary: Restart a session
   /sessions/{session_id}/kill:
     get:
@@ -139,6 +151,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/error'
           description: Kill failed
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
       summary: Force quit session
   /sessions/{session_id}/interrupt:
     get:
@@ -163,6 +179,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/error'
           description: Interrupt failed
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
       summary: Interrupt session
   /sessions/{session_id}/channels:
     get:
@@ -184,7 +204,28 @@ paths:
               schema:
                 $ref: '#/components/schemas/error'
           description: Invalid request
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
       summary: Upgrade to a WebSocket for channel communication
+  /shutdown:
+    get:
+      operationId: shutdown-server
+      parameters: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Shutting down
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Shutdown failed
+      summary: ""
 components:
   schemas:
     error:

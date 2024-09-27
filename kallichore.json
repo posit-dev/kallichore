@@ -108,6 +108,12 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
           }
         }
       }
@@ -143,6 +149,12 @@
                   "$ref": "#/components/schemas/error"
                 }
               }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
             }
           }
         }
@@ -180,6 +192,12 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
           }
         }
       }
@@ -215,6 +233,12 @@
                   "$ref": "#/components/schemas/error"
                 }
               }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
             }
           }
         }
@@ -252,6 +276,12 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
           }
         }
       }
@@ -276,6 +306,39 @@
           },
           "400": {
             "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/shutdown": {
+      "get": {
+        "operationId": "shutdown-server",
+        "summary": "",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Shutting down",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Shutdown failed",
             "content": {
               "application/json": {
                 "schema": {

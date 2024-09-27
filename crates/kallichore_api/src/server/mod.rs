@@ -31,7 +31,7 @@ type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceErr
 use crate::{
     Api, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
     KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    StartSessionResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 
 mod paths {
@@ -45,7 +45,8 @@ mod paths {
             r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/kill$",
             r"^/sessions/(?P<session_id>[^/?#]*)/restart$",
-            r"^/sessions/(?P<session_id>[^/?#]*)/start$"
+            r"^/sessions/(?P<session_id>[^/?#]*)/start$",
+            r"^/shutdown$"
         ])
         .expect("Unable to create global regex set");
     }
@@ -92,6 +93,7 @@ mod paths {
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/start$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_START");
     }
+    pub(crate) static ID_SHUTDOWN: usize = 7;
 }
 
 pub struct MakeService<T, C>
@@ -268,6 +270,10 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
+                            ChannelsWebsocketResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
                         },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
@@ -342,6 +348,10 @@ where
                                 let body_content = serde_json::to_string(&body)
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
+                            }
+                            GetSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
                             }
                         },
                         Err(_) => {
@@ -418,6 +428,10 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
+                            InterruptSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
                         },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
@@ -492,6 +506,10 @@ where
                                 let body_content = serde_json::to_string(&body)
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
+                            }
+                            KillSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
                             }
                         },
                         Err(_) => {
@@ -704,6 +722,62 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
+                            RestartSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = Body::from("An internal error occurred");
+                        }
+                    }
+
+                    Ok(response)
+                }
+
+                // ShutdownServer - GET /shutdown
+                hyper::Method::GET if path.matched(paths::ID_SHUTDOWN) => {
+                    let result = api_impl.shutdown_server(&context).await;
+                    let mut response = Response::new(Body::empty());
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            ShutdownServerResponse::ShuttingDown(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for SHUTDOWN_SERVER_SHUTTING_DOWN"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                            ShutdownServerResponse::ShutdownFailed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for SHUTDOWN_SERVER_SHUTDOWN_FAILED"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
                         },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
@@ -779,6 +853,10 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
+                            StartSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
                         },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
@@ -798,6 +876,7 @@ where
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_START) => method_not_allowed(),
+                _ if path.matched(paths::ID_SHUTDOWN) => method_not_allowed(),
                 _ => Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .body(Body::empty())
@@ -836,6 +915,8 @@ impl<T> RequestParser<T> for ApiRequestParser {
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => {
                 Some("RestartSession")
             }
+            // ShutdownServer - GET /shutdown
+            hyper::Method::GET if path.matched(paths::ID_SHUTDOWN) => Some("ShutdownServer"),
             // StartSession - GET /sessions/{session_id}/start
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_START) => {
                 Some("StartSession")

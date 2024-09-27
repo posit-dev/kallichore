@@ -38,7 +38,8 @@ use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
     models, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, NewSessionResponse, RestartSessionResponse, StartSessionResponse,
+    KillSessionResponse, NewSessionResponse, RestartSessionResponse, ShutdownServerResponse,
+    StartSessionResponse,
 };
 
 pub async fn create(addr: &str) {
@@ -544,5 +545,9 @@ where
             .headers_mut()
             .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
         Ok(response)
+    }
+
+    async fn shutdown_server(&self, _context: &C) -> Result<ShutdownServerResponse, ApiError> {
+        unimplemented!()
     }
 }

@@ -11,6 +11,7 @@ Method | HTTP request | Description
 **list-sessions**](default_api.md#list-sessions) | **GET** /sessions | List active sessions
 **new-session**](default_api.md#new-session) | **PUT** /sessions | Create a new session
 **restart-session**](default_api.md#restart-session) | **GET** /sessions/{session_id}/restart | Restart a session
+**shutdown-server**](default_api.md#shutdown-server) | **GET** /shutdown | 
 **start-session**](default_api.md#start-session) | **GET** /sessions/{session_id}/start | Start a session
 
 
@@ -170,6 +171,28 @@ Restart a session
 Name | Type | Description  | Notes
 ------------- | ------------- | ------------- | -------------
   **session_id** | **String**|  | 
+
+### Return type
+
+[**serde_json::Value**](AnyType.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **shutdown-server**
+> serde_json::Value shutdown-server()
+
+
+### Required Parameters
+This endpoint does not need any parameter.
 
 ### Return type
 
