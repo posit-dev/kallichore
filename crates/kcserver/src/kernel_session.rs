@@ -9,7 +9,7 @@
 
 use std::{process::Stdio, sync::Arc};
 
-use async_channel::{Receiver, Sender};
+use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
 use event_listener::Event;
 use kallichore_api::models;
@@ -202,6 +202,30 @@ impl KernelSession {
             .expect("Failed to send exit event to client");
     }
 
+    pub async fn shutdown(&self) -> Result<(), anyhow::Error> {
+        self.shutdown_request(false).await?;
+        Ok(())
+    }
+
+    async fn shutdown_request(&self, restart: bool) -> Result<(), SendError<JupyterMessage>> {
+        // Make and send the shutdown request.
+        let msg = JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_id: self.make_message_id(),
+                msg_type: "shutdown_request".to_string(),
+            },
+            parent_header: None,
+            metadata: serde_json::json!({}),
+            content: serde_json::json!({
+                "restart": restart,
+            }),
+            channel: JupyterChannel::Control,
+            buffers: vec![],
+        };
+
+        self.ws_zmq_tx.send(msg).await
+    }
+
     pub async fn restart(&self) -> Result<(), anyhow::Error> {
         // Enter the restarting state.
         {
@@ -212,22 +236,7 @@ impl KernelSession {
             state.restarting = true;
         }
 
-        // Make and send the shutdown request.
-        let msg = JupyterMessage {
-            header: JupyterMessageHeader {
-                msg_id: self.make_message_id(),
-                msg_type: "shutdown_request".to_string(),
-            },
-            parent_header: None,
-            metadata: serde_json::json!({}),
-            content: serde_json::json!({
-                "restart": true, // Restart the kernel
-            }),
-            channel: JupyterChannel::Control,
-            buffers: vec![],
-        };
-
-        match self.ws_zmq_tx.send(msg).await {
+        match self.shutdown_request(true).await {
             Ok(_) => {
                 log::debug!("Preparing for restart; sent shutdown request to kernel");
             }

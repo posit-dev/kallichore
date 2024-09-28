@@ -104,10 +104,9 @@ enum Commands {
         session_id: Option<String>,
     },
 
-    /// Shut down a running session
+    /// Shut down a running session, or all sessions (exiting the server)
     Shutdown {
-        /// The session to shut down. Optional; if not provided, the first
-        /// running session will be used
+        /// The session to shut down.
         #[arg(short, long)]
         session_id: Option<String>,
     },
@@ -552,27 +551,18 @@ fn main() {
             rt.block_on(get_kernel_info(ws_stream));
         }
         Some(Commands::Shutdown { session_id }) => {
-            let session_id = match session_id {
-                Some(session_id) => session_id,
+            match session_id {
+                Some(session_id) => {
+                    log::info!("Shutting down session '{}'", session_id.clone());
+                    let ws_stream = rt.block_on(connect_to_session(base_url, session_id.clone()));
+                    rt.block_on(request_shutdown(ws_stream.unwrap()));
+                    println!("Shutdown requested for session {} ", session_id);
+                }
                 None => {
-                    let result = rt.block_on(client.list_sessions());
-                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
-                        if let Some(session) = sessions.sessions.first() {
-                            session.session_id.clone()
-                        } else {
-                            eprintln!("No sessions available to shut down");
-                            return;
-                        }
-                    } else {
-                        eprintln!("Failed to list sessions");
-                        return;
-                    }
+                    let result = rt.block_on(client.shutdown_server());
+                    println!("Server shutdown requested");
                 }
             };
-            log::info!("Shutting down session '{}'", session_id.clone());
-            let ws_stream = rt.block_on(connect_to_session(base_url, session_id.clone()));
-            rt.block_on(request_shutdown(ws_stream.unwrap()));
-            println!("Shutdown requested for session {} ", session_id);
         }
         Some(Commands::Listen { session_id }) => {
             let session_id = match session_id {
