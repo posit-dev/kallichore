@@ -86,20 +86,18 @@ impl<C> Server<C> {
     ///
     /// # Returns
     ///
-    /// The kernel session with the given session ID, or an error if no such
-    /// session exists.
-    fn find_session(&self, session_id: String) -> Result<KernelSession, KSError> {
+    /// The kernel session with the given session ID, or None if no such session
+    /// exists.
+    fn find_session(&self, session_id: String) -> Option<KernelSession> {
         let kernel_sessions = self.kernel_sessions.read().unwrap();
         let kernel_session = match kernel_sessions
             .iter()
             .find(|s| s.connection.session_id == session_id)
         {
             Some(s) => s,
-            None => {
-                return Err(KSError::SessionNotFound(session_id.clone()));
-            }
+            None => return None,
         };
-        Ok(kernel_session.clone())
+        Some(kernel_session.clone())
     }
 }
 
@@ -133,10 +131,9 @@ where
             context.get().0.clone()
         );
         let session = match self.find_session(session_id.clone()) {
-            Ok(kernel_session) => kernel_session,
-            Err(err) => {
-                err.log();
-                return Ok(GetSessionResponse::FailedToGetSession(err.to_json(None)));
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(GetSessionResponse::SessionNotFound);
             }
         };
         return Ok(GetSessionResponse::SessionDetails(
@@ -309,10 +306,9 @@ where
         // Get the kernel session with the given ID
 
         let kernel_session = match self.find_session(session_id.clone()) {
-            Ok(kernel_session) => kernel_session,
-            Err(err) => {
-                err.log();
-                return Ok(KillSessionResponse::KillFailed(err.to_json(None)));
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(KillSessionResponse::SessionNotFound);
             }
         };
 
@@ -372,13 +368,8 @@ where
     ) -> Result<StartSessionResponse, ApiError> {
         info!("start session: {}", session_id);
         let kernel_session = match self.find_session(session_id.clone()) {
-            Ok(kernel_session) => kernel_session,
-            Err(err) => {
-                err.log();
-                return Ok(StartSessionResponse::StartFailed(err.to_json(Some(
-                    String::from("Session must be created before it can be started."),
-                ))));
-            }
+            Some(kernel_session) => kernel_session,
+            None => return Ok(StartSessionResponse::SessionNotFound),
         };
 
         match kernel_session.start().await {
@@ -398,10 +389,9 @@ where
     ) -> Result<InterruptSessionResponse, ApiError> {
         info!("interrupt session: {}", session_id);
         let kernel_session = match self.find_session(session_id.clone()) {
-            Ok(kernel_session) => kernel_session,
-            Err(err) => {
-                err.log();
-                return Ok(InterruptSessionResponse::InterruptFailed(err.to_json(None)));
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(InterruptSessionResponse::SessionNotFound);
             }
         };
 
@@ -425,10 +415,9 @@ where
         _context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
         let session = match self.find_session(session_id.clone()) {
-            Ok(kernel_session) => kernel_session,
-            Err(err) => {
-                err.log();
-                return Ok(RestartSessionResponse::RestartFailed(err.to_json(None)));
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(RestartSessionResponse::SessionNotFound);
             }
         };
         match session.restart().await {
