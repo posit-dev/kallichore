@@ -134,6 +134,7 @@ impl HeartbeatMonitor {
                                 "[session {}] Stopping heartbeat monitor (kernel exited).",
                                 session_id
                             );
+                            hb_socket.close().await;
                             return;
                         }
 

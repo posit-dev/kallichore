@@ -27,13 +27,14 @@ use crate::{
 };
 
 pub struct ZmqWsProxy {
-    pub shell_socket: DealerSocket,
-    pub iopub_socket: SubSocket,
-    pub control_socket: DealerSocket,
-    pub stdin_socket: DealerSocket,
+    pub shell_socket: Option<DealerSocket>,
+    pub iopub_socket: Option<SubSocket>,
+    pub control_socket: Option<DealerSocket>,
+    pub stdin_socket: Option<DealerSocket>,
     pub connection_file: ConnectionFile,
     pub connection: KernelConnection,
     pub heartbeat: HeartbeatMonitor,
+    pub closed: bool,
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
     pub status_rx: Receiver<models::Status>,
@@ -65,10 +66,10 @@ impl ZmqWsProxy {
         let session_id = connection.session_id.clone();
         let hb_address = format!("tcp://{}:{}", connection_file.ip, connection_file.hb_port);
         Self {
-            shell_socket: DealerSocket::new(),
-            iopub_socket: SubSocket::new(),
-            control_socket: DealerSocket::new(),
-            stdin_socket: DealerSocket::new(),
+            shell_socket: Some(DealerSocket::new()),
+            iopub_socket: Some(SubSocket::new()),
+            control_socket: Some(DealerSocket::new()),
+            stdin_socket: Some(DealerSocket::new()),
             heartbeat: HeartbeatMonitor::new(state.clone(), session_id, hb_address),
             connection_file,
             connection,
@@ -76,11 +77,20 @@ impl ZmqWsProxy {
             ws_zmq_rx,
             status_rx,
             state,
+            closed: false,
         }
     }
 
     pub async fn connect(&mut self) -> Result<(), anyhow::Error> {
+        // Ensure we're not closed before forwarding the message; this makes it
+        // safe to unwrap the sockets below.
+        if self.closed {
+            anyhow::bail!("Cannot connect; proxy is closed.");
+        }
+
         self.shell_socket
+            .as_mut()
+            .unwrap()
             .connect(
                 format!(
                     "tcp://{}:{}",
@@ -97,6 +107,8 @@ impl ZmqWsProxy {
         );
 
         self.iopub_socket
+            .as_mut()
+            .unwrap()
             .connect(
                 format!(
                     "tcp://{}:{}",
@@ -112,9 +124,11 @@ impl ZmqWsProxy {
         );
 
         // Subscribe to all messages
-        self.iopub_socket.subscribe("").await?;
+        self.iopub_socket.as_mut().unwrap().subscribe("").await?;
 
         self.control_socket
+            .as_mut()
+            .unwrap()
             .connect(
                 format!(
                     "tcp://{}:{}",
@@ -130,6 +144,8 @@ impl ZmqWsProxy {
         );
 
         self.stdin_socket
+            .as_mut()
+            .unwrap()
             .connect(
                 format!(
                     "tcp://{}:{}",
@@ -159,7 +175,7 @@ impl ZmqWsProxy {
         // Wait for a message from any socket
         loop {
             select! {
-                shell_msg = self.shell_socket.recv() => {
+                shell_msg = self.shell_socket.as_mut().unwrap().recv() => {
                     match shell_msg {
                         Ok(msg) => {
                             self.forward_zmq(JupyterChannel::Shell, msg).await?;
@@ -170,7 +186,7 @@ impl ZmqWsProxy {
                         },
                     }
                 },
-                iopub_msg = self.iopub_socket.recv() => {
+                iopub_msg = self.iopub_socket.as_mut().unwrap().recv() => {
                     match iopub_msg {
                         Ok(msg) => {
                             self.forward_zmq(JupyterChannel::IOPub, msg).await?;
@@ -181,7 +197,7 @@ impl ZmqWsProxy {
                         },
                     }
                 },
-                control_msg = self.control_socket.recv() => {
+                control_msg = self.control_socket.as_mut().unwrap().recv() => {
                     match control_msg {
                         Ok(msg) => {
                             self.forward_zmq(JupyterChannel::Control, msg).await?;
@@ -192,7 +208,7 @@ impl ZmqWsProxy {
                         },
                     }
                 },
-                stdin_msg = self.stdin_socket.recv() => {
+                stdin_msg = self.stdin_socket.as_mut().unwrap().recv() => {
                     match stdin_msg {
                         Ok(msg) => {
                             self.forward_zmq(JupyterChannel::Stdin, msg).await?;
@@ -238,10 +254,23 @@ impl ZmqWsProxy {
             self.connection.session_id
         );
 
+        // Close the sockets. This consumes the socket, so we need to take() it.
+        self.closed = true;
+        self.shell_socket.take().unwrap().close().await;
+        self.iopub_socket.take().unwrap().close().await;
+        self.control_socket.take().unwrap().close().await;
+        self.stdin_socket.take().unwrap().close().await;
+
         Ok(())
     }
 
     async fn forward_ws(&mut self, msg: JupyterMessage) -> Result<(), anyhow::Error> {
+        // Ensure we're not closed before forwarding the message; this makes it
+        // safe to unwrap the sockets below.
+        if self.closed {
+            anyhow::bail!("Cannot forward WebSocket message; proxy is closed.");
+        }
+
         let jupyter = JupyterMsg::from(msg.clone());
         match jupyter {
             JupyterMsg::ExecuteRequest(_) => {
@@ -289,17 +318,29 @@ impl ZmqWsProxy {
         match channel {
             JupyterChannel::Shell => {
                 log::trace!("Sending message to shell socket");
-                self.shell_socket.send(zmq_message).await?;
+                self.shell_socket
+                    .as_mut()
+                    .unwrap()
+                    .send(zmq_message)
+                    .await?;
                 log::trace!("Sent message to shell socket");
             }
             JupyterChannel::Control => {
                 log::trace!("Sending message to control socket");
-                self.control_socket.send(zmq_message).await?;
+                self.control_socket
+                    .as_mut()
+                    .unwrap()
+                    .send(zmq_message)
+                    .await?;
                 log::trace!("Sent message to control socket");
             }
             JupyterChannel::Stdin => {
                 log::trace!("Sending message to stdin socket");
-                self.stdin_socket.send(zmq_message).await?;
+                self.stdin_socket
+                    .as_mut()
+                    .unwrap()
+                    .send(zmq_message)
+                    .await?;
                 log::trace!("Sent message to stdin socket");
             }
             _ => {
@@ -320,6 +361,12 @@ impl ZmqWsProxy {
         channel: JupyterChannel,
         message: ZmqMessage,
     ) -> Result<(), anyhow::Error> {
+        // Ensure we're not closed before forwarding the message; this makes it
+        // safe to unwrap the sockets below.
+        if self.closed {
+            anyhow::bail!("Cannot forward ZMQ message; proxy is closed.");
+        }
+
         // (1) convert the raw parts/frames of the message into a `WireMessage`.
         let message = WireMessage::from_zmq(channel, message);
 
@@ -352,7 +399,11 @@ impl ZmqWsProxy {
                                 // Send the next request to the kernel
                                 let message =
                                     WireMessage::from_jupyter(request, self.connection.clone())?;
-                                self.shell_socket.send(message.into()).await?;
+                                self.shell_socket
+                                    .as_mut()
+                                    .unwrap()
+                                    .send(message.into())
+                                    .await?;
                             }
                             None => {
                                 // No more messages in the queue
