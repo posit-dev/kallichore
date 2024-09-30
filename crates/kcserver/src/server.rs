@@ -537,6 +537,77 @@ where
     }
 
     async fn shutdown_server(&self, _context: &C) -> Result<ShutdownServerResponse, ApiError> {
-        unimplemented!()
+        info!("shutdown server");
+        // Create a vector of all the kernel sessions that are currently running
+        let running_sessions = {
+            let kernel_sessions = self.kernel_sessions.read().unwrap().clone();
+            let mut running_sessions: Vec<KernelSession> = vec![];
+            for session in kernel_sessions.iter() {
+                let running = session.state.read().await.status != models::Status::Exited;
+                if running {
+                    running_sessions.push(session.clone());
+                }
+            }
+            running_sessions
+        };
+
+        // Early exit if all sessions are already stopped
+        if running_sessions.is_empty() {
+            tokio::spawn(async move {
+                // Wait 1 second before exiting
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                log::info!("All sessions have exited; exiting Kallichore server.");
+                std::process::exit(0);
+            });
+            return Ok(ShutdownServerResponse::ShuttingDown(
+                serde_json::Value::Null,
+            ));
+        }
+
+        // Spawn a task to wait for all sessions to exit
+        let exiting_sessions = running_sessions.clone();
+        tokio::spawn(async move {
+            // Create exit event listeners for each running session
+            let mut exit_listeners = Vec::new();
+            for session in &exiting_sessions {
+                let exit_listener = session.exit_event.listen();
+                exit_listeners.push(exit_listener);
+            }
+
+            loop {
+                // Wait for any of the exit events to be triggered
+                let (_, _, remaining) = future::select_all(exit_listeners).await;
+                exit_listeners = remaining;
+                if exit_listeners.is_empty() {
+                    break;
+                } else {
+                    log::info!("Session has exited; {} remaining)", exit_listeners.len());
+                }
+            }
+
+            log::info!("All sessions have exited; exiting Kallichore server.");
+            std::process::exit(0);
+        });
+
+        log::info!("Shutting down {} running sessions", running_sessions.len());
+
+        // Send a shutdown signal to each running session
+        for session in running_sessions {
+            let session_id = session.connection.session_id.clone();
+            match session.shutdown().await {
+                Ok(_) => {
+                    log::info!("Session {} has been asked to shut down", session_id);
+                }
+                Err(e) => {
+                    let error = KSError::SessionInterruptFailed(session_id, e);
+                    error.log();
+                    return Ok(ShutdownServerResponse::ShutdownFailed(error.to_json(None)));
+                }
+            }
+        }
+
+        Ok(ShutdownServerResponse::ShuttingDown(
+            serde_json::Value::Null,
+        ))
     }
 }
