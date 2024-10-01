@@ -36,6 +36,21 @@ pub enum ChannelsWebsocketResponse {
     UpgradeConnectionToAWebsocket,
     /// Invalid request
     InvalidRequest(models::Error),
+    /// Access token is missing or invalid
+    AccessTokenIsMissingOrInvalid,
+    /// Session not found
+    SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum DeleteSessionResponse {
+    /// Session deleted
+    SessionDeleted(models::ActiveSession),
+    /// Failed to delete session
+    FailedToDeleteSession(models::Error),
+    /// Access token is missing or invalid
+    AccessTokenIsMissingOrInvalid,
     /// Session not found
     SessionNotFound,
 }
@@ -58,6 +73,8 @@ pub enum InterruptSessionResponse {
     Interrupted(serde_json::Value),
     /// Interrupt failed
     InterruptFailed(models::Error),
+    /// Access token is missing or invalid
+    AccessTokenIsMissingOrInvalid,
     /// Session not found
     SessionNotFound,
 }
@@ -69,6 +86,8 @@ pub enum KillSessionResponse {
     Killed(serde_json::Value),
     /// Kill failed
     KillFailed(models::Error),
+    /// Access token is missing or invalid
+    AccessTokenIsMissingOrInvalid,
     /// Session not found
     SessionNotFound,
 }
@@ -86,6 +105,8 @@ pub enum NewSessionResponse {
     TheSessionID(models::NewSession200Response),
     /// Invalid request
     InvalidRequest(models::Error),
+    /// Access token is missing or invalid
+    AccessTokenIsMissingOrInvalid,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -95,6 +116,8 @@ pub enum RestartSessionResponse {
     Restarted(serde_json::Value),
     /// Restart failed
     RestartFailed(models::Error),
+    /// Access token is missing or invalid
+    AccessTokenIsMissingOrInvalid,
     /// Session not found
     SessionNotFound,
 }
@@ -106,6 +129,8 @@ pub enum ShutdownServerResponse {
     ShuttingDown(serde_json::Value),
     /// Shutdown failed
     ShutdownFailed(models::Error),
+    /// Access token is missing or invalid
+    AccessTokenIsMissingOrInvalid,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -117,6 +142,8 @@ pub enum StartSessionResponse {
     StartFailed(models::Error),
     /// Session not found
     SessionNotFound,
+    /// Access token is missing or invalid
+    AccessTokenIsMissingOrInvalid,
 }
 
 /// API
@@ -136,6 +163,13 @@ pub trait Api<C: Send + Sync> {
         session_id: String,
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
+
+    /// Delete session
+    async fn delete_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<DeleteSessionResponse, ApiError>;
 
     /// Get session details
     async fn get_session(
@@ -213,6 +247,9 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Delete session
+    async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
+
     /// Get session details
     async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError>;
 
@@ -286,6 +323,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         let context = self.context().clone();
         self.api().channels_websocket(session_id, &context).await
+    }
+
+    /// Delete session
+    async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().delete_session(session_id, &context).await
     }
 
     /// Get session details

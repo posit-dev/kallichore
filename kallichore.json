@@ -31,6 +31,9 @@
       "put": {
         "operationId": "new-session",
         "summary": "Create a new session",
+        "security": [
+          "bearerAuth"
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -70,6 +73,9 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
           }
         }
       }
@@ -116,12 +122,63 @@
             }
           }
         }
+      },
+      "delete": {
+        "operationId": "delete-session",
+        "summary": "Delete session",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/activeSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Failed to delete session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
       }
     },
     "/sessions/{session_id}/start": {
-      "get": {
+      "post": {
         "operationId": "start-session",
         "summary": "Start a session",
+        "security": [
+          "bearerAuth"
+        ],
         "parameters": [
           {
             "name": "session_id",
@@ -156,14 +213,20 @@
             "content": {
               "application/json": {}
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
           }
         }
       }
     },
     "/sessions/{session_id}/restart": {
-      "get": {
+      "post": {
         "operationId": "restart-session",
         "summary": "Restart a session",
+        "security": [
+          "bearerAuth"
+        ],
         "parameters": [
           {
             "name": "session_id",
@@ -193,6 +256,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
           "404": {
             "description": "Session not found",
             "content": {
@@ -203,9 +269,12 @@
       }
     },
     "/sessions/{session_id}/kill": {
-      "get": {
+      "post": {
         "operationId": "kill-session",
         "summary": "Force quit session",
+        "security": [
+          "bearerAuth"
+        ],
         "parameters": [
           {
             "name": "session_id",
@@ -235,6 +304,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
           "404": {
             "description": "Session not found",
             "content": {
@@ -245,9 +317,12 @@
       }
     },
     "/sessions/{session_id}/interrupt": {
-      "get": {
+      "post": {
         "operationId": "interrupt-session",
         "summary": "Interrupt session",
+        "security": [
+          "bearerAuth"
+        ],
         "parameters": [
           {
             "name": "session_id",
@@ -277,6 +352,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
           "404": {
             "description": "Session not found",
             "content": {
@@ -290,6 +368,9 @@
       "get": {
         "operationId": "channels-websocket",
         "summary": "Upgrade to a WebSocket for channel communication",
+        "security": [
+          "bearerAuth"
+        ],
         "parameters": [
           {
             "name": "session_id",
@@ -314,6 +395,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
           "404": {
             "description": "Session not found",
             "content": {
@@ -324,9 +408,12 @@
       }
     },
     "/shutdown": {
-      "get": {
+      "post": {
         "operationId": "shutdown-server",
         "summary": "",
+        "security": [
+          "bearerAuth"
+        ],
         "parameters": [],
         "responses": {
           "200": {
@@ -346,6 +433,9 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
           }
         }
       }
@@ -411,6 +501,14 @@
             "type": "string",
             "description": "The username of the user who owns the session"
           },
+          "input_prompt": {
+            "type": "string",
+            "description": "The text to use to prompt for input"
+          },
+          "continuation_prompt": {
+            "type": "string",
+            "description": "The text to use to prompt for input continuations"
+          },
           "argv": {
             "type": "array",
             "description": "The program and command-line parameters for the session",
@@ -435,8 +533,10 @@
         },
         "required": [
           "argv",
+          "continuation_prompt",
           "display_name",
           "env",
+          "input_prompt",
           "interrupt_mode",
           "language",
           "session_id",
@@ -522,6 +622,14 @@
             "type": "string",
             "description": "The session's current working directory"
           },
+          "input_prompt": {
+            "type": "string",
+            "description": "The text to use to prompt for input"
+          },
+          "continuation_prompt": {
+            "type": "string",
+            "description": "The text to use to prompt for input continuations"
+          },
           "execution_queue": {
             "$ref": "#/components/schemas/execution_queue"
           },
@@ -532,8 +640,10 @@
         "required": [
           "argv",
           "connected",
+          "continuation_prompt",
           "display_name",
           "execution_queue",
+          "input_prompt",
           "interrupt_mode",
           "language",
           "session_id",
@@ -560,6 +670,17 @@
           "total",
           "sessions"
         ]
+      }
+    },
+    "responses": {
+      "UnauthorizedError": {
+        "description": "Access token is missing or invalid"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

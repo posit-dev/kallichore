@@ -302,6 +302,8 @@ impl KernelSession {
                 Some(pid) => Some(pid as i32),
                 None => None,
             },
+            input_prompt: self.model.input_prompt.clone(),
+            continuation_prompt: self.model.continuation_prompt.clone(),
             connected: state.connected,
             working_directory: state.working_directory.clone(),
             started: self.started.clone(),

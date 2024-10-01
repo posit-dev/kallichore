@@ -5,14 +5,15 @@ All URIs are relative to *http://localhost*
 Method | HTTP request | Description
 ------------- | ------------- | -------------
 **channels-websocket**](default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+**delete-session**](default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
-**interrupt-session**](default_api.md#interrupt-session) | **GET** /sessions/{session_id}/interrupt | Interrupt session
-**kill-session**](default_api.md#kill-session) | **GET** /sessions/{session_id}/kill | Force quit session
+**interrupt-session**](default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
+**kill-session**](default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
 **list-sessions**](default_api.md#list-sessions) | **GET** /sessions | List active sessions
 **new-session**](default_api.md#new-session) | **PUT** /sessions | Create a new session
-**restart-session**](default_api.md#restart-session) | **GET** /sessions/{session_id}/restart | Restart a session
-**shutdown-server**](default_api.md#shutdown-server) | **GET** /shutdown | 
-**start-session**](default_api.md#start-session) | **GET** /sessions/{session_id}/start | Start a session
+**restart-session**](default_api.md#restart-session) | **POST** /sessions/{session_id}/restart | Restart a session
+**shutdown-server**](default_api.md#shutdown-server) | **POST** /shutdown | 
+**start-session**](default_api.md#start-session) | **POST** /sessions/{session_id}/start | Start a session
 
 
 # **channels-websocket**
@@ -28,6 +29,31 @@ Name | Type | Description  | Notes
 ### Return type
 
  (empty response body)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **delete-session**
+> models::ActiveSession delete-session(session_id)
+Delete session
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **session_id** | **String**|  | 
+
+### Return type
+
+[**models::ActiveSession**](activeSession.md)
 
 ### Authorization
 

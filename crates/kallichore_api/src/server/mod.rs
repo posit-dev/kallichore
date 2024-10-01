@@ -29,9 +29,9 @@ pub use crate::context;
 type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
 
 use crate::{
-    Api, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    Api, ChannelsWebsocketResponse, DeleteSessionResponse, GetSessionResponse,
+    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
+    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 mod paths {
@@ -99,7 +99,7 @@ mod paths {
 pub struct MakeService<T, C>
 where
     T: Api<C> + Clone + Send + 'static,
-    C: Has<XSpanIdString> + Send + Sync + 'static,
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
     api_impl: T,
     marker: PhantomData<C>,
@@ -108,7 +108,7 @@ where
 impl<T, C> MakeService<T, C>
 where
     T: Api<C> + Clone + Send + 'static,
-    C: Has<XSpanIdString> + Send + Sync + 'static,
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
     pub fn new(api_impl: T) -> Self {
         MakeService {
@@ -121,7 +121,7 @@ where
 impl<T, C, Target> hyper::service::Service<Target> for MakeService<T, C>
 where
     T: Api<C> + Clone + Send + 'static,
-    C: Has<XSpanIdString> + Send + Sync + 'static,
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
     type Response = Service<T, C>;
     type Error = crate::ServiceError;
@@ -146,7 +146,7 @@ fn method_not_allowed() -> Result<Response<Body>, crate::ServiceError> {
 pub struct Service<T, C>
 where
     T: Api<C> + Clone + Send + 'static,
-    C: Has<XSpanIdString> + Send + Sync + 'static,
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
     api_impl: T,
     marker: PhantomData<C>,
@@ -155,7 +155,7 @@ where
 impl<T, C> Service<T, C>
 where
     T: Api<C> + Clone + Send + 'static,
-    C: Has<XSpanIdString> + Send + Sync + 'static,
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
     pub fn new(api_impl: T) -> Self {
         Service {
@@ -168,7 +168,7 @@ where
 impl<T, C> Clone for Service<T, C>
 where
     T: Api<C> + Clone + Send + 'static,
-    C: Has<XSpanIdString> + Send + Sync + 'static,
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Service {
@@ -181,7 +181,7 @@ where
 impl<T, C> hyper::service::Service<(Request<Body>, C)> for Service<T, C>
 where
     T: Api<C> + Clone + Send + Sync + 'static,
-    C: Has<XSpanIdString> + Send + Sync + 'static,
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
     type Response = Response<Body>;
     type Error = crate::ServiceError;
@@ -270,6 +270,10 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
+                            ChannelsWebsocketResponse::AccessTokenIsMissingOrInvalid => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
                             ChannelsWebsocketResponse::SessionNotFound => {
                                 *response.status_mut() = StatusCode::from_u16(404)
                                     .expect("Unable to turn 404 into a StatusCode");
@@ -282,6 +286,89 @@ where
                             *response.body_mut() = Body::from("An internal error occurred");
                         }
                     } */
+
+                    Ok(response)
+                }
+
+                // DeleteSession - DELETE /sessions/{session_id}
+                hyper::Method::DELETE if path.matched(paths::ID_SESSIONS_SESSION_ID) => {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_SESSIONS_SESSION_ID
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE SESSIONS_SESSION_ID in set but failed match against \"{}\"", path, paths::REGEX_SESSIONS_SESSION_ID.as_str())
+                    );
+
+                    let param_session_id = match percent_encoding::percent_decode(path_params["session_id"].as_bytes()).decode_utf8() {
+                    Ok(param_session_id) => match param_session_id.parse::<String>() {
+                        Ok(param_session_id) => param_session_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
+                    let result = api_impl.delete_session(param_session_id, &context).await;
+                    let mut response = Response::new(Body::empty());
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            DeleteSessionResponse::SessionDeleted(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for DELETE_SESSION_SESSION_DELETED"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                            DeleteSessionResponse::FailedToDeleteSession(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for DELETE_SESSION_FAILED_TO_DELETE_SESSION"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                            DeleteSessionResponse::AccessTokenIsMissingOrInvalid => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            DeleteSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = Body::from("An internal error occurred");
+                        }
+                    }
 
                     Ok(response)
                 }
@@ -365,8 +452,8 @@ where
                     Ok(response)
                 }
 
-                // InterruptSession - GET /sessions/{session_id}/interrupt
-                hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
+                // InterruptSession - POST /sessions/{session_id}/interrupt
+                hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
                     // Path parameters
                     let path: &str = uri.path();
                     let path_params =
@@ -428,6 +515,10 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
+                            InterruptSessionResponse::AccessTokenIsMissingOrInvalid => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
                             InterruptSessionResponse::SessionNotFound => {
                                 *response.status_mut() = StatusCode::from_u16(404)
                                     .expect("Unable to turn 404 into a StatusCode");
@@ -444,8 +535,8 @@ where
                     Ok(response)
                 }
 
-                // KillSession - GET /sessions/{session_id}/kill
-                hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => {
+                // KillSession - POST /sessions/{session_id}/kill
+                hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => {
                     // Path parameters
                     let path: &str = uri.path();
                     let path_params =
@@ -506,6 +597,10 @@ where
                                 let body_content = serde_json::to_string(&body)
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
+                            }
+                            KillSessionResponse::AccessTokenIsMissingOrInvalid => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
                             }
                             KillSessionResponse::SessionNotFound => {
                                 *response.status_mut() = StatusCode::from_u16(404)
@@ -641,6 +736,10 @@ where
                                                     let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
                                                     *response.body_mut() = Body::from(body_content);
                                                 },
+                                                NewSessionResponse::AccessTokenIsMissingOrInvalid
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(401).expect("Unable to turn 401 into a StatusCode");
+                                                },
                                             },
                                             Err(_) => {
                                                 // Application code returned an error. This should not happen, as the implementation should
@@ -659,8 +758,8 @@ where
                         }
                 }
 
-                // RestartSession - GET /sessions/{session_id}/restart
-                hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => {
+                // RestartSession - POST /sessions/{session_id}/restart
+                hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => {
                     // Path parameters
                     let path: &str = uri.path();
                     let path_params =
@@ -722,6 +821,10 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
+                            RestartSessionResponse::AccessTokenIsMissingOrInvalid => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
                             RestartSessionResponse::SessionNotFound => {
                                 *response.status_mut() = StatusCode::from_u16(404)
                                     .expect("Unable to turn 404 into a StatusCode");
@@ -738,8 +841,8 @@ where
                     Ok(response)
                 }
 
-                // ShutdownServer - GET /shutdown
-                hyper::Method::GET if path.matched(paths::ID_SHUTDOWN) => {
+                // ShutdownServer - POST /shutdown
+                hyper::Method::POST if path.matched(paths::ID_SHUTDOWN) => {
                     let result = api_impl.shutdown_server(&context).await;
                     let mut response = Response::new(Body::empty());
                     response.headers_mut().insert(
@@ -778,6 +881,10 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
+                            ShutdownServerResponse::AccessTokenIsMissingOrInvalid => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
                         },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
@@ -790,8 +897,8 @@ where
                     Ok(response)
                 }
 
-                // StartSession - GET /sessions/{session_id}/start
-                hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_START) => {
+                // StartSession - POST /sessions/{session_id}/start
+                hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_START) => {
                     // Path parameters
                     let path: &str = uri.path();
                     let path_params =
@@ -857,6 +964,10 @@ where
                                 *response.status_mut() = StatusCode::from_u16(404)
                                     .expect("Unable to turn 404 into a StatusCode");
                             }
+                            StartSessionResponse::AccessTokenIsMissingOrInvalid => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
                         },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
@@ -897,28 +1008,32 @@ impl<T> RequestParser<T> for ApiRequestParser {
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                 Some("ChannelsWebsocket")
             }
+            // DeleteSession - DELETE /sessions/{session_id}
+            hyper::Method::DELETE if path.matched(paths::ID_SESSIONS_SESSION_ID) => {
+                Some("DeleteSession")
+            }
             // GetSession - GET /sessions/{session_id}
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID) => Some("GetSession"),
-            // InterruptSession - GET /sessions/{session_id}/interrupt
-            hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
+            // InterruptSession - POST /sessions/{session_id}/interrupt
+            hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
                 Some("InterruptSession")
             }
-            // KillSession - GET /sessions/{session_id}/kill
-            hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => {
+            // KillSession - POST /sessions/{session_id}/kill
+            hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => {
                 Some("KillSession")
             }
             // ListSessions - GET /sessions
             hyper::Method::GET if path.matched(paths::ID_SESSIONS) => Some("ListSessions"),
             // NewSession - PUT /sessions
             hyper::Method::PUT if path.matched(paths::ID_SESSIONS) => Some("NewSession"),
-            // RestartSession - GET /sessions/{session_id}/restart
-            hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => {
+            // RestartSession - POST /sessions/{session_id}/restart
+            hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => {
                 Some("RestartSession")
             }
-            // ShutdownServer - GET /shutdown
-            hyper::Method::GET if path.matched(paths::ID_SHUTDOWN) => Some("ShutdownServer"),
-            // StartSession - GET /sessions/{session_id}/start
-            hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_START) => {
+            // ShutdownServer - POST /shutdown
+            hyper::Method::POST if path.matched(paths::ID_SHUTDOWN) => Some("ShutdownServer"),
+            // StartSession - POST /sessions/{session_id}/start
+            hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_START) => {
                 Some("StartSession")
             }
             _ => None,

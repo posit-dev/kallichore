@@ -54,6 +54,14 @@ pub struct ActiveSession {
     #[serde(rename = "working_directory")]
     pub working_directory: String,
 
+    /// The text to use to prompt for input
+    #[serde(rename = "input_prompt")]
+    pub input_prompt: String,
+
+    /// The text to use to prompt for input continuations
+    #[serde(rename = "continuation_prompt")]
+    pub continuation_prompt: String,
+
     #[serde(rename = "execution_queue")]
     pub execution_queue: models::ExecutionQueue,
 
@@ -73,6 +81,8 @@ impl ActiveSession {
         connected: bool,
         started: chrono::DateTime<chrono::Utc>,
         working_directory: String,
+        input_prompt: String,
+        continuation_prompt: String,
         execution_queue: models::ExecutionQueue,
         status: models::Status,
     ) -> ActiveSession {
@@ -88,6 +98,8 @@ impl ActiveSession {
             connected,
             started,
             working_directory,
+            input_prompt,
+            continuation_prompt,
             execution_queue,
             status,
         }
@@ -127,6 +139,10 @@ impl std::string::ToString for ActiveSession {
             // Skipping started in query parameter serialization
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
+            Some("input_prompt".to_string()),
+            Some(self.input_prompt.to_string()),
+            Some("continuation_prompt".to_string()),
+            Some(self.continuation_prompt.to_string()),
             // Skipping execution_queue in query parameter serialization
 
             // Skipping status in query parameter serialization
@@ -158,6 +174,8 @@ impl std::str::FromStr for ActiveSession {
             pub connected: Vec<bool>,
             pub started: Vec<chrono::DateTime<chrono::Utc>>,
             pub working_directory: Vec<String>,
+            pub input_prompt: Vec<String>,
+            pub continuation_prompt: Vec<String>,
             pub execution_queue: Vec<models::ExecutionQueue>,
             pub status: Vec<models::Status>,
         }
@@ -232,6 +250,14 @@ impl std::str::FromStr for ActiveSession {
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
+                    "input_prompt" => intermediate_rep.input_prompt.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "continuation_prompt" => intermediate_rep.continuation_prompt.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
                     "execution_queue" => intermediate_rep.execution_queue.push(
                         <models::ExecutionQueue as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
@@ -302,6 +328,16 @@ impl std::str::FromStr for ActiveSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "working_directory missing in ActiveSession".to_string())?,
+            input_prompt: intermediate_rep
+                .input_prompt
+                .into_iter()
+                .next()
+                .ok_or_else(|| "input_prompt missing in ActiveSession".to_string())?,
+            continuation_prompt: intermediate_rep
+                .continuation_prompt
+                .into_iter()
+                .next()
+                .ok_or_else(|| "continuation_prompt missing in ActiveSession".to_string())?,
             execution_queue: intermediate_rep
                 .execution_queue
                 .into_iter()
@@ -750,6 +786,14 @@ pub struct NewSession {
     #[serde(rename = "username")]
     pub username: String,
 
+    /// The text to use to prompt for input
+    #[serde(rename = "input_prompt")]
+    pub input_prompt: String,
+
+    /// The text to use to prompt for input continuations
+    #[serde(rename = "continuation_prompt")]
+    pub continuation_prompt: String,
+
     /// The program and command-line parameters for the session
     #[serde(rename = "argv")]
     pub argv: Vec<String>,
@@ -773,6 +817,8 @@ impl NewSession {
         display_name: String,
         language: String,
         username: String,
+        input_prompt: String,
+        continuation_prompt: String,
         argv: Vec<String>,
         working_directory: String,
         env: std::collections::HashMap<String, String>,
@@ -783,6 +829,8 @@ impl NewSession {
             display_name,
             language,
             username,
+            input_prompt,
+            continuation_prompt,
             argv,
             working_directory,
             env,
@@ -805,6 +853,10 @@ impl std::string::ToString for NewSession {
             Some(self.language.to_string()),
             Some("username".to_string()),
             Some(self.username.to_string()),
+            Some("input_prompt".to_string()),
+            Some(self.input_prompt.to_string()),
+            Some("continuation_prompt".to_string()),
+            Some(self.continuation_prompt.to_string()),
             Some("argv".to_string()),
             Some(
                 self.argv
@@ -839,6 +891,8 @@ impl std::str::FromStr for NewSession {
             pub display_name: Vec<String>,
             pub language: Vec<String>,
             pub username: Vec<String>,
+            pub input_prompt: Vec<String>,
+            pub continuation_prompt: Vec<String>,
             pub argv: Vec<Vec<String>>,
             pub working_directory: Vec<String>,
             pub env: Vec<std::collections::HashMap<String, String>>,
@@ -878,6 +932,14 @@ impl std::str::FromStr for NewSession {
                     ),
                     #[allow(clippy::redundant_clone)]
                     "username" => intermediate_rep.username.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "input_prompt" => intermediate_rep.input_prompt.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "continuation_prompt" => intermediate_rep.continuation_prompt.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     "argv" => {
@@ -935,6 +997,16 @@ impl std::str::FromStr for NewSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "username missing in NewSession".to_string())?,
+            input_prompt: intermediate_rep
+                .input_prompt
+                .into_iter()
+                .next()
+                .ok_or_else(|| "input_prompt missing in NewSession".to_string())?,
+            continuation_prompt: intermediate_rep
+                .continuation_prompt
+                .into_iter()
+                .next()
+                .ok_or_else(|| "continuation_prompt missing in NewSession".to_string())?,
             argv: intermediate_rep
                 .argv
                 .into_iter()

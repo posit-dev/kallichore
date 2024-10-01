@@ -42,9 +42,9 @@ const FRAGMENT_ENCODE_SET: &AsciiSet = &percent_encoding::CONTROLS
 const ID_ENCODE_SET: &AsciiSet = &FRAGMENT_ENCODE_SET.add(b'|');
 
 use crate::{
-    Api, ChannelsWebsocketResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    Api, ChannelsWebsocketResponse, DeleteSessionResponse, GetSessionResponse,
+    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
+    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 /// Convert input into a base path, e.g. "http://example:123". Also checks the scheme as it goes.
@@ -381,7 +381,7 @@ where
     S: Service<(Request<Body>, C), Response = Response<Body>> + Clone + Sync + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Into<crate::ServiceError> + fmt::Display,
-    C: Has<XSpanIdString> + Clone + Send + Sync + 'static,
+    C: Has<XSpanIdString> + Has<Option<AuthData>> + Clone + Send + Sync + 'static,
 {
     fn poll_ready(&self, cx: &mut Context) -> Poll<Result<(), crate::ServiceError>> {
         match self.client_service.clone().poll_ready(cx) {
@@ -461,7 +461,111 @@ where
                 })?;
                 Ok(ChannelsWebsocketResponse::InvalidRequest(body))
             }
+            401 => Ok(ChannelsWebsocketResponse::AccessTokenIsMissingOrInvalid),
             404 => Ok(ChannelsWebsocketResponse::SessionNotFound),
+            code => {
+                let headers = response.headers().clone();
+                let body = response.into_body().take(100).into_raw().await;
+                Err(ApiError(format!(
+                    "Unexpected response code {}:\n{:?}\n\n{}",
+                    code,
+                    headers,
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {:?}>", e),
+                        },
+                        Err(e) => format!("<Failed to read body: {}>", e),
+                    }
+                )))
+            }
+        }
+    }
+
+    async fn delete_session(
+        &self,
+        param_session_id: String,
+        context: &C,
+    ) -> Result<DeleteSessionResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        let mut uri = format!(
+            "{}/sessions/{session_id}",
+            self.base_path,
+            session_id = utf8_percent_encode(&param_session_id.to_string(), ID_ENCODE_SET)
+        );
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {}", err))),
+        };
+
+        let mut request = match Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {}", e))),
+        };
+
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {}",
+                        e
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {}", e)))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<models::ActiveSession>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(DeleteSessionResponse::SessionDeleted(body))
+            }
+            400 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(DeleteSessionResponse::FailedToDeleteSession(body))
+            }
+            401 => Ok(DeleteSessionResponse::AccessTokenIsMissingOrInvalid),
+            404 => Ok(DeleteSessionResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;
@@ -611,7 +715,7 @@ where
         };
 
         let mut request = match Request::builder()
-            .method("GET")
+            .method("POST")
             .uri(uri)
             .body(Body::empty())
         {
@@ -665,6 +769,7 @@ where
                 })?;
                 Ok(InterruptSessionResponse::InterruptFailed(body))
             }
+            401 => Ok(InterruptSessionResponse::AccessTokenIsMissingOrInvalid),
             404 => Ok(InterruptSessionResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
@@ -713,7 +818,7 @@ where
         };
 
         let mut request = match Request::builder()
-            .method("GET")
+            .method("POST")
             .uri(uri)
             .body(Body::empty())
         {
@@ -767,6 +872,7 @@ where
                 })?;
                 Ok(KillSessionResponse::KillFailed(body))
             }
+            401 => Ok(KillSessionResponse::AccessTokenIsMissingOrInvalid),
             404 => Ok(KillSessionResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
@@ -963,6 +1069,7 @@ where
                 })?;
                 Ok(NewSessionResponse::InvalidRequest(body))
             }
+            401 => Ok(NewSessionResponse::AccessTokenIsMissingOrInvalid),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;
@@ -1010,7 +1117,7 @@ where
         };
 
         let mut request = match Request::builder()
-            .method("GET")
+            .method("POST")
             .uri(uri)
             .body(Body::empty())
         {
@@ -1064,6 +1171,7 @@ where
                 })?;
                 Ok(RestartSessionResponse::RestartFailed(body))
             }
+            401 => Ok(RestartSessionResponse::AccessTokenIsMissingOrInvalid),
             404 => Ok(RestartSessionResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
@@ -1115,7 +1223,7 @@ where
         };
 
         let mut request = match Request::builder()
-            .method("GET")
+            .method("POST")
             .uri(uri)
             .body(Body::empty())
         {
@@ -1169,6 +1277,7 @@ where
                 })?;
                 Ok(ShutdownServerResponse::ShutdownFailed(body))
             }
+            401 => Ok(ShutdownServerResponse::AccessTokenIsMissingOrInvalid),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;
@@ -1216,7 +1325,7 @@ where
         };
 
         let mut request = match Request::builder()
-            .method("GET")
+            .method("POST")
             .uri(uri)
             .body(Body::empty())
         {
@@ -1271,6 +1380,7 @@ where
                 Ok(StartSessionResponse::StartFailed(body))
             }
             404 => Ok(StartSessionResponse::SessionNotFound),
+            401 => Ok(StartSessionResponse::AccessTokenIsMissingOrInvalid),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;

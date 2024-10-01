@@ -428,6 +428,8 @@ fn main() {
                 display_name: format!("{} - {}", kernel_spec.display_name, session_id.clone()),
                 language: kernel_spec.language,
                 username: String::from("testuser"),
+                input_prompt: String::from("In> "),
+                continuation_prompt: String::from("..."),
                 working_directory: working_directory.to_string_lossy().to_string(),
                 env,
                 interrupt_mode: models::InterruptMode::Message,
@@ -618,6 +620,9 @@ fn main() {
                     RestartSessionResponse::RestartFailed(error) => {
                         println!("{}", serde_json::to_string_pretty(&error).unwrap());
                     }
+                    RestartSessionResponse::AccessTokenIsMissingOrInvalid => {
+                        println!("Access token is missing or invalid");
+                    }
                 },
                 Err(e) => {
                     eprintln!("Failed to restart session: {:?}", e);
@@ -653,6 +658,9 @@ fn main() {
                     }
                     InterruptSessionResponse::InterruptFailed(error) => {
                         println!("{}", serde_json::to_string_pretty(&error).unwrap());
+                    }
+                    InterruptSessionResponse::AccessTokenIsMissingOrInvalid => {
+                        println!("Access token is missing or invalid");
                     }
                 },
                 Err(e) => {

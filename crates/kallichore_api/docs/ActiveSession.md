@@ -14,6 +14,8 @@ Name | Type | Description | Notes
 **connected** | **bool** | Whether the session is connected to a client | 
 **started** | [**chrono::DateTime::<chrono::Utc>**](DateTime.md) | An ISO 8601 timestamp of when the session was started | 
 **working_directory** | **String** | The session's current working directory | 
+**input_prompt** | **String** | The text to use to prompt for input | 
+**continuation_prompt** | **String** | The text to use to prompt for input continuations | 
 **execution_queue** | [***models::ExecutionQueue**](execution_queue.md) |  | 
 **status** | [***models::Status**](status.md) |  | 
 
