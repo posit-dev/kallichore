@@ -57,12 +57,12 @@ async fn main() {
 
     // See if a token file was provided
     let token = match args.token {
-        Some(ref token) => {
-            if token == "none" {
+        Some(ref token_file) => {
+            if token_file == "none" {
                 log::warn!("Authentication was disabled with --token none.");
                 None
             } else {
-                match std::fs::read_to_string(token) {
+                match std::fs::read_to_string(token_file) {
                     Ok(token) => {
                         // Trim the whitespace from the token
                         let token = token.trim();
@@ -77,15 +77,15 @@ async fn main() {
                         // Attempt to delete the file after reading it; since
                         // the path to the file is visible in the process list,
                         // this is a security measure
-                        if let Err(e) = std::fs::remove_file(token) {
-                            log::warn!("Failed to delete token file: {}", e);
+                        if let Err(e) = std::fs::remove_file(token_file) {
+                            log::warn!("Failed to delete token file '{}': {}", token_file, e);
                         }
 
                         log::trace!("Using auth token from file");
                         Some(token.to_string())
                     }
                     Err(e) => {
-                        log::error!("Failed to read token file: {}", e);
+                        log::error!("Failed to read token file '{}': {}", token_file, e);
                         std::process::exit(1);
                     }
                 }
