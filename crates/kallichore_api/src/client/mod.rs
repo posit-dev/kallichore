@@ -546,7 +546,7 @@ where
                     .await?;
                 let body = str::from_utf8(&body)
                     .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
-                let body = serde_json::from_str::<models::ActiveSession>(body).map_err(|e| {
+                let body = serde_json::from_str::<serde_json::Value>(body).map_err(|e| {
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
                 Ok(DeleteSessionResponse::SessionDeleted(body))

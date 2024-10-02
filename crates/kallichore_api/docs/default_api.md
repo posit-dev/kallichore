@@ -42,7 +42,7 @@ No authorization required
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 
 # **delete-session**
-> models::ActiveSession delete-session(session_id)
+> serde_json::Value delete-session(session_id)
 Delete session
 
 ### Required Parameters
@@ -53,7 +53,7 @@ Name | Type | Description  | Notes
 
 ### Return type
 
-[**models::ActiveSession**](activeSession.md)
+[**serde_json::Value**](AnyType.md)
 
 ### Authorization
 

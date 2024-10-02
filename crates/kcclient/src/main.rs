@@ -17,7 +17,9 @@ use directories::BaseDirs;
 use futures::{future, stream, SinkExt, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
-use kallichore_api::{InterruptSessionResponse, NewSessionResponse, RestartSessionResponse};
+use kallichore_api::{
+    DeleteSessionResponse, InterruptSessionResponse, NewSessionResponse, RestartSessionResponse,
+};
 
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
@@ -125,6 +127,13 @@ enum Commands {
         /// running session will be used
         #[arg(short, long)]
         session_id: Option<String>,
+    },
+
+    /// Delete an exited session
+    Delete {
+        /// The session to delete.
+        #[arg(short, long)]
+        session_id: String,
     },
 }
 
@@ -626,6 +635,28 @@ fn main() {
                 },
                 Err(e) => {
                     eprintln!("Failed to restart session: {:?}", e);
+                }
+            }
+        }
+        Some(Commands::Delete { session_id }) => {
+            log::info!("Deleting session '{}'", session_id.clone());
+            match rt.block_on(client.delete_session(session_id.clone())) {
+                Ok(resp) => match resp {
+                    DeleteSessionResponse::SessionDeleted(_) => {
+                        println!("Session {} deleted", session_id);
+                    }
+                    DeleteSessionResponse::SessionNotFound => {
+                        println!("Session {} doesn't exist", session_id);
+                    }
+                    DeleteSessionResponse::FailedToDeleteSession(error) => {
+                        println!("Failed to delete session {}: {:?}", session_id, error);
+                    }
+                    DeleteSessionResponse::AccessTokenIsMissingOrInvalid => {
+                        println!("Access token is missing or invalid");
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to delete session: {:?}", e);
                 }
             }
         }

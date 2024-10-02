@@ -298,10 +298,58 @@ where
     /// Delete a session
     async fn delete_session(
         &self,
-        _session_id: String,
-        _context: &C,
+        session_id: String,
+        context: &C,
     ) -> Result<DeleteSessionResponse, ApiError> {
-        unimplemented!()
+        info!(
+            "delete_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+
+        // Find the session with the given ID
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(DeleteSessionResponse::SessionNotFound);
+            }
+        };
+
+        // Ensure the session is not running
+        let status = {
+            let state = kernel_session.state.read().await;
+            state.status.clone()
+        };
+        if status != models::Status::Exited {
+            let error = KSError::SessionRunning(session_id.clone());
+            error.log();
+            return Ok(DeleteSessionResponse::FailedToDeleteSession(
+                error.to_json(None),
+            ));
+        }
+
+        // Ensure we get a write lock on the kernel sessions for the duration of
+        // this function
+        let mut sessions = self.kernel_sessions.write().unwrap();
+
+        // Find the index of the session with the given ID
+        let index = {
+            sessions
+                .iter()
+                .position(|s| s.connection.session_id == session_id)
+        };
+
+        // Not likely since we just found it above, but be threadsafe!
+        if index.is_none() {
+            return Ok(DeleteSessionResponse::SessionNotFound);
+        }
+
+        // Remove the session from the list
+        sessions.remove(index.unwrap());
+
+        Ok(DeleteSessionResponse::SessionDeleted(
+            serde_json::Value::Null,
+        ))
     }
 
     async fn channels_websocket(

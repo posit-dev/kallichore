@@ -19,6 +19,7 @@ pub enum KSError {
     SessionExists(String),
     SessionNotFound(String),
     SessionConnected(String),
+    SessionRunning(String),
     SessionNotRunning(String),
     ProcessNotFound(u32, String),
     SessionStartFailed(anyhow::Error),
@@ -37,6 +38,9 @@ impl fmt::Display for KSError {
             }
             KSError::SessionConnected(session_id) => {
                 write!(f, "Session {} is connected to another client", session_id)
+            }
+            KSError::SessionRunning(session_id) => {
+                write!(f, "Session {} is running", session_id)
             }
             KSError::SessionNotRunning(session_id) => {
                 write!(f, "Session {} is not running", session_id)

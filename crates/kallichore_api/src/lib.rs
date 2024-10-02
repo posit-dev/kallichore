@@ -46,7 +46,7 @@ pub enum ChannelsWebsocketResponse {
 #[must_use]
 pub enum DeleteSessionResponse {
     /// Session deleted
-    SessionDeleted(models::ActiveSession),
+    SessionDeleted(serde_json::Value),
     /// Failed to delete session
     FailedToDeleteSession(models::Error),
     /// Access token is missing or invalid
