@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::{any, env};
 use swagger::auth::MakeAllowAllAuthenticator;
-use swagger::EmptyContext;
+use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
@@ -42,18 +42,20 @@ use kallichore_api::{
     ShutdownServerResponse, StartSessionResponse,
 };
 
-pub async fn create(addr: &str) {
+pub async fn create(addr: &str, token: Option<String>) {
     let addr = addr.parse().expect("Failed to parse bind address");
 
-    let server = Server::new();
+    let server = Server::new(token);
 
     let service = MakeService::new(server);
 
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
 
     #[allow(unused_mut)]
-    let mut service =
-        kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+    let mut service = kallichore_api::server::context::MakeAddContext::<
+        _,
+        ContextBuilder<Option<AuthData>, EmptyContext>,
+    >::new(service);
 
     // Using HTTP
     hyper::server::Server::bind(&addr)
@@ -65,13 +67,16 @@ pub async fn create(addr: &str) {
 #[derive(Clone)]
 pub struct Server<C> {
     marker: PhantomData<C>,
+    #[allow(dead_code)]
+    token: Option<String>,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
 }
 
 impl<C> Server<C> {
-    pub fn new() -> Self {
+    pub fn new(token: Option<String>) -> Self {
         Server {
+            token,
             marker: PhantomData,
             kernel_sessions: Arc::new(RwLock::new(vec![])),
             client_sessions: Arc::new(RwLock::new(vec![])),
