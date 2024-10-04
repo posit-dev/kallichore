@@ -1220,6 +1220,9 @@ pub struct ServerStatus {
     #[serde(rename = "sessions")]
     pub sessions: i32,
 
+    #[serde(rename = "active")]
+    pub active: i32,
+
     #[serde(rename = "busy")]
     pub busy: bool,
 
@@ -1229,9 +1232,10 @@ pub struct ServerStatus {
 
 impl ServerStatus {
     #[allow(clippy::new_without_default)]
-    pub fn new(sessions: i32, busy: bool, version: String) -> ServerStatus {
+    pub fn new(sessions: i32, active: i32, busy: bool, version: String) -> ServerStatus {
         ServerStatus {
             sessions,
+            active,
             busy,
             version,
         }
@@ -1246,6 +1250,8 @@ impl std::string::ToString for ServerStatus {
         let params: Vec<Option<String>> = vec![
             Some("sessions".to_string()),
             Some(self.sessions.to_string()),
+            Some("active".to_string()),
+            Some(self.active.to_string()),
             Some("busy".to_string()),
             Some(self.busy.to_string()),
             Some("version".to_string()),
@@ -1268,6 +1274,7 @@ impl std::str::FromStr for ServerStatus {
         #[allow(dead_code)]
         struct IntermediateRep {
             pub sessions: Vec<i32>,
+            pub active: Vec<i32>,
             pub busy: Vec<bool>,
             pub version: Vec<String>,
         }
@@ -1293,6 +1300,10 @@ impl std::str::FromStr for ServerStatus {
                 match key {
                     #[allow(clippy::redundant_clone)]
                     "sessions" => intermediate_rep.sessions.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "active" => intermediate_rep.active.push(
                         <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
@@ -1322,6 +1333,11 @@ impl std::str::FromStr for ServerStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "sessions missing in ServerStatus".to_string())?,
+            active: intermediate_rep
+                .active
+                .into_iter()
+                .next()
+                .ok_or_else(|| "active missing in ServerStatus".to_string())?,
             busy: intermediate_rep
                 .busy
                 .into_iter()

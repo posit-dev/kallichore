@@ -685,6 +685,9 @@
           "sessions": {
             "type": "integer"
           },
+          "active": {
+            "type": "integer"
+          },
           "busy": {
             "type": "boolean"
           },
@@ -695,6 +698,7 @@
         "required": [
           "busy",
           "sessions",
+          "active",
           "version"
         ]
       },

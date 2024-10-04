@@ -496,15 +496,19 @@ components:
       example:
         sessions: 0
         busy: true
+        active: 6
         version: version
       properties:
         sessions:
+          type: integer
+        active:
           type: integer
         busy:
           type: boolean
         version:
           type: string
       required:
+      - active
       - busy
       - sessions
       - version

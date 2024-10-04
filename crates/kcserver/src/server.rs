@@ -18,6 +18,7 @@ use hyper::service::Service;
 use hyper::upgrade::Upgraded;
 use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use kallichore_api::models::ServerStatus;
 use log::info;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -498,7 +499,33 @@ where
         &self,
         _context: &C,
     ) -> Result<kallichore_api::ServerStatusResponse, ApiError> {
-        unimplemented!()
+        // Make a copy of the active session list to avoid holding the lock
+        let sessions = {
+            let sessions = self.kernel_sessions.read().unwrap();
+            sessions.clone()
+        };
+
+        // Count busy and active sessions
+        let mut busy = false;
+        let mut active = 0;
+        for s in sessions.iter() {
+            let state = s.state.read().await;
+            if state.status == models::Status::Busy {
+                busy = true;
+            }
+            if state.status != models::Status::Exited {
+                active += 1;
+            }
+        }
+
+        let resp = ServerStatus {
+            busy,
+            sessions: sessions.len() as i32,
+            active,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+
+        Ok(kallichore_api::ServerStatusResponse::ServerStatusAndInformation(resp))
     }
 
     async fn channels_websocket_request(

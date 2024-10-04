@@ -4,6 +4,7 @@
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
 **sessions** | **i32** |  | 
+**active** | **i32** |  | 
 **busy** | **bool** |  | 
 **version** | **String** |  | 
 
