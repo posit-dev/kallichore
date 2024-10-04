@@ -408,7 +408,7 @@
     "/shutdown": {
       "post": {
         "operationId": "shutdown-server",
-        "summary": "",
+        "summary": "Shut down all sessions and the server itself",
         "security": [
           "bearerAuth"
         ],
@@ -434,6 +434,34 @@
           },
           "401": {
             "$ref": "#/components/responses/UnauthorizedError"
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "operationId": "server-status",
+        "summary": "Get server status and information",
+        "responses": {
+          "200": {
+            "description": "Server status and information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/serverStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
           }
         }
       }
@@ -649,6 +677,25 @@
           "status",
           "username",
           "working_directory"
+        ]
+      },
+      "serverStatus": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "integer"
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "busy",
+          "sessions",
+          "version"
         ]
       },
       "sessionList": {

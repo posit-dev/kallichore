@@ -12,7 +12,8 @@ Method | HTTP request | Description
 **list-sessions**](default_api.md#list-sessions) | **GET** /sessions | List active sessions
 **new-session**](default_api.md#new-session) | **PUT** /sessions | Create a new session
 **restart-session**](default_api.md#restart-session) | **POST** /sessions/{session_id}/restart | Restart a session
-**shutdown-server**](default_api.md#shutdown-server) | **POST** /shutdown | 
+**server-status**](default_api.md#server-status) | **GET** /status | Get server status and information
+**shutdown-server**](default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
 **start-session**](default_api.md#start-session) | **POST** /sessions/{session_id}/start | Start a session
 
 
@@ -213,9 +214,31 @@ No authorization required
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 
+# **server-status**
+> models::ServerStatus server-status()
+Get server status and information
+
+### Required Parameters
+This endpoint does not need any parameter.
+
+### Return type
+
+[**models::ServerStatus**](serverStatus.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
 # **shutdown-server**
 > serde_json::Value shutdown-server()
-
+Shut down all sessions and the server itself
 
 ### Required Parameters
 This endpoint does not need any parameter.

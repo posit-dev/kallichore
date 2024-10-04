@@ -124,6 +124,15 @@ pub enum RestartSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum ServerStatusResponse {
+    /// Server status and information
+    ServerStatusAndInformation(models::ServerStatus),
+    /// Error
+    Error(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum ShutdownServerResponse {
     /// Shutting down
     ShuttingDown(serde_json::Value),
@@ -209,7 +218,10 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError>;
 
-    ///
+    /// Get server status and information
+    async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError>;
+
+    /// Shut down all sessions and the server itself
     async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError>;
 
     /// Start a session
@@ -271,15 +283,6 @@ pub trait ApiNoContext<C: Send + Sync> {
         new_session: models::NewSession,
     ) -> Result<NewSessionResponse, ApiError>;
 
-    /// Restart a session
-    async fn restart_session(&self, session_id: String)
-        -> Result<RestartSessionResponse, ApiError>;
-
-    ///
-    async fn shutdown_server(&self) -> Result<ShutdownServerResponse, ApiError>;
-
-    /// Start a session
-    async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError>;
 
     // --- Start Kallichore ---
     /// Upgrade a websocket request for channel communication
@@ -289,6 +292,18 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<Response<Body>, ApiError>;
     // --- End Kallichore ---
+    /// Restart a session
+    async fn restart_session(&self, session_id: String)
+        -> Result<RestartSessionResponse, ApiError>;
+
+    /// Get server status and information
+    async fn server_status(&self) -> Result<ServerStatusResponse, ApiError>;
+
+    /// Shut down all sessions and the server itself
+    async fn shutdown_server(&self) -> Result<ShutdownServerResponse, ApiError>;
+
+    /// Start a session
+    async fn start_session(&self, session_id: String) -> Result<StartSessionResponse, ApiError>;
 }
 
 /// Trait to extend an API to make it easy to bind it to a context.
@@ -376,7 +391,13 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().restart_session(session_id, &context).await
     }
 
-    ///
+    /// Get server status and information
+    async fn server_status(&self) -> Result<ServerStatusResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().server_status(&context).await
+    }
+
+    /// Shut down all sessions and the server itself
     async fn shutdown_server(&self) -> Result<ShutdownServerResponse, ApiError> {
         let context = self.context().clone();
         self.api().shutdown_server(&context).await

@@ -31,7 +31,7 @@ type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceErr
 use crate::{
     Api, ChannelsWebsocketResponse, DeleteSessionResponse, GetSessionResponse,
     InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
-    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
+    RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 mod paths {
@@ -46,7 +46,8 @@ mod paths {
             r"^/sessions/(?P<session_id>[^/?#]*)/kill$",
             r"^/sessions/(?P<session_id>[^/?#]*)/restart$",
             r"^/sessions/(?P<session_id>[^/?#]*)/start$",
-            r"^/shutdown$"
+            r"^/shutdown$",
+            r"^/status$"
         ])
         .expect("Unable to create global regex set");
     }
@@ -94,6 +95,7 @@ mod paths {
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_START");
     }
     pub(crate) static ID_SHUTDOWN: usize = 7;
+    pub(crate) static ID_STATUS: usize = 8;
 }
 
 pub struct MakeService<T, C>
@@ -198,7 +200,7 @@ where
         ) -> Result<Response<Body>, crate::ServiceError>
         where
             T: Api<C> + Clone + Send + 'static,
-            C: Has<XSpanIdString> + Send + Sync + 'static,
+            C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
         {
             let (request, context) = req;
             // --- Start Kallichore ---
@@ -841,6 +843,58 @@ where
                     Ok(response)
                 }
 
+                // ServerStatus - GET /status
+                hyper::Method::GET if path.matched(paths::ID_STATUS) => {
+                    let result = api_impl.server_status(&context).await;
+                    let mut response = Response::new(Body::empty());
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            ServerStatusResponse::ServerStatusAndInformation(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for SERVER_STATUS_SERVER_STATUS_AND_INFORMATION"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                            ServerStatusResponse::Error(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for SERVER_STATUS_ERROR"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = Body::from("An internal error occurred");
+                        }
+                    }
+
+                    Ok(response)
+                }
+
                 // ShutdownServer - POST /shutdown
                 hyper::Method::POST if path.matched(paths::ID_SHUTDOWN) => {
                     let result = api_impl.shutdown_server(&context).await;
@@ -988,6 +1042,7 @@ where
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_START) => method_not_allowed(),
                 _ if path.matched(paths::ID_SHUTDOWN) => method_not_allowed(),
+                _ if path.matched(paths::ID_STATUS) => method_not_allowed(),
                 _ => Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .body(Body::empty())
@@ -1030,6 +1085,8 @@ impl<T> RequestParser<T> for ApiRequestParser {
             hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => {
                 Some("RestartSession")
             }
+            // ServerStatus - GET /status
+            hyper::Method::GET if path.matched(paths::ID_STATUS) => Some("ServerStatus"),
             // ShutdownServer - POST /shutdown
             hyper::Method::POST if path.matched(paths::ID_SHUTDOWN) => Some("ShutdownServer"),
             // StartSession - POST /sessions/{session_id}/start

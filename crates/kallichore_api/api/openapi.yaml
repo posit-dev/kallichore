@@ -276,7 +276,24 @@ paths:
         "401":
           description: Access token is missing or invalid
       security: []
-      summary: ""
+      summary: Shut down all sessions and the server itself
+  /status:
+    get:
+      operationId: server-status
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/serverStatus'
+          description: Server status and information
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Error
+      summary: Get server status and information
 components:
   responses:
     UnauthorizedError:
@@ -474,6 +491,23 @@ components:
       - status
       - username
       - working_directory
+      type: object
+    serverStatus:
+      example:
+        sessions: 0
+        busy: true
+        version: version
+      properties:
+        sessions:
+          type: integer
+        busy:
+          type: boolean
+        version:
+          type: string
+      required:
+      - busy
+      - sessions
+      - version
       type: object
     sessionList:
       example:

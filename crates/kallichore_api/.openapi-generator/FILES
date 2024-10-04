@@ -9,6 +9,7 @@ docs/ExecutionQueue.md
 docs/InterruptMode.md
 docs/NewSession.md
 docs/NewSession200Response.md
+docs/ServerStatus.md
 docs/SessionList.md
 docs/Status.md
 docs/default_api.md

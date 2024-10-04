@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-10-02T08:22:30.173296-07:00[America/Los_Angeles]
+- Build date: 2024-10-04T11:34:54.446077-07:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -69,6 +69,7 @@ cargo run --example client InterruptSession
 cargo run --example client KillSession
 cargo run --example client ListSessions
 cargo run --example client RestartSession
+cargo run --example client ServerStatus
 cargo run --example client ShutdownServer
 cargo run --example client StartSession
 ```
@@ -112,7 +113,8 @@ Method | HTTP request | Description
 [**list-sessions**](docs/default_api.md#list-sessions) | **GET** /sessions | List active sessions
 [**new-session**](docs/default_api.md#new-session) | **PUT** /sessions | Create a new session
 [**restart-session**](docs/default_api.md#restart-session) | **POST** /sessions/{session_id}/restart | Restart a session
-[**shutdown-server**](docs/default_api.md#shutdown-server) | **POST** /shutdown | 
+[**server-status**](docs/default_api.md#server-status) | **GET** /status | Get server status and information
+[**shutdown-server**](docs/default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
 [**start-session**](docs/default_api.md#start-session) | **POST** /sessions/{session_id}/start | Start a session
 
 
@@ -124,6 +126,7 @@ Method | HTTP request | Description
  - [InterruptMode](docs/InterruptMode.md)
  - [NewSession](docs/NewSession.md)
  - [NewSession200Response](docs/NewSession200Response.md)
+ - [ServerStatus](docs/ServerStatus.md)
  - [SessionList](docs/SessionList.md)
  - [Status](docs/Status.md)
 
