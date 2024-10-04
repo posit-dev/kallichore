@@ -398,7 +398,6 @@ fn main() {
                 result,
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
-            // If the result is successful, pretty-print the list of sessions as JSON
             if let Ok(ServerStatusResponse::ServerStatusAndInformation(status)) = result {
                 println!("{}", serde_json::to_string_pretty(&status).unwrap());
             }
