@@ -19,6 +19,7 @@ use futures::{future, stream, SinkExt, Stream};
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
 use kallichore_api::{
     DeleteSessionResponse, InterruptSessionResponse, NewSessionResponse, RestartSessionResponse,
+    ServerStatusResponse,
 };
 
 use kcshared::{
@@ -58,6 +59,9 @@ struct Args {
 enum Commands {
     /// Lists active sessions
     List,
+
+    /// Gets server status
+    Status,
 
     /// Start a new session
     Start {
@@ -387,6 +391,18 @@ fn main() {
 
     // Use the command froom the command line arguments to determine which operation to perform
     match args.command {
+        Some(Commands::Status) => {
+            let result = rt.block_on(client.server_status());
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+            // If the result is successful, pretty-print the list of sessions as JSON
+            if let Ok(ServerStatusResponse::ServerStatusAndInformation(status)) = result {
+                println!("{}", serde_json::to_string_pretty(&status).unwrap());
+            }
+        }
         Some(Commands::List) => {
             let result = rt.block_on(client.list_sessions());
             info!(
