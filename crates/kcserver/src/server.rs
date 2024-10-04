@@ -494,6 +494,13 @@ where
         }
     }
 
+    async fn server_status(
+        &self,
+        _context: &C,
+    ) -> Result<kallichore_api::ServerStatusResponse, ApiError> {
+        unimplemented!()
+    }
+
     async fn channels_websocket_request(
         &self,
         mut request: hyper::Request<Body>,
