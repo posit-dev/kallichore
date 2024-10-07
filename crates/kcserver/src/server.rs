@@ -284,7 +284,11 @@ where
         };
 
         let sessions = self.kernel_sessions.clone();
-        let kernel_session = match KernelSession::new(session, connection_file.clone()) {
+        let kernel_session = match KernelSession::new(
+            session,
+            connection_file.clone(),
+            self.reserved_ports.clone(),
+        ) {
             Ok(kernel_session) => kernel_session,
             Err(e) => {
                 let error = KSError::SessionCreateFailed(

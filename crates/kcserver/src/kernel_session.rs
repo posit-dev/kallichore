@@ -52,6 +52,9 @@ pub struct KernelSession {
     /// The current state of the kernel
     pub state: Arc<RwLock<KernelState>>,
 
+    /// The current set of reserved ports for all kernels
+    pub reserved_ports: Arc<std::sync::RwLock<Vec<u16>>>,
+
     /// The date and time the kernel was started
     pub started: DateTime<Utc>,
 
@@ -79,6 +82,7 @@ impl KernelSession {
     pub fn new(
         session: models::NewSession,
         connection_file: ConnectionFile,
+        reserved_ports: Arc<std::sync::RwLock<Vec<u16>>>,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
@@ -102,6 +106,7 @@ impl KernelSession {
             started,
             exit_event: Arc::new(Event::new()),
             connection_file,
+            reserved_ports,
         };
         Ok(kernel_session)
     }
@@ -422,5 +427,21 @@ impl KernelSession {
                 error.log();
             }
         }
+
+        // When this listen future resolves, the proxy has stopped and the
+        // sockets are closed; release the reserved ports
+        let mut reserved_ports = self.reserved_ports.write().unwrap();
+        reserved_ports.retain(|&port| {
+            port != self.connection_file.control_port
+                && port != self.connection_file.shell_port
+                && port != self.connection_file.stdin_port
+                && port != self.connection_file.iopub_port
+                && port != self.connection_file.hb_port
+        });
+        log::trace!(
+            "Released reserved ports for session {}; there are now {} reserved ports",
+            self.connection.session_id,
+            reserved_ports.len()
+        );
     }
 }
