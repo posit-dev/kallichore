@@ -5,7 +5,7 @@
 //
 //
 
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use async_channel::{Receiver, Sender};
 use kallichore_api::models;
@@ -15,7 +15,10 @@ use kcshared::{
     websocket_message::WebsocketMessage,
 };
 use tokio::{select, sync::RwLock};
-use zeromq::{DealerSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
+use zeromq::{
+    util::PeerIdentity, DealerSocket, Socket, SocketOptions, SocketRecv, SocketSend, SubSocket,
+    ZmqMessage,
+};
 
 use crate::{
     connection_file::ConnectionFile,
@@ -34,6 +37,7 @@ pub struct ZmqWsProxy {
     pub connection_file: ConnectionFile,
     pub connection: KernelConnection,
     pub heartbeat: HeartbeatMonitor,
+    pub session_id: String,
     pub closed: bool,
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
@@ -65,20 +69,37 @@ impl ZmqWsProxy {
     ) -> Self {
         let session_id = connection.session_id.clone();
         let hb_address = format!("tcp://{}:{}", connection_file.ip, connection_file.hb_port);
+
         Self {
-            shell_socket: Some(DealerSocket::new()),
+            shell_socket: Some(DealerSocket::with_options(ZmqWsProxy::dealer_peer_opts(
+                session_id.clone(),
+            ))),
             iopub_socket: Some(SubSocket::new()),
-            control_socket: Some(DealerSocket::new()),
-            stdin_socket: Some(DealerSocket::new()),
-            heartbeat: HeartbeatMonitor::new(state.clone(), session_id, hb_address),
+            control_socket: Some(DealerSocket::with_options(ZmqWsProxy::dealer_peer_opts(
+                session_id.clone(),
+            ))),
+            stdin_socket: Some(DealerSocket::with_options(ZmqWsProxy::dealer_peer_opts(
+                session_id.clone(),
+            ))),
+            heartbeat: HeartbeatMonitor::new(state.clone(), session_id.clone(), hb_address),
             connection_file,
             connection,
             ws_json_tx,
             ws_zmq_rx,
             status_rx,
             state,
+            session_id: session_id.clone(),
             closed: false,
         }
+    }
+
+    /// Creates the socket options for DEALER sockets to set the peer identity
+    /// to the session ID.
+    fn dealer_peer_opts(session_id: String) -> SocketOptions {
+        let mut peer_opts = SocketOptions::default();
+        let peer_id = PeerIdentity::from_str(session_id.as_str()).unwrap();
+        peer_opts.peer_identity(peer_id);
+        peer_opts
     }
 
     pub async fn connect(&mut self) -> Result<(), anyhow::Error> {
@@ -368,7 +389,7 @@ impl ZmqWsProxy {
         }
 
         // (1) convert the raw parts/frames of the message into a `WireMessage`.
-        let message = WireMessage::from_zmq(channel, message);
+        let message = WireMessage::from_zmq(self.session_id.clone(), channel, message);
 
         // (2) convert it into a Jupyter message; this can fail if the message is
         // not a valid Jupyter message.

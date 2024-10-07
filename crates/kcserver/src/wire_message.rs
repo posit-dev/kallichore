@@ -17,6 +17,9 @@ use crate::{kernel_connection::KernelConnection, wire_message_header::WireMessag
 use hmac::Mac;
 
 pub struct WireMessage {
+    /// The session ID the message is destined for
+    pub session_id: String,
+
     /// The channel the message is destined for
     pub channel: JupyterChannel,
 
@@ -66,6 +69,7 @@ impl WireMessage {
         parts.insert(0, signature.as_bytes().to_vec());
 
         Ok(WireMessage {
+            session_id: connection.session_id.clone(),
             channel: msg.channel,
             parts,
         })
@@ -107,9 +111,13 @@ impl WireMessage {
         Ok(val)
     }
 
-    pub fn from_zmq(channel: JupyterChannel, msg: ZmqMessage) -> Self {
+    pub fn from_zmq(session_id: String, channel: JupyterChannel, msg: ZmqMessage) -> Self {
         let parts: Vec<Vec<u8>> = msg.iter().map(|frame| frame.to_vec()).collect();
-        Self { channel, parts }
+        Self {
+            session_id,
+            channel,
+            parts,
+        }
     }
 }
 
@@ -117,8 +125,8 @@ impl Into<ZmqMessage> for WireMessage {
     fn into(self) -> ZmqMessage {
         let mut zmq_message = match self.channel {
             JupyterChannel::Shell | JupyterChannel::Stdin => {
-                // The Shell and Stdin channels share a socket identity
-                let mut message = ZmqMessage::from(Bytes::from("kallichore"));
+                // The Shell and Stdin channels share a socket identity, which we derive from the session ID
+                let mut message = ZmqMessage::from(Bytes::from(self.session_id));
                 message.push_back(Bytes::from(MSG_DELIM));
                 message
             }
