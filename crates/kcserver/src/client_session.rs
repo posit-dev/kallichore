@@ -71,12 +71,13 @@ impl ClientSession {
 
         // Log the message ID and type
         log::info!(
-            "Got message {} of type {}",
+            "[session {}] Got message {} of type {}; sending to Jupyter socket {:?}",
+            self.connection.session_id,
             channel_message.header.msg_id.clone(),
-            channel_message.header.msg_type.clone()
+            channel_message.header.msg_type.clone(),
+            channel_message.channel
         );
 
-        log::trace!("Sending message to Jupyter");
         match self.ws_zmq_tx.send(channel_message).await {
             Ok(_) => {
                 log::trace!("Sent message to Jupyter");
