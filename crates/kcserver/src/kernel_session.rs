@@ -272,9 +272,10 @@ impl KernelSession {
         let listener = self.exit_event.listen();
         listener.await;
 
-        // Make sure the kernel is still restarting.
+        // Make sure the kernel is still restarting, and then clear the
+        // restarting flag.
         {
-            let state = self.state.read().await;
+            let mut state = self.state.write().await;
             if !state.restarting {
                 log::debug!(
                     "[session {}] Kernel is no longer restarting; stopping restart",
@@ -282,6 +283,7 @@ impl KernelSession {
                 );
                 return;
             }
+            state.restarting = false;
         }
 
         self.start().await.expect("Failed to restart kernel");

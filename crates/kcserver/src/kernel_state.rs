@@ -22,7 +22,8 @@ pub struct KernelState {
     /// Whether the kernel is connected to a client.
     pub connected: bool,
 
-    /// Whether the kernel is currently restarting.
+    /// Whether the kernel is currently restarting. This flag triggers an automatic
+    /// startup after the kernel exits for restart.
     pub restarting: bool,
 
     /// The current working directory of the kernel.
