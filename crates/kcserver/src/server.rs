@@ -72,6 +72,7 @@ pub struct Server<C> {
     token: Option<String>,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
+    reserved_ports: Arc<RwLock<Vec<u16>>>,
 }
 
 impl<C> Server<C> {
@@ -81,6 +82,7 @@ impl<C> Server<C> {
             marker: PhantomData,
             kernel_sessions: Arc::new(RwLock::new(vec![])),
             client_sessions: Arc::new(RwLock::new(vec![])),
+            reserved_ports: Arc::new(RwLock::new(vec![])),
         }
     }
 
@@ -202,7 +204,10 @@ where
         let args = session.argv.clone();
 
         // Create a connection file for the session in a temporary directory
-        let connection_file = match ConnectionFile::generate(String::from("127.0.0.1")) {
+        let connection_file = match ConnectionFile::generate(
+            String::from("127.0.0.1"),
+            self.reserved_ports.clone(),
+        ) {
             Ok(connection_file) => connection_file,
             Err(e) => {
                 let error = KSError::SessionCreateFailed(
