@@ -14,6 +14,7 @@ use zeromq::ZmqMessage;
 
 use crate::{kernel_connection::KernelConnection, wire_message_header::WireMessageHeader};
 
+use base64::engine::Engine;
 use hmac::Mac;
 
 pub struct WireMessage {
@@ -95,13 +96,20 @@ impl WireMessage {
             Some(header.into())
         };
 
+        // The remaining parts of the message are buffers; base64 encode their
+        // contents for the Jupyter message
+        let mut buffers = Vec::<String>::new();
+        for (_i, buf) in parts.iter().enumerate().skip(5) {
+            buffers.push(base64::engine::general_purpose::STANDARD.encode(buf));
+        }
+
         Ok(JupyterMessage {
             header: jupyter_header,
             parent_header,
             metadata: serde_json::from_slice(&parts[3])?,
             content: serde_json::from_slice(&parts[4])?,
             channel,
-            buffers: Vec::new(),
+            buffers,
         })
     }
 

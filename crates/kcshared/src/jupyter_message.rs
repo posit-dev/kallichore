@@ -59,6 +59,7 @@ pub struct JupyterMessage {
     /// Additional metadata
     pub metadata: serde_json::Value,
 
-    /// The message buffers
-    pub buffers: Vec<serde_json::Value>,
+    /// The message buffers. These are an array of byte arrays, serialized here
+    /// as an array of base64 encoded strings.
+    pub buffers: Vec<String>,
 }
