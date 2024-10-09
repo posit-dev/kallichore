@@ -481,17 +481,31 @@ impl KernelSession {
             self.status_rx.clone(),
         );
 
-        // Connect to the ZeroMQ sockets
-        match proxy.connect().await {
-            Ok(_) => {
+        // Connect to the ZeroMQ sockets. Wait a maximum of 20 seconds for the
+        // connection to be established.
+        //
+        // CONSIDER: Should we make this timeout configurable?
+        match tokio::time::timeout(std::time::Duration::new(20, 0), proxy.connect()).await {
+            Ok(Ok(())) => {
                 // Once connected, send the status to the caller
                 status_tx
                     .send(StartupStatus::Connected)
                     .await
                     .expect("Could not send startup status");
             }
-            Err(e) => {
+            Ok(Err(e)) => {
+                // If the connection failed, send an error status to the caller
                 let error = KSError::SessionConnectionFailed(e);
+                error.log();
+                status_tx
+                    .send(StartupStatus::ConnectionFailed(error))
+                    .await
+                    .expect("Could not send startup status");
+                return;
+            }
+            Err(_) => {
+                // If the connection timed out, send an error status to the caller
+                let error = KSError::SessionConnectionTimeout(20);
                 error.log();
                 status_tx
                     .send(StartupStatus::ConnectionFailed(error))

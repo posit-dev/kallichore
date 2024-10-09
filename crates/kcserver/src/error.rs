@@ -24,6 +24,7 @@ pub enum KSError {
     ProcessNotFound(u32, String),
     ProcessStartFailed(anyhow::Error),
     SessionConnectionFailed(anyhow::Error),
+    SessionConnectionTimeout(u32),
     ProcessAbnormalExit(ExitStatus, i32, String),
     SessionCreateFailed(String, anyhow::Error),
     SessionInterruptFailed(String, anyhow::Error),
@@ -66,6 +67,13 @@ impl fmt::Display for KSError {
             }
             KSError::SessionConnectionFailed(err) => {
                 write!(f, "Failed to connect to session's ZeroMQ sockets: {}", err)
+            }
+            KSError::SessionConnectionTimeout(seconds) => {
+                write!(
+                    f,
+                    "Timed out waiting to session's ZeroMQ sockets after {} seconds",
+                    seconds
+                )
             }
             KSError::SessionCreateFailed(session_id, err) => {
                 write!(f, "Failed to create session {}: {}", session_id, err)
