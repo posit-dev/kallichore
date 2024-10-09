@@ -440,18 +440,17 @@ where
         _context: &C,
     ) -> Result<StartSessionResponse, ApiError> {
         info!("start session: {}", session_id);
+        // Find the kernel session with the given ID
         let kernel_session = match self.find_session(session_id.clone()) {
             Some(kernel_session) => kernel_session,
             None => return Ok(StartSessionResponse::SessionNotFound),
         };
 
+        // Attempt to start the kernel; blocks until the kernel sockets are
+        // connected or a failure occurs
         match kernel_session.start().await {
             Ok(_) => Ok(StartSessionResponse::Started(serde_json::Value::Null)),
-            Err(e) => {
-                let error = KSError::SessionStartFailed(e);
-                error.log();
-                Ok(StartSessionResponse::StartFailed(error.to_json(None)))
-            }
+            Err(e) => Ok(StartSessionResponse::StartFailed(e.to_json(None))),
         }
     }
 
@@ -495,11 +494,7 @@ where
         };
         match session.restart().await {
             Ok(_) => Ok(RestartSessionResponse::Restarted(serde_json::Value::Null)),
-            Err(e) => {
-                let error = KSError::SessionStartFailed(e);
-                error.log();
-                Ok(RestartSessionResponse::RestartFailed(error.to_json(None)))
-            }
+            Err(e) => Ok(RestartSessionResponse::RestartFailed(e.to_json(None))),
         }
     }
 

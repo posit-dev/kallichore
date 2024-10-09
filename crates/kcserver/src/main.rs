@@ -22,6 +22,7 @@ mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
 mod server;
+mod startup_status;
 mod wire_message;
 mod wire_message_header;
 mod zmq_ws_proxy;

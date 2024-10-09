@@ -26,7 +26,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
-    kernel_state::KernelState, zmq_ws_proxy::ZmqWsProxy,
+    kernel_state::KernelState, startup_status::StartupStatus, zmq_ws_proxy::ZmqWsProxy,
 };
 
 /// A Jupyter kernel session.
@@ -73,7 +73,7 @@ pub struct KernelSession {
     /// The channel to receive status updates
     pub status_rx: Receiver<models::Status>,
 
-    /// The exit event
+    /// The exit event; fires when the kernel process exits
     pub exit_event: Arc<Event>,
 }
 
@@ -111,7 +111,7 @@ impl KernelSession {
         Ok(kernel_session)
     }
 
-    pub async fn start(&self) -> Result<(), anyhow::Error> {
+    pub async fn start(&self) -> Result<(), KSError> {
         // Mark the kernel as starting
         {
             let mut state = self.state.write().await;
@@ -141,7 +141,7 @@ impl KernelSession {
                     self.exit_event.notify(usize::MAX);
                     state.set_status(models::Status::Exited).await;
                 }
-                return Err(e.into());
+                return Err(KSError::ProcessStartFailed(anyhow::anyhow!("{}", e)));
             }
         };
 
@@ -166,30 +166,100 @@ impl KernelSession {
             state.process_id = pid;
         }
 
+        // Create a channel to receive startup status from the kernel
+        let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
+
         // Spawn the ZeroMQ proxy thread
         let kernel = self.clone();
+        let startup_proxy_tx = startup_tx.clone();
         tokio::spawn(async move {
-            kernel.start_zmq_proxy().await;
+            kernel.start_zmq_proxy(startup_proxy_tx).await;
         });
 
         // Spawn a task to wait for the child process to exit
         let kernel = self.clone();
+        let startup_child_tx = startup_tx.clone();
         tokio::spawn(async move {
-            kernel.run_child(child).await;
+            kernel.run_child(child, startup_child_tx).await;
         });
 
-        Ok(())
+        // Wait for either the session to connect to its sockets or for
+        // something awful to happen
+        let startup_result = startup_rx.recv().await;
+
+        match startup_result {
+            Ok(StartupStatus::Connected) => {
+                log::trace!(
+                    "[session {}] Kernel sockets connected successfully, returning from start",
+                    self.connection.session_id.clone()
+                );
+                Ok(())
+            }
+            Ok(StartupStatus::ConnectionFailed(e)) => {
+                // This error is emitted when the ZeroMQ proxy fails to connect
+                // to the ZeroMQ sockets of the kernel.
+                log::error!(
+                    "[session {}] Startup failed. Can't connect to kernel: {}",
+                    self.connection.session_id.clone(),
+                    e
+                );
+                Err(e)
+            }
+            Ok(StartupStatus::AbnormalExit(e)) => {
+                // This error is emitted when the process exits before it
+                // finishes starting.
+                log::error!(
+                    "[session {}] Startup failed; abnormal exit: {}",
+                    self.connection.session_id.clone(),
+                    e
+                );
+                Err(e)
+            }
+            Err(e) => {
+                log::error!("Failed to get kernel startup status: {}", e);
+                Ok(())
+            }
+        }
     }
 
-    async fn run_child(&self, mut child: tokio::process::Child) {
+    async fn run_child(&self, mut child: tokio::process::Child, startup_tx: Sender<StartupStatus>) {
         // Actually run the kernel! This will block until the kernel exits.
         let status = child.wait().await.expect("Failed to wait on child process");
+        let code = status.code().unwrap_or(-1);
 
         log::info!(
             "Child process for session {} exited with status: {}",
             self.connection.session_id,
             status
         );
+
+        // Check the kernel state. If we were still in the Starting state when
+        // the process exited, that's bad.
+        {
+            let state = self.state.read().await;
+            if state.status == models::Status::Starting {
+                // Collect any standard out and standard error messages that
+                // were sent to the websocket during startup but haven't been
+                // delivered to the client. (The client typically doesn't
+                // connect to the websocket until the kernel has started, so we
+                // expect there to be some if the kernel emitted any startup
+                // errors.)
+                let mut output = String::new();
+                while let Ok(msg) = self.ws_json_rx.try_recv() {
+                    if let WebsocketMessage::Kernel(KernelMessage::Output(_, text)) = msg {
+                        output.push_str(&text);
+                    }
+                }
+                startup_tx
+                    .send(StartupStatus::AbnormalExit(KSError::ProcessAbnormalExit(
+                        status, code, output,
+                    )))
+                    .await
+                    .expect("Failed to send startup status");
+            }
+        }
+
+        // We are now exited; mark the kernel as such
         {
             // update the status of the session
             let mut state = self.state.write().await;
@@ -199,7 +269,6 @@ impl KernelSession {
         // Notify anyone listening that the kernel has exited
         self.exit_event.notify(usize::MAX);
 
-        let code = status.code().unwrap_or(-1);
         let event = WebsocketMessage::Kernel(KernelMessage::Exited(code));
         self.ws_json_tx
             .send(event)
@@ -231,12 +300,14 @@ impl KernelSession {
         self.ws_zmq_tx.send(msg).await
     }
 
-    pub async fn restart(&self) -> Result<(), anyhow::Error> {
+    pub async fn restart(&self) -> Result<(), KSError> {
         // Enter the restarting state.
         {
             let mut state = self.state.write().await;
             if state.restarting {
-                return Err(anyhow::anyhow!("Kernel is already restarting"));
+                return Err(KSError::RestartFailed(anyhow::anyhow!(
+                    "Kernel is already restarting"
+                )));
             }
             state.restarting = true;
         }
@@ -252,27 +323,23 @@ impl KernelSession {
                     let mut state = self.state.write().await;
                     state.restarting = false;
                 }
-                return Err(anyhow::anyhow!(
+                return Err(KSError::RestartFailed(anyhow::anyhow!(
                     "Failed to send shutdown request to kernel: {}",
                     e
-                ));
+                )));
             }
         }
 
         // Spawn a task to wait for the kernel to exit; when it does, complete
         // the restart by starting it again.
-        let session = self.clone();
-        tokio::spawn(async move {
-            log::debug!(
-                "[session {}] Waiting for kernel to exit before restarting",
-                session.connection.session_id
-            );
-            session.complete_restart().await;
-        });
-        Ok(())
+        log::debug!(
+            "[session {}] Waiting for kernel to exit before restarting",
+            self.connection.session_id
+        );
+        return self.complete_restart().await;
     }
 
-    async fn complete_restart(&self) {
+    async fn complete_restart(&self) -> Result<(), KSError> {
         // Wait for the kernel to exit
         let listener = self.exit_event.listen();
         listener.await;
@@ -286,12 +353,12 @@ impl KernelSession {
                     "[session {}] Kernel is no longer restarting; stopping restart",
                     self.connection.session_id
                 );
-                return;
+                return Ok(());
             }
             state.restarting = false;
         }
 
-        self.start().await.expect("Failed to restart kernel");
+        return self.start().await;
     }
 
     /// Format this session as an active session.
@@ -404,7 +471,7 @@ impl KernelSession {
         });
     }
 
-    pub async fn start_zmq_proxy(&self) {
+    pub async fn start_zmq_proxy(&self, status_tx: Sender<StartupStatus>) {
         let mut proxy = ZmqWsProxy::new(
             self.connection_file.clone(),
             self.connection.clone(),
@@ -413,17 +480,33 @@ impl KernelSession {
             self.ws_zmq_rx.clone(),
             self.status_rx.clone(),
         );
+
+        // Connect to the ZeroMQ sockets
         match proxy.connect().await {
-            Ok(_) => (),
+            Ok(_) => {
+                // Once connected, send the status to the caller
+                status_tx
+                    .send(StartupStatus::Connected)
+                    .await
+                    .expect("Could not send startup status");
+            }
             Err(e) => {
-                let error = KSError::SessionConnectionFailed(self.connection.session_id.clone(), e);
+                let error = KSError::SessionConnectionFailed(e);
                 error.log();
+                status_tx
+                    .send(StartupStatus::ConnectionFailed(error))
+                    .await
+                    .expect("Could not send startup status");
+                return;
             }
         }
+
+        // Listen for messages from the ZeroMQ sockets and forward them to the
+        // WebSocket channel. Doesn't return until the proxy stops.
         match proxy.listen().await {
             Ok(_) => (),
             Err(e) => {
-                let error = KSError::SessionConnectionFailed(self.connection.session_id.clone(), e);
+                let error = KSError::ZmqProxyError(e);
                 error.log();
             }
         }

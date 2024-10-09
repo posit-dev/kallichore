@@ -5,7 +5,7 @@
 //
 //
 
-use std::fmt;
+use std::{fmt, process::ExitStatus};
 
 use kallichore_api::models;
 use log::error;
@@ -22,11 +22,14 @@ pub enum KSError {
     SessionRunning(String),
     SessionNotRunning(String),
     ProcessNotFound(u32, String),
-    SessionStartFailed(anyhow::Error),
-    SessionConnectionFailed(String, anyhow::Error),
+    ProcessStartFailed(anyhow::Error),
+    SessionConnectionFailed(anyhow::Error),
+    ProcessAbnormalExit(ExitStatus, i32, String),
     SessionCreateFailed(String, anyhow::Error),
     SessionInterruptFailed(String, anyhow::Error),
+    ZmqProxyError(anyhow::Error),
     NoProcess(String),
+    RestartFailed(anyhow::Error),
 }
 
 impl fmt::Display for KSError {
@@ -45,8 +48,15 @@ impl fmt::Display for KSError {
             KSError::SessionNotRunning(session_id) => {
                 write!(f, "Session {} is not running", session_id)
             }
-            KSError::SessionStartFailed(err) => {
-                write!(f, "Failed to start session: {}", err)
+            KSError::ProcessStartFailed(err) => {
+                write!(f, "Failed to start process for session: {}", err)
+            }
+            KSError::ProcessAbnormalExit(exit_status, exit_code, output) => {
+                write!(
+                    f,
+                    "Process exited abnormally ({}, code {}).\n{}",
+                    exit_status, exit_code, output
+                )
             }
             KSError::ProcessNotFound(pid, session_id) => {
                 write!(f, "Can't find process {} for session {}", pid, session_id)
@@ -54,8 +64,8 @@ impl fmt::Display for KSError {
             KSError::SessionNotFound(session_id) => {
                 write!(f, "Session {} not found", session_id)
             }
-            KSError::SessionConnectionFailed(session_id, err) => {
-                write!(f, "Cannot connect to session {}: {}", session_id, err)
+            KSError::SessionConnectionFailed(err) => {
+                write!(f, "Failed to connect to session's ZeroMQ sockets: {}", err)
             }
             KSError::SessionCreateFailed(session_id, err) => {
                 write!(f, "Failed to create session {}: {}", session_id, err)
@@ -69,6 +79,12 @@ impl fmt::Display for KSError {
                     "There is no process associated with session {} (has it exited?)",
                     session_id
                 )
+            }
+            KSError::ZmqProxyError(err) => {
+                write!(f, "Error receiving or proxying ZeroMQ messages: {}", err)
+            }
+            KSError::RestartFailed(err) => {
+                write!(f, "Failed to restart kernel: {}", err)
             }
         }
     }
