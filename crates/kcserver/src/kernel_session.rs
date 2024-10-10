@@ -88,6 +88,7 @@ impl KernelSession {
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
         let (status_tx, status_rx) = async_channel::unbounded::<models::Status>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
+            session.session_id.clone(),
             session.working_directory.clone(),
             status_tx.clone(),
         )));

@@ -16,6 +16,9 @@ use crate::execution_queue::ExecutionQueue;
 /// should exist at a time.
 #[derive(Debug)]
 pub struct KernelState {
+    /// The session ID for this kernel instance.
+    pub session_id: String,
+
     /// The kernel's current status.
     pub status: models::Status,
 
@@ -41,8 +44,13 @@ pub struct KernelState {
 
 impl KernelState {
     /// Create a new kernel state.
-    pub fn new(working_directory: String, ws_status_tx: Sender<models::Status>) -> Self {
+    pub fn new(
+        session_id: String,
+        working_directory: String,
+        ws_status_tx: Sender<models::Status>,
+    ) -> Self {
         KernelState {
+            session_id,
             status: models::Status::Idle,
             working_directory,
             connected: false,
@@ -55,7 +63,12 @@ impl KernelState {
 
     /// Set the kernel's status.
     pub async fn set_status(&mut self, status: models::Status) {
-        log::debug!("Status '{}' => '{}'", self.status, status);
+        log::debug!(
+            "[session {}] status '{}' => '{}'",
+            self.session_id,
+            self.status,
+            status
+        );
         self.status = status;
 
         // When exiting ...
