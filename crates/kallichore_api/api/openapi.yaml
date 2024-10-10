@@ -43,7 +43,8 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Invalid request
         "401":
-          description: Access token is missing or invalid
+          content: {}
+          description: Unauthorized
       security: []
       summary: Create a new session
   /sessions/{session_id}:
@@ -70,7 +71,8 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Failed to delete session
         "401":
-          description: Access token is missing or invalid
+          content: {}
+          description: Unauthorized
         "404":
           content:
             application/json: {}
@@ -133,7 +135,8 @@ paths:
             application/json: {}
           description: Session not found
         "401":
-          description: Access token is missing or invalid
+          content: {}
+          description: Unauthorized
       security: []
       summary: Start a session
   /sessions/{session_id}/restart:
@@ -160,7 +163,8 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Restart failed
         "401":
-          description: Access token is missing or invalid
+          content: {}
+          description: Unauthorized
         "404":
           content:
             application/json: {}
@@ -191,7 +195,8 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Kill failed
         "401":
-          description: Access token is missing or invalid
+          content: {}
+          description: Unauthorized
         "404":
           content:
             application/json: {}
@@ -222,7 +227,8 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Interrupt failed
         "401":
-          description: Access token is missing or invalid
+          content: {}
+          description: Unauthorized
         "404":
           content:
             application/json: {}
@@ -250,7 +256,8 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Invalid request
         "401":
-          description: Access token is missing or invalid
+          content: {}
+          description: Unauthorized
         "404":
           content:
             application/json: {}
@@ -274,7 +281,8 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Shutdown failed
         "401":
-          description: Access token is missing or invalid
+          content: {}
+          description: Unauthorized
       security: []
       summary: Shut down all sessions and the server itself
   /status:
@@ -297,7 +305,8 @@ paths:
 components:
   responses:
     UnauthorizedError:
-      description: Access token is missing or invalid
+      content: {}
+      description: Unauthorized
   schemas:
     error:
       example:

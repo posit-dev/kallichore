@@ -461,7 +461,7 @@ where
                 })?;
                 Ok(ChannelsWebsocketResponse::InvalidRequest(body))
             }
-            401 => Ok(ChannelsWebsocketResponse::AccessTokenIsMissingOrInvalid),
+            401 => Ok(ChannelsWebsocketResponse::Unauthorized),
             404 => Ok(ChannelsWebsocketResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
@@ -564,7 +564,7 @@ where
                 })?;
                 Ok(DeleteSessionResponse::FailedToDeleteSession(body))
             }
-            401 => Ok(DeleteSessionResponse::AccessTokenIsMissingOrInvalid),
+            401 => Ok(DeleteSessionResponse::Unauthorized),
             404 => Ok(DeleteSessionResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
@@ -769,7 +769,7 @@ where
                 })?;
                 Ok(InterruptSessionResponse::InterruptFailed(body))
             }
-            401 => Ok(InterruptSessionResponse::AccessTokenIsMissingOrInvalid),
+            401 => Ok(InterruptSessionResponse::Unauthorized),
             404 => Ok(InterruptSessionResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
@@ -872,7 +872,7 @@ where
                 })?;
                 Ok(KillSessionResponse::KillFailed(body))
             }
-            401 => Ok(KillSessionResponse::AccessTokenIsMissingOrInvalid),
+            401 => Ok(KillSessionResponse::Unauthorized),
             404 => Ok(KillSessionResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
@@ -1069,7 +1069,7 @@ where
                 })?;
                 Ok(NewSessionResponse::InvalidRequest(body))
             }
-            401 => Ok(NewSessionResponse::AccessTokenIsMissingOrInvalid),
+            401 => Ok(NewSessionResponse::Unauthorized),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;
@@ -1171,7 +1171,7 @@ where
                 })?;
                 Ok(RestartSessionResponse::RestartFailed(body))
             }
-            401 => Ok(RestartSessionResponse::AccessTokenIsMissingOrInvalid),
+            401 => Ok(RestartSessionResponse::Unauthorized),
             404 => Ok(RestartSessionResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
@@ -1370,7 +1370,7 @@ where
                 })?;
                 Ok(ShutdownServerResponse::ShutdownFailed(body))
             }
-            401 => Ok(ShutdownServerResponse::AccessTokenIsMissingOrInvalid),
+            401 => Ok(ShutdownServerResponse::Unauthorized),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;
@@ -1473,7 +1473,7 @@ where
                 Ok(StartSessionResponse::StartFailed(body))
             }
             404 => Ok(StartSessionResponse::SessionNotFound),
-            401 => Ok(StartSessionResponse::AccessTokenIsMissingOrInvalid),
+            401 => Ok(StartSessionResponse::Unauthorized),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;

@@ -36,8 +36,8 @@ pub enum ChannelsWebsocketResponse {
     UpgradeConnectionToAWebsocket,
     /// Invalid request
     InvalidRequest(models::Error),
-    /// Access token is missing or invalid
-    AccessTokenIsMissingOrInvalid,
+    /// Unauthorized
+    Unauthorized,
     /// Session not found
     SessionNotFound,
 }
@@ -49,8 +49,8 @@ pub enum DeleteSessionResponse {
     SessionDeleted(serde_json::Value),
     /// Failed to delete session
     FailedToDeleteSession(models::Error),
-    /// Access token is missing or invalid
-    AccessTokenIsMissingOrInvalid,
+    /// Unauthorized
+    Unauthorized,
     /// Session not found
     SessionNotFound,
 }
@@ -73,8 +73,8 @@ pub enum InterruptSessionResponse {
     Interrupted(serde_json::Value),
     /// Interrupt failed
     InterruptFailed(models::Error),
-    /// Access token is missing or invalid
-    AccessTokenIsMissingOrInvalid,
+    /// Unauthorized
+    Unauthorized,
     /// Session not found
     SessionNotFound,
 }
@@ -86,8 +86,8 @@ pub enum KillSessionResponse {
     Killed(serde_json::Value),
     /// Kill failed
     KillFailed(models::Error),
-    /// Access token is missing or invalid
-    AccessTokenIsMissingOrInvalid,
+    /// Unauthorized
+    Unauthorized,
     /// Session not found
     SessionNotFound,
 }
@@ -105,8 +105,8 @@ pub enum NewSessionResponse {
     TheSessionID(models::NewSession200Response),
     /// Invalid request
     InvalidRequest(models::Error),
-    /// Access token is missing or invalid
-    AccessTokenIsMissingOrInvalid,
+    /// Unauthorized
+    Unauthorized,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -116,8 +116,8 @@ pub enum RestartSessionResponse {
     Restarted(serde_json::Value),
     /// Restart failed
     RestartFailed(models::Error),
-    /// Access token is missing or invalid
-    AccessTokenIsMissingOrInvalid,
+    /// Unauthorized
+    Unauthorized,
     /// Session not found
     SessionNotFound,
 }
@@ -138,8 +138,8 @@ pub enum ShutdownServerResponse {
     ShuttingDown(serde_json::Value),
     /// Shutdown failed
     ShutdownFailed(models::Error),
-    /// Access token is missing or invalid
-    AccessTokenIsMissingOrInvalid,
+    /// Unauthorized
+    Unauthorized,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -151,8 +151,8 @@ pub enum StartSessionResponse {
     StartFailed(models::Error),
     /// Session not found
     SessionNotFound,
-    /// Access token is missing or invalid
-    AccessTokenIsMissingOrInvalid,
+    /// Unauthorized
+    Unauthorized,
 }
 
 /// API

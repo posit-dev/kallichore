@@ -644,7 +644,7 @@ fn main() {
                     RestartSessionResponse::RestartFailed(error) => {
                         println!("{}", serde_json::to_string_pretty(&error).unwrap());
                     }
-                    RestartSessionResponse::AccessTokenIsMissingOrInvalid => {
+                    RestartSessionResponse::Unauthorized => {
                         println!("Access token is missing or invalid");
                     }
                 },
@@ -666,7 +666,7 @@ fn main() {
                     DeleteSessionResponse::FailedToDeleteSession(error) => {
                         println!("Failed to delete session {}: {:?}", session_id, error);
                     }
-                    DeleteSessionResponse::AccessTokenIsMissingOrInvalid => {
+                    DeleteSessionResponse::Unauthorized => {
                         println!("Access token is missing or invalid");
                     }
                 },
@@ -705,7 +705,7 @@ fn main() {
                     InterruptSessionResponse::InterruptFailed(error) => {
                         println!("{}", serde_json::to_string_pretty(&error).unwrap());
                     }
-                    InterruptSessionResponse::AccessTokenIsMissingOrInvalid => {
+                    InterruptSessionResponse::Unauthorized => {
                         println!("Access token is missing or invalid");
                     }
                 },

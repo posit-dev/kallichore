@@ -29,6 +29,7 @@ use std::task::{Context, Poll};
 use std::{any, env};
 use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::{AuthData, ContextBuilder, EmptyContext};
+use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
@@ -53,10 +54,8 @@ pub async fn create(addr: &str, token: Option<String>) {
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
 
     #[allow(unused_mut)]
-    let mut service = kallichore_api::server::context::MakeAddContext::<
-        _,
-        ContextBuilder<Option<AuthData>, EmptyContext>,
-    >::new(service);
+    let mut service =
+        kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
 
     // Using HTTP
     hyper::server::Server::bind(&addr)
@@ -107,6 +106,50 @@ impl<C> Server<C> {
         };
         Some(kernel_session.clone())
     }
+
+    /// Validate the bearer token in the context.
+    ///
+    /// # Arguments
+    ///
+    /// - `context`: The context to validate.
+    ///
+    /// # Returns
+    ///
+    /// True if the token is valid or not required, false otherwise. The server
+    /// can be run in no-auth mode by using the `--token none` option.
+    fn validate_token<D: Has<Option<AuthData>>>(&self, context: &D) -> bool {
+        // Validate the bearer token
+        if let Some(token) = &self.token {
+            let auth_data = context.get();
+            let data = match auth_data {
+                Some(data) => data,
+                None => {
+                    log::warn!(
+                        "Rejecting request with no authentication data; expected Bearer token"
+                    );
+                    return false;
+                }
+            };
+            match data {
+                AuthData::Bearer(bearer) => {
+                    if bearer.token != *token {
+                        log::warn!(
+                            "Rejecting request; invalid Bearer token '{}' supplied",
+                            bearer.token
+                        );
+                        return false;
+                    }
+                }
+                _ => {
+                    log::warn!("Rejecting request; expected Bearer token, got {:?}", data);
+                    return false;
+                }
+            }
+        }
+
+        // If we got here, the token is valid or not required
+        return true;
+    }
 }
 
 use kallichore_api::server::MakeService;
@@ -125,7 +168,7 @@ impl<C> Server<C> {}
 #[async_trait]
 impl<C> Api<C> for Server<C>
 where
-    C: Has<XSpanIdString> + Send + Sync,
+    C: Has<XSpanIdString> + Has<Option<AuthData>> + Send + Sync,
 {
     /// Get session details
     async fn get_session(
@@ -133,10 +176,11 @@ where
         session_id: String,
         context: &C,
     ) -> Result<GetSessionResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
         info!(
             "get_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
-            context.get().0.clone()
+            ctx_span.get().0.clone(),
         );
         let session = match self.find_session(session_id.clone()) {
             Some(kernel_session) => kernel_session,
@@ -151,7 +195,8 @@ where
 
     /// List active sessions
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError> {
-        info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!("list_sessions - X-Span-ID: {:?}", ctx_span.get().0.clone(),);
 
         // Make a copy of the active session list to avoid holding the lock
         let sessions = {
@@ -178,13 +223,19 @@ where
         session: models::NewSession,
         context: &C,
     ) -> Result<NewSessionResponse, ApiError> {
-        info!(
-            "new_session({:?}) - X-Span-ID: {:?}",
-            session,
-            context.get().0.clone()
-        );
-
         {
+            let ctx_span: &dyn Has<XSpanIdString> = context;
+            info!(
+                "new_session(\"{}\") - X-Span-ID: {:?}",
+                session.session_id,
+                ctx_span.get().0.clone(),
+            );
+
+            // Token validation
+            if !self.validate_token(context) {
+                return Ok(NewSessionResponse::Unauthorized);
+            }
+
             // Check to see if the session already exists, dropping the read
             // lock afterwards.
             let sessions = self.kernel_sessions.read().unwrap();
@@ -310,11 +361,17 @@ where
         session_id: String,
         context: &C,
     ) -> Result<DeleteSessionResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
         info!(
             "delete_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
-            context.get().0.clone()
+            ctx_span.get().0.clone(),
         );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(DeleteSessionResponse::Unauthorized);
+        }
 
         // Find the session with the given ID
         let kernel_session = match self.find_session(session_id.clone()) {
@@ -373,11 +430,20 @@ where
     async fn kill_session(
         &self,
         session_id: String,
-        _context: &C,
+        context: &C,
     ) -> Result<KillSessionResponse, ApiError> {
-        info!("kill session: {}", session_id);
-        // Get the kernel session with the given ID
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "kill_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(KillSessionResponse::Unauthorized);
+        }
 
+        // Get the kernel session with the given ID
         let kernel_session = match self.find_session(session_id.clone()) {
             Some(kernel_session) => kernel_session,
             None => {
@@ -437,9 +503,20 @@ where
     async fn start_session(
         &self,
         session_id: String,
-        _context: &C,
+        context: &C,
     ) -> Result<StartSessionResponse, ApiError> {
-        info!("start session: {}", session_id);
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "start_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(StartSessionResponse::Unauthorized);
+        }
+
         // Find the kernel session with the given ID
         let kernel_session = match self.find_session(session_id.clone()) {
             Some(kernel_session) => kernel_session,
@@ -457,9 +534,20 @@ where
     async fn interrupt_session(
         &self,
         session_id: String,
-        _context: &C,
+        context: &C,
     ) -> Result<InterruptSessionResponse, ApiError> {
-        info!("interrupt session: {}", session_id);
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "interrupt_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(InterruptSessionResponse::Unauthorized);
+        }
+
         let kernel_session = match self.find_session(session_id.clone()) {
             Some(kernel_session) => kernel_session,
             None => {
@@ -484,8 +572,20 @@ where
     async fn restart_session(
         &self,
         session_id: String,
-        _context: &C,
+        context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "restart_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(RestartSessionResponse::Unauthorized);
+        }
+
         let session = match self.find_session(session_id.clone()) {
             Some(kernel_session) => kernel_session,
             None => {
@@ -537,6 +637,8 @@ where
         session_id: String,
         _context: &C,
     ) -> Result<Response<Body>, ApiError> {
+        // TODO: This should also validate the bearer token to initiate the
+        // websocket connection
         log::debug!(
             "Upgrading channel connection to websocket for session '{}'",
             session_id
@@ -637,8 +739,14 @@ where
         Ok(response)
     }
 
-    async fn shutdown_server(&self, _context: &C) -> Result<ShutdownServerResponse, ApiError> {
+    async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {
         info!("shutdown server");
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(ShutdownServerResponse::Unauthorized);
+        }
+
         // Create a vector of all the kernel sessions that are currently running
         let running_sessions = {
             let kernel_sessions = self.kernel_sessions.read().unwrap().clone();

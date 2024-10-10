@@ -272,7 +272,7 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
-                            ChannelsWebsocketResponse::AccessTokenIsMissingOrInvalid => {
+                            ChannelsWebsocketResponse::Unauthorized => {
                                 *response.status_mut() = StatusCode::from_u16(401)
                                     .expect("Unable to turn 401 into a StatusCode");
                             }
@@ -355,7 +355,7 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
-                            DeleteSessionResponse::AccessTokenIsMissingOrInvalid => {
+                            DeleteSessionResponse::Unauthorized => {
                                 *response.status_mut() = StatusCode::from_u16(401)
                                     .expect("Unable to turn 401 into a StatusCode");
                             }
@@ -517,7 +517,7 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
-                            InterruptSessionResponse::AccessTokenIsMissingOrInvalid => {
+                            InterruptSessionResponse::Unauthorized => {
                                 *response.status_mut() = StatusCode::from_u16(401)
                                     .expect("Unable to turn 401 into a StatusCode");
                             }
@@ -600,7 +600,7 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
-                            KillSessionResponse::AccessTokenIsMissingOrInvalid => {
+                            KillSessionResponse::Unauthorized => {
                                 *response.status_mut() = StatusCode::from_u16(401)
                                     .expect("Unable to turn 401 into a StatusCode");
                             }
@@ -738,7 +738,7 @@ where
                                                     let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
                                                     *response.body_mut() = Body::from(body_content);
                                                 },
-                                                NewSessionResponse::AccessTokenIsMissingOrInvalid
+                                                NewSessionResponse::Unauthorized
                                                 => {
                                                     *response.status_mut() = StatusCode::from_u16(401).expect("Unable to turn 401 into a StatusCode");
                                                 },
@@ -823,7 +823,7 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
-                            RestartSessionResponse::AccessTokenIsMissingOrInvalid => {
+                            RestartSessionResponse::Unauthorized => {
                                 *response.status_mut() = StatusCode::from_u16(401)
                                     .expect("Unable to turn 401 into a StatusCode");
                             }
@@ -935,7 +935,7 @@ where
                                     .expect("impossible to fail to serialize");
                                 *response.body_mut() = Body::from(body_content);
                             }
-                            ShutdownServerResponse::AccessTokenIsMissingOrInvalid => {
+                            ShutdownServerResponse::Unauthorized => {
                                 *response.status_mut() = StatusCode::from_u16(401)
                                     .expect("Unable to turn 401 into a StatusCode");
                             }
@@ -1018,7 +1018,7 @@ where
                                 *response.status_mut() = StatusCode::from_u16(404)
                                     .expect("Unable to turn 404 into a StatusCode");
                             }
-                            StartSessionResponse::AccessTokenIsMissingOrInvalid => {
+                            StartSessionResponse::Unauthorized => {
                                 *response.status_mut() = StatusCode::from_u16(401)
                                     .expect("Unable to turn 401 into a StatusCode");
                             }
