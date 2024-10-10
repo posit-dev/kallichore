@@ -661,14 +661,24 @@
           },
           "status": {
             "$ref": "#/components/schemas/status"
+          },
+          "idle_seconds": {
+            "type": "integer",
+            "description": "The number of seconds the session has been idle, or 0 if the session is busy"
+          },
+          "busy_seconds": {
+            "type": "integer",
+            "description": "The number of seconds the session has been busy, or 0 if the session is idle"
           }
         },
         "required": [
           "argv",
+          "busy_seconds",
           "connected",
           "continuation_prompt",
           "display_name",
           "execution_queue",
+          "idle_seconds",
           "input_prompt",
           "interrupt_mode",
           "language",
@@ -691,14 +701,24 @@
           "busy": {
             "type": "boolean"
           },
+          "idle_seconds": {
+            "type": "integer",
+            "description": "The number of seconds all sessions have been idle, or 0 if any session is busy"
+          },
+          "busy_seconds": {
+            "type": "integer",
+            "description": "The number of seconds any session has been busy, or 0 if all sessions are idle"
+          },
           "version": {
             "type": "string"
           }
         },
         "required": [
-          "busy",
-          "sessions",
           "active",
+          "busy",
+          "busy_seconds",
+          "idle_seconds",
+          "sessions",
           "version"
         ]
       },

@@ -365,6 +365,17 @@ impl KernelSession {
     /// Format this session as an active session.
     pub async fn as_active_session(&self) -> models::ActiveSession {
         let state = self.state.read().await;
+        // Compute idle and busy times
+        let idle_seconds = match state.idle_since {
+            Some(instant) => instant.elapsed().as_secs() as i32,
+            None => 0,
+        };
+
+        let busy_seconds = match state.busy_since {
+            Some(instant) => instant.elapsed().as_secs() as i32,
+            None => 0,
+        };
+
         models::ActiveSession {
             session_id: self.connection.session_id.clone(),
             username: self.connection.username.clone(),
@@ -378,6 +389,8 @@ impl KernelSession {
                 None => None,
             },
             input_prompt: self.model.input_prompt.clone(),
+            idle_seconds,
+            busy_seconds,
             continuation_prompt: self.model.continuation_prompt.clone(),
             connected: state.connected,
             working_directory: state.working_directory.clone(),

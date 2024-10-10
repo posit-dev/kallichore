@@ -38,6 +38,12 @@ pub struct KernelState {
     /// The execution queue for the kernel.
     pub execution_queue: ExecutionQueue,
 
+    /// The time at which the kernel last became idle.
+    pub idle_since: Option<std::time::Instant>,
+
+    /// The time at which the kernel last became busy.
+    pub busy_since: Option<std::time::Instant>,
+
     /// A channel to publish status updates
     ws_status_tx: Sender<models::Status>,
 }
@@ -58,6 +64,8 @@ impl KernelState {
             process_id: None,
             execution_queue: ExecutionQueue::new(),
             ws_status_tx,
+            idle_since: Some(std::time::Instant::now()),
+            busy_since: None,
         }
     }
 
@@ -77,6 +85,23 @@ impl KernelState {
             self.execution_queue.clear();
             // ... clear the process ID (no longer running)
             self.process_id = None;
+        }
+
+        // When idle, record the time at which the kernel became idle
+        if status == models::Status::Idle
+            || status == models::Status::Ready
+            || status == models::Status::Exited
+        {
+            self.idle_since = Some(std::time::Instant::now());
+        } else {
+            self.idle_since = None;
+        }
+
+        // When busy, record the time at which the kernel became busy
+        if status == models::Status::Busy {
+            self.busy_since = Some(std::time::Instant::now());
+        } else {
+            self.busy_since = None;
         }
 
         // Publish the new status to the status stream (for internal use)

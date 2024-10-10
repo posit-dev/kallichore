@@ -67,6 +67,14 @@ pub struct ActiveSession {
 
     #[serde(rename = "status")]
     pub status: models::Status,
+
+    /// The number of seconds the session has been idle, or 0 if the session is busy
+    #[serde(rename = "idle_seconds")]
+    pub idle_seconds: i32,
+
+    /// The number of seconds the session has been busy, or 0 if the session is idle
+    #[serde(rename = "busy_seconds")]
+    pub busy_seconds: i32,
 }
 
 impl ActiveSession {
@@ -85,6 +93,8 @@ impl ActiveSession {
         continuation_prompt: String,
         execution_queue: models::ExecutionQueue,
         status: models::Status,
+        idle_seconds: i32,
+        busy_seconds: i32,
     ) -> ActiveSession {
         ActiveSession {
             session_id,
@@ -102,6 +112,8 @@ impl ActiveSession {
             continuation_prompt,
             execution_queue,
             status,
+            idle_seconds,
+            busy_seconds,
         }
     }
 }
@@ -146,6 +158,10 @@ impl std::string::ToString for ActiveSession {
             // Skipping execution_queue in query parameter serialization
 
             // Skipping status in query parameter serialization
+            Some("idle_seconds".to_string()),
+            Some(self.idle_seconds.to_string()),
+            Some("busy_seconds".to_string()),
+            Some(self.busy_seconds.to_string()),
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -178,6 +194,8 @@ impl std::str::FromStr for ActiveSession {
             pub continuation_prompt: Vec<String>,
             pub execution_queue: Vec<models::ExecutionQueue>,
             pub status: Vec<models::Status>,
+            pub idle_seconds: Vec<i32>,
+            pub busy_seconds: Vec<i32>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -267,6 +285,14 @@ impl std::str::FromStr for ActiveSession {
                         <models::Status as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "idle_seconds" => intermediate_rep.idle_seconds.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "busy_seconds" => intermediate_rep.busy_seconds.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing ActiveSession".to_string(),
@@ -348,6 +374,16 @@ impl std::str::FromStr for ActiveSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "status missing in ActiveSession".to_string())?,
+            idle_seconds: intermediate_rep
+                .idle_seconds
+                .into_iter()
+                .next()
+                .ok_or_else(|| "idle_seconds missing in ActiveSession".to_string())?,
+            busy_seconds: intermediate_rep
+                .busy_seconds
+                .into_iter()
+                .next()
+                .ok_or_else(|| "busy_seconds missing in ActiveSession".to_string())?,
         })
     }
 }
@@ -1226,17 +1262,34 @@ pub struct ServerStatus {
     #[serde(rename = "busy")]
     pub busy: bool,
 
+    /// The number of seconds all sessions have been idle, or 0 if any session is busy
+    #[serde(rename = "idle_seconds")]
+    pub idle_seconds: i32,
+
+    /// The number of seconds any session has been busy, or 0 if all sessions are idle
+    #[serde(rename = "busy_seconds")]
+    pub busy_seconds: i32,
+
     #[serde(rename = "version")]
     pub version: String,
 }
 
 impl ServerStatus {
     #[allow(clippy::new_without_default)]
-    pub fn new(sessions: i32, active: i32, busy: bool, version: String) -> ServerStatus {
+    pub fn new(
+        sessions: i32,
+        active: i32,
+        busy: bool,
+        idle_seconds: i32,
+        busy_seconds: i32,
+        version: String,
+    ) -> ServerStatus {
         ServerStatus {
             sessions,
             active,
             busy,
+            idle_seconds,
+            busy_seconds,
             version,
         }
     }
@@ -1254,6 +1307,10 @@ impl std::string::ToString for ServerStatus {
             Some(self.active.to_string()),
             Some("busy".to_string()),
             Some(self.busy.to_string()),
+            Some("idle_seconds".to_string()),
+            Some(self.idle_seconds.to_string()),
+            Some("busy_seconds".to_string()),
+            Some(self.busy_seconds.to_string()),
             Some("version".to_string()),
             Some(self.version.to_string()),
         ];
@@ -1276,6 +1333,8 @@ impl std::str::FromStr for ServerStatus {
             pub sessions: Vec<i32>,
             pub active: Vec<i32>,
             pub busy: Vec<bool>,
+            pub idle_seconds: Vec<i32>,
+            pub busy_seconds: Vec<i32>,
             pub version: Vec<String>,
         }
 
@@ -1311,6 +1370,14 @@ impl std::str::FromStr for ServerStatus {
                         <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
+                    "idle_seconds" => intermediate_rep.idle_seconds.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "busy_seconds" => intermediate_rep.busy_seconds.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
                     "version" => intermediate_rep.version.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
@@ -1343,6 +1410,16 @@ impl std::str::FromStr for ServerStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "busy missing in ServerStatus".to_string())?,
+            idle_seconds: intermediate_rep
+                .idle_seconds
+                .into_iter()
+                .next()
+                .ok_or_else(|| "idle_seconds missing in ServerStatus".to_string())?,
+            busy_seconds: intermediate_rep
+                .busy_seconds
+                .into_iter()
+                .next()
+                .ok_or_else(|| "busy_seconds missing in ServerStatus".to_string())?,
             version: intermediate_rep
                 .version
                 .into_iter()

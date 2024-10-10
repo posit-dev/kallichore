@@ -417,6 +417,7 @@ components:
         process_id: 6
         input_prompt: input_prompt
         continuation_prompt: continuation_prompt
+        busy_seconds: 5
         session_id: session_id
         language: language
         started: 2000-01-23T04:56:07.000+00:00
@@ -437,6 +438,7 @@ components:
           key: initial_env
         username: username
         status: uninitialized
+        idle_seconds: 5
       properties:
         session_id:
           description: A unique identifier for the session
@@ -486,12 +488,22 @@ components:
           $ref: '#/components/schemas/execution_queue'
         status:
           $ref: '#/components/schemas/status'
+        idle_seconds:
+          description: "The number of seconds the session has been idle, or 0 if the\
+            \ session is busy"
+          type: integer
+        busy_seconds:
+          description: "The number of seconds the session has been busy, or 0 if the\
+            \ session is idle"
+          type: integer
       required:
       - argv
+      - busy_seconds
       - connected
       - continuation_prompt
       - display_name
       - execution_queue
+      - idle_seconds
       - input_prompt
       - interrupt_mode
       - language
@@ -504,9 +516,11 @@ components:
     serverStatus:
       example:
         sessions: 0
+        busy_seconds: 5
         busy: true
         active: 6
         version: version
+        idle_seconds: 1
       properties:
         sessions:
           type: integer
@@ -514,11 +528,21 @@ components:
           type: integer
         busy:
           type: boolean
+        idle_seconds:
+          description: "The number of seconds all sessions have been idle, or 0 if\
+            \ any session is busy"
+          type: integer
+        busy_seconds:
+          description: "The number of seconds any session has been busy, or 0 if all\
+            \ sessions are idle"
+          type: integer
         version:
           type: string
       required:
       - active
       - busy
+      - busy_seconds
+      - idle_seconds
       - sessions
       - version
       type: object
@@ -529,6 +553,7 @@ components:
         - process_id: 6
           input_prompt: input_prompt
           continuation_prompt: continuation_prompt
+          busy_seconds: 5
           session_id: session_id
           language: language
           started: 2000-01-23T04:56:07.000+00:00
@@ -549,9 +574,11 @@ components:
             key: initial_env
           username: username
           status: uninitialized
+          idle_seconds: 5
         - process_id: 6
           input_prompt: input_prompt
           continuation_prompt: continuation_prompt
+          busy_seconds: 5
           session_id: session_id
           language: language
           started: 2000-01-23T04:56:07.000+00:00
@@ -572,6 +599,7 @@ components:
             key: initial_env
           username: username
           status: uninitialized
+          idle_seconds: 5
       properties:
         total:
           type: integer

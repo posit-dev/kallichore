@@ -69,6 +69,7 @@ pub struct Server<C> {
     marker: PhantomData<C>,
     #[allow(dead_code)]
     token: Option<String>,
+    started_time: std::time::Instant,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
     reserved_ports: Arc<RwLock<Vec<u16>>>,
@@ -78,6 +79,7 @@ impl<C> Server<C> {
     pub fn new(token: Option<String>) -> Self {
         Server {
             token,
+            started_time: std::time::Instant::now(),
             marker: PhantomData,
             kernel_sessions: Arc::new(RwLock::new(vec![])),
             client_sessions: Arc::new(RwLock::new(vec![])),
@@ -608,21 +610,79 @@ where
             sessions.clone()
         };
 
-        // Count busy and active sessions
+        // Aggregate busy/idle status across all sessions
         let mut busy = false;
         let mut active = 0;
+        let mut earliest_busy: Option<std::time::Instant> = None;
+        let mut latest_idle: Option<std::time::Instant> = None;
         for s in sessions.iter() {
             let state = s.state.read().await;
             if state.status == models::Status::Busy {
+                // If the session is busy, set the busy flag and update the earliest
+                // busy time (if multiple sessions are busy, we've been busy since
+                // the earliest one)
                 busy = true;
+                earliest_busy = match earliest_busy {
+                    Some(earliest) => match state.busy_since {
+                        Some(busy_since) => {
+                            if busy_since < earliest {
+                                Some(busy_since)
+                            } else {
+                                earliest_busy
+                            }
+                        }
+                        None => earliest_busy,
+                    },
+                    None => state.busy_since,
+                };
+            } else {
+                // If the session is not busy, update the latest idle time (if
+                // all sessions are idle, we've only been idle since the latest
+                // one)
+                latest_idle = match latest_idle {
+                    Some(latest) => match state.idle_since {
+                        Some(idle_since) => {
+                            if idle_since > latest {
+                                Some(idle_since)
+                            } else {
+                                latest_idle
+                            }
+                        }
+                        None => latest_idle,
+                    },
+                    None => state.idle_since,
+                };
             }
             if state.status != models::Status::Exited {
                 active += 1;
             }
         }
 
+        // Compute the number of seconds since the last idle/busy event
+        let now = std::time::Instant::now();
+        let idle_seconds = match sessions.len() {
+            0 => {
+                // If there are no sessions yet, we've been idle since the server started
+                now.duration_since(self.started_time).as_secs() as i32
+            }
+            _ => match latest_idle {
+                Some(latest_idle) => now.duration_since(latest_idle).as_secs() as i32,
+                None => 0,
+            },
+        };
+
+        let busy_seconds = match earliest_busy {
+            Some(earliest_busy) => {
+                let now = std::time::Instant::now();
+                now.duration_since(earliest_busy).as_secs() as i32
+            }
+            None => 0,
+        };
+
         let resp = ServerStatus {
             busy,
+            idle_seconds,
+            busy_seconds,
             sessions: sessions.len() as i32,
             active,
             version: env!("CARGO_PKG_VERSION").to_string(),
