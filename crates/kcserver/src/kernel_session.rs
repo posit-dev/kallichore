@@ -495,11 +495,37 @@ impl KernelSession {
             self.status_rx.clone(),
         );
 
+        // Wait for either the proxy to connect or for the session to exit
+        let connect_or_exit = async {
+            tokio::select! {
+                result = proxy.connect() => {
+                    match result {
+                        Ok(()) => {
+                            // The proxy connected successfully.
+                            log::debug!(
+                                "[session {}] All ZeroMQ sockets connected successfully",
+                                self.connection.session_id
+                            );
+                            Ok(())
+                        }
+                        Err(e) => {
+                            // The proxy failed to connect.
+                            Err(KSError::SessionConnectionFailed(e))
+                        }
+                    }
+                },
+                _ = self.exit_event.listen() => {
+                    // The session exited before the proxy could connect.
+                    Err(KSError::ExitedBeforeConnection)
+                }
+            }
+        };
+
         // Connect to the ZeroMQ sockets. Wait a maximum of 20 seconds for the
-        // connection to be established.
+        // connection to be established, or for the session to exit.
         //
         // CONSIDER: Should we make this timeout configurable?
-        match tokio::time::timeout(std::time::Duration::new(20, 0), proxy.connect()).await {
+        match tokio::time::timeout(std::time::Duration::new(20, 0), connect_or_exit).await {
             Ok(Ok(())) => {
                 // Once connected, send the status to the caller
                 status_tx
@@ -508,13 +534,18 @@ impl KernelSession {
                     .expect("Could not send startup status");
             }
             Ok(Err(e)) => {
-                // If the connection failed, send an error status to the caller
-                let error = KSError::SessionConnectionFailed(e);
-                error.log();
-                status_tx
-                    .send(StartupStatus::ConnectionFailed(error))
-                    .await
-                    .expect("Could not send startup status");
+                // If the connection failed, send an error status to the caller.
+                // We could also get here if the session exits before it can
+                // connect; in that case we don't need to send a status since
+                // the exit event sends one from the thread monitoring the child
+                // process.
+                e.log();
+                if let KSError::SessionConnectionFailed(_) = e {
+                    status_tx
+                        .send(StartupStatus::ConnectionFailed(e))
+                        .await
+                        .expect("Could not send startup status");
+                }
                 return;
             }
             Err(_) => {

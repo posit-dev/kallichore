@@ -31,6 +31,7 @@ pub enum KSError {
     ZmqProxyError(anyhow::Error),
     NoProcess(String),
     RestartFailed(anyhow::Error),
+    ExitedBeforeConnection,
 }
 
 impl fmt::Display for KSError {
@@ -52,11 +53,11 @@ impl fmt::Display for KSError {
             KSError::ProcessStartFailed(err) => {
                 write!(f, "Failed to start process for session: {}", err)
             }
-            KSError::ProcessAbnormalExit(exit_status, exit_code, output) => {
+            KSError::ProcessAbnormalExit(exit_status, _exit_code, output) => {
                 write!(
                     f,
-                    "Process exited abnormally ({}, code {}).\n{}",
-                    exit_status, exit_code, output
+                    "Process exited abnormally ({}).\n{}",
+                    exit_status, output
                 )
             }
             KSError::ProcessNotFound(pid, session_id) => {
@@ -93,6 +94,12 @@ impl fmt::Display for KSError {
             }
             KSError::RestartFailed(err) => {
                 write!(f, "Failed to restart kernel: {}", err)
+            }
+            KSError::ExitedBeforeConnection => {
+                write!(
+                    f,
+                    "The kernel exited before a connection could be established"
+                )
             }
         }
     }
