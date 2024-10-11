@@ -1158,7 +1158,7 @@ where
                 })?;
                 Ok(RestartSessionResponse::Restarted(body))
             }
-            400 => {
+            500 => {
                 let body = response.into_body();
                 let body = body
                     .into_raw()
@@ -1166,7 +1166,7 @@ where
                     .await?;
                 let body = str::from_utf8(&body)
                     .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
-                let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
+                let body = serde_json::from_str::<models::StartupError>(body).map_err(|e| {
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
                 Ok(RestartSessionResponse::RestartFailed(body))
@@ -1459,7 +1459,7 @@ where
                 })?;
                 Ok(StartSessionResponse::Started(body))
             }
-            400 => {
+            500 => {
                 let body = response.into_body();
                 let body = body
                     .into_raw()
@@ -1467,7 +1467,7 @@ where
                     .await?;
                 let body = str::from_utf8(&body)
                     .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
-                let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
+                let body = serde_json::from_str::<models::StartupError>(body).map_err(|e| {
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
                 Ok(StartSessionResponse::StartFailed(body))

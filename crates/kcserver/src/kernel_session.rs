@@ -12,7 +12,7 @@ use std::{process::Stdio, sync::Arc};
 use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
 use event_listener::Event;
-use kallichore_api::models;
+use kallichore_api::models::{self, StartupError};
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_message::{KernelMessage, OutputStream},
@@ -112,7 +112,7 @@ impl KernelSession {
         Ok(kernel_session)
     }
 
-    pub async fn start(&self) -> Result<(), KSError> {
+    pub async fn start(&self) -> Result<(), StartupError> {
         // Mark the kernel as starting
         {
             let mut state = self.state.write().await;
@@ -142,7 +142,12 @@ impl KernelSession {
                     self.exit_event.notify(usize::MAX);
                     state.set_status(models::Status::Exited).await;
                 }
-                return Err(KSError::ProcessStartFailed(anyhow::anyhow!("{}", e)));
+                let err = KSError::ProcessStartFailed(anyhow::anyhow!("{}", e));
+                return Err(StartupError {
+                    exit_code: e.raw_os_error(),
+                    output: None,
+                    error: err.to_json(None),
+                });
             }
         };
 
@@ -196,25 +201,33 @@ impl KernelSession {
                 );
                 Ok(())
             }
-            Ok(StartupStatus::ConnectionFailed(e)) => {
+            Ok(StartupStatus::ConnectionFailed(output, err)) => {
                 // This error is emitted when the ZeroMQ proxy fails to connect
                 // to the ZeroMQ sockets of the kernel.
                 log::error!(
                     "[session {}] Startup failed. Can't connect to kernel: {}",
                     self.connection.session_id.clone(),
-                    e
+                    err
                 );
-                Err(e)
+                Err(StartupError {
+                    exit_code: Some(130),
+                    output: Some(output),
+                    error: err.to_json(None),
+                })
             }
-            Ok(StartupStatus::AbnormalExit(e)) => {
+            Ok(StartupStatus::AbnormalExit(exit_code, output, err)) => {
                 // This error is emitted when the process exits before it
                 // finishes starting.
                 log::error!(
                     "[session {}] Startup failed; abnormal exit: {}",
                     self.connection.session_id.clone(),
-                    e
+                    err
                 );
-                Err(e)
+                Err(StartupError {
+                    exit_code: Some(exit_code),
+                    output: Some(output),
+                    error: err.to_json(None),
+                })
             }
             Err(e) => {
                 log::error!("Failed to get kernel startup status: {}", e);
@@ -239,22 +252,13 @@ impl KernelSession {
         {
             let state = self.state.read().await;
             if state.status == models::Status::Starting {
-                // Collect any standard out and standard error messages that
-                // were sent to the websocket during startup but haven't been
-                // delivered to the client. (The client typically doesn't
-                // connect to the websocket until the kernel has started, so we
-                // expect there to be some if the kernel emitted any startup
-                // errors.)
-                let mut output = String::new();
-                while let Ok(msg) = self.ws_json_rx.try_recv() {
-                    if let WebsocketMessage::Kernel(KernelMessage::Output(_, text)) = msg {
-                        output.push_str(&text);
-                    }
-                }
+                let output = self.consume_output_streams();
                 startup_tx
-                    .send(StartupStatus::AbnormalExit(KSError::ProcessAbnormalExit(
-                        status, code, output,
-                    )))
+                    .send(StartupStatus::AbnormalExit(
+                        code,
+                        output,
+                        KSError::ProcessAbnormalExit(status),
+                    ))
                     .await
                     .expect("Failed to send startup status");
             }
@@ -301,14 +305,18 @@ impl KernelSession {
         self.ws_zmq_tx.send(msg).await
     }
 
-    pub async fn restart(&self) -> Result<(), KSError> {
+    pub async fn restart(&self) -> Result<(), StartupError> {
         // Enter the restarting state.
         {
             let mut state = self.state.write().await;
             if state.restarting {
-                return Err(KSError::RestartFailed(anyhow::anyhow!(
-                    "Kernel is already restarting"
-                )));
+                let err = KSError::RestartFailed(anyhow::anyhow!("Kernel is already restarting"));
+                err.log();
+                return Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: err.to_json(None),
+                });
             }
             state.restarting = true;
         }
@@ -324,10 +332,14 @@ impl KernelSession {
                     let mut state = self.state.write().await;
                     state.restarting = false;
                 }
-                return Err(KSError::RestartFailed(anyhow::anyhow!(
-                    "Failed to send shutdown request to kernel: {}",
-                    e
-                )));
+                let err = KSError::RestartFailed(anyhow::anyhow!(
+                    "Failed to send shutdown request to kernel"
+                ));
+                return Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: err.to_json(Some(format!("{}", e))),
+                });
             }
         }
 
@@ -340,7 +352,7 @@ impl KernelSession {
         return self.complete_restart().await;
     }
 
-    async fn complete_restart(&self) -> Result<(), KSError> {
+    async fn complete_restart(&self) -> Result<(), StartupError> {
         // Wait for the kernel to exit
         let listener = self.exit_event.listen();
         listener.await;
@@ -540,9 +552,10 @@ impl KernelSession {
                 // the exit event sends one from the thread monitoring the child
                 // process.
                 e.log();
+                let output = self.consume_output_streams();
                 if let KSError::SessionConnectionFailed(_) = e {
                     status_tx
-                        .send(StartupStatus::ConnectionFailed(e))
+                        .send(StartupStatus::ConnectionFailed(output, e))
                         .await
                         .expect("Could not send startup status");
                 }
@@ -552,8 +565,9 @@ impl KernelSession {
                 // If the connection timed out, send an error status to the caller
                 let error = KSError::SessionConnectionTimeout(20);
                 error.log();
+                let output = self.consume_output_streams();
                 status_tx
-                    .send(StartupStatus::ConnectionFailed(error))
+                    .send(StartupStatus::ConnectionFailed(output, error))
                     .await
                     .expect("Could not send startup status");
                 return;
@@ -585,5 +599,20 @@ impl KernelSession {
             self.connection.session_id,
             reserved_ports.len()
         );
+    }
+
+    /// Collect any standard out and standard error messages that were sent
+    /// to the websocket during startup but haven't been delivered to the
+    /// client. (The client typically doesn't connect to the websocket until
+    /// the kernel has started, so we expect there to be some if the kernel
+    /// emitted any startup errors.)
+    fn consume_output_streams(&self) -> String {
+        let mut output = String::new();
+        while let Ok(msg) = self.ws_json_rx.try_recv() {
+            if let WebsocketMessage::Kernel(KernelMessage::Output(_, text)) = msg {
+                output.push_str(&text);
+            }
+        }
+        output
     }
 }

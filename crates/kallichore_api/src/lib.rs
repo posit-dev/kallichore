@@ -115,7 +115,7 @@ pub enum RestartSessionResponse {
     /// Restarted
     Restarted(serde_json::Value),
     /// Restart failed
-    RestartFailed(models::Error),
+    RestartFailed(models::StartupError),
     /// Unauthorized
     Unauthorized,
     /// Session not found
@@ -148,7 +148,7 @@ pub enum StartSessionResponse {
     /// Started
     Started(serde_json::Value),
     /// Start failed
-    StartFailed(models::Error),
+    StartFailed(models::StartupError),
     /// Session not found
     SessionNotFound,
     /// Unauthorized

@@ -11,6 +11,7 @@ docs/NewSession.md
 docs/NewSession200Response.md
 docs/ServerStatus.md
 docs/SessionList.md
+docs/StartupError.md
 docs/Status.md
 docs/default_api.md
 examples/ca.pem

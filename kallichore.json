@@ -196,12 +196,12 @@
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Start failed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/error"
+                  "$ref": "#/components/schemas/startupError"
                 }
               }
             }
@@ -244,12 +244,12 @@
               }
             }
           },
-          "400": {
+          "500": {
             "description": "Restart failed",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/error"
+                  "$ref": "#/components/schemas/startupError"
                 }
               }
             }
@@ -485,6 +485,25 @@
         "required": [
           "code",
           "message"
+        ]
+      },
+      "startupError": {
+        "type": "object",
+        "properties": {
+          "exit_code": {
+            "type": "integer",
+            "description": "The exit code of the process, if it exited"
+          },
+          "output": {
+            "type": "string",
+            "description": "The output of the process (combined stdout and stderr) emitted during startup, if any"
+          },
+          "error": {
+            "$ref": "#/components/schemas/error"
+          }
+        },
+        "required": [
+          "error"
         ]
       },
       "status": {

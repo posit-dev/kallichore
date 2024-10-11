@@ -813,8 +813,8 @@ where
                                 *response.body_mut() = Body::from(body_content);
                             }
                             RestartSessionResponse::RestartFailed(body) => {
-                                *response.status_mut() = StatusCode::from_u16(400)
-                                    .expect("Unable to turn 400 into a StatusCode");
+                                *response.status_mut() = StatusCode::from_u16(500)
+                                    .expect("Unable to turn 500 into a StatusCode");
                                 response.headers_mut().insert(
                                                         CONTENT_TYPE,
                                                         HeaderValue::from_str("application/json")
@@ -1004,8 +1004,8 @@ where
                                 *response.body_mut() = Body::from(body_content);
                             }
                             StartSessionResponse::StartFailed(body) => {
-                                *response.status_mut() = StatusCode::from_u16(400)
-                                    .expect("Unable to turn 400 into a StatusCode");
+                                *response.status_mut() = StatusCode::from_u16(500)
+                                    .expect("Unable to turn 500 into a StatusCode");
                                 response.headers_mut().insert(
                                                         CONTENT_TYPE,
                                                         HeaderValue::from_str("application/json")

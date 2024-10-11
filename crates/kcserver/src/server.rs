@@ -529,7 +529,7 @@ where
         // connected or a failure occurs
         match kernel_session.start().await {
             Ok(_) => Ok(StartSessionResponse::Started(serde_json::Value::Null)),
-            Err(e) => Ok(StartSessionResponse::StartFailed(e.to_json(None))),
+            Err(e) => Ok(StartSessionResponse::StartFailed(e)),
         }
     }
 
@@ -596,7 +596,7 @@ where
         };
         match session.restart().await {
             Ok(_) => Ok(RestartSessionResponse::Restarted(serde_json::Value::Null)),
-            Err(e) => Ok(RestartSessionResponse::RestartFailed(e.to_json(None))),
+            Err(e) => Ok(RestartSessionResponse::RestartFailed(e)),
         }
     }
 

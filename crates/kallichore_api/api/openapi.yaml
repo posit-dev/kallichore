@@ -124,11 +124,11 @@ paths:
             application/json:
               schema: {}
           description: Started
-        "400":
+        "500":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: '#/components/schemas/startupError'
           description: Start failed
         "404":
           content:
@@ -156,11 +156,11 @@ paths:
             application/json:
               schema: {}
           description: Restarted
-        "400":
+        "500":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: '#/components/schemas/startupError'
           description: Restart failed
         "401":
           content: {}
@@ -323,6 +323,27 @@ components:
       required:
       - code
       - message
+      type: object
+    startupError:
+      example:
+        output: output
+        exit_code: 0
+        error:
+          code: code
+          details: details
+          message: message
+      properties:
+        exit_code:
+          description: "The exit code of the process, if it exited"
+          type: integer
+        output:
+          description: "The output of the process (combined stdout and stderr) emitted\
+            \ during startup, if any"
+          type: string
+        error:
+          $ref: '#/components/schemas/error'
+      required:
+      - error
       type: object
     status:
       description: The status of the session

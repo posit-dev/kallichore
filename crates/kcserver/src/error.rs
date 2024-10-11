@@ -25,7 +25,7 @@ pub enum KSError {
     ProcessStartFailed(anyhow::Error),
     SessionConnectionFailed(anyhow::Error),
     SessionConnectionTimeout(u32),
-    ProcessAbnormalExit(ExitStatus, i32, String),
+    ProcessAbnormalExit(ExitStatus),
     SessionCreateFailed(String, anyhow::Error),
     SessionInterruptFailed(String, anyhow::Error),
     ZmqProxyError(anyhow::Error),
@@ -53,12 +53,8 @@ impl fmt::Display for KSError {
             KSError::ProcessStartFailed(err) => {
                 write!(f, "Failed to start process for session: {}", err)
             }
-            KSError::ProcessAbnormalExit(exit_status, _exit_code, output) => {
-                write!(
-                    f,
-                    "Process exited abnormally ({}).\n{}",
-                    exit_status, output
-                )
+            KSError::ProcessAbnormalExit(status) => {
+                write!(f, "The process exited abnormally ({})", status)
             }
             KSError::ProcessNotFound(pid, session_id) => {
                 write!(f, "Can't find process {} for session {}", pid, session_id)
@@ -72,7 +68,7 @@ impl fmt::Display for KSError {
             KSError::SessionConnectionTimeout(seconds) => {
                 write!(
                     f,
-                    "Timed out waiting to session's ZeroMQ sockets after {} seconds",
+                    "Timed out waiting to sessin's ZeroMQ sockets after {} seconds",
                     seconds
                 )
             }
