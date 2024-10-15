@@ -36,7 +36,6 @@ pub enum KSError {
 
 impl fmt::Display for KSError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Error KS-{}: ", self.discriminant())?;
         match self {
             KSError::SessionExists(session_id) => {
                 write!(f, "Session {} already exists", session_id)
@@ -119,6 +118,6 @@ impl KSError {
     }
 
     pub fn log(&self) {
-        error!("{}", self.to_string());
+        error!("KS-{}: {}", self.discriminant(), self.to_string());
     }
 }
