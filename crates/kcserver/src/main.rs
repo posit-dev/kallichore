@@ -109,8 +109,21 @@ async fn main() {
         }
     };
 
+    println!(
+        r#" 
+  ,            _   _           _                    
+ /|   /       | | | | o       | |                   
+  |__/   __,  | | | |     __  | |     __   ,_    _  
+  | \   /  |  |/  |/  |  /    |/ \   /  \_/  |  |/  
+  |  \_/\_/|_/|__/|__/|_/\___/|   |_/\__/    |_/|__/
+  A Jupyter Kernel supervisor. Version {}.
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+
     // Start the server
     let addr = format!("127.0.0.1:{}", args.port);
+    println!("Listening at {}", addr);
 
     log::info!("Starting Kallichore server at {}", addr);
     server::create(&addr, token).await;
