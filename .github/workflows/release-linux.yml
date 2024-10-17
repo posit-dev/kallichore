@@ -43,7 +43,7 @@ jobs:
             - name: Compile Kallichore (${{ matrix.flavor }})
               run: |
                   cargo clean
-                  cargo build -target ${ARCH_FLAG}-unknown-linux-gnu ${TARGET_FLAG}
+                  cargo build --target ${ARCH_FLAG}-unknown-linux-gnu ${TARGET_FLAG}
 
             # Compress kernel to a zip file
             - name: Create archive
