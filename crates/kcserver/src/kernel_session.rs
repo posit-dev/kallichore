@@ -134,21 +134,42 @@ impl KernelSession {
         // process's working directory.
         let working_directory = self.model.working_directory.clone();
         if working_directory != "" {
-            let exists = fs::metadata(&working_directory).is_ok();
-            if exists {
-                command.current_dir(working_directory.clone());
-            } else {
-                log::warn!(
-                    "[session {}] Requested working directory '{}' does not exist; using current directory '{}'",
+            match fs::metadata(&working_directory) {
+                Ok(metadata) => {
+                    if metadata.is_dir() {
+                        command.current_dir(&working_directory);
+                        log::trace!(
+                            "[session {}] Using working directory '{}'",
+                            self.model.session_id.clone(),
+                            working_directory
+                        );
+                    } else {
+                        log::warn!(
+                            "[session {}] Requested working directory '{}' is not a directory; using current directory '{}'",
+                            self.model.session_id.clone(),
+                            working_directory,
+                            match std::env::current_dir() {
+                                Ok(dir) => dir.display().to_string(),
+                                Err(e) => format!("<error: {}>", e),
+                            }
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                    "[session {}] Requested working directory '{}' could not be read ({}); using current directory '{}'",
                     self.model.session_id.clone(),
                     working_directory,
+                    e,
                     match std::env::current_dir() {
                         Ok(dir) => dir.display().to_string(),
                         Err(e) => format!("<error: {}>", e),
                     }
                 );
+                }
             }
         }
+
         // Attempt to actually start the kernel process
         let mut child = match command
             .envs(&self.model.env)
