@@ -18,10 +18,12 @@ jobs:
 
         env:
             DEBUG_FLAG: ${{ matrix.flavor == 'debug' && '-debug' || '' }}
+            TARGET_FLAG: ${{ matrix.flavor == 'release' && '--release' || '' }}
+            ARCH_FLAG: ${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
 
         strategy:
             matrix:
-                arch: [x64]
+                arch: [x64, arm64]
                 flavor: [debug, release]
 
         steps:
@@ -33,19 +35,24 @@ jobs:
                   sudo apt-get update
                   sudo apt-get install -y cargo
 
+            - name: Setup Build Environment for arm64
+              if: matrix.arch == 'arm64'
+              run: |
+                  rustup target add aarch64-unknown-linux-gnu
+
             - name: Compile Kallichore (${{ matrix.flavor }})
               run: |
                   cargo clean
-                  cargo build ${{ matrix.flavor == 'release' && '--release' || '' }}
+                  cargo build -target ${ARCH_FLAG}-unknown-linux-gnu ${TARGET_FLAG}
 
             # Compress kernel to a zip file
             - name: Create archive
               run: |
                   # Enter the build directory
-                  pushd target/${{ matrix.flavor }}
+                  pushd target/${ARCH_FLAG}-unknown-linux-gnu/${{ matrix.flavor }}
 
                   # Compress the kernel to an archive
-                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-x64.zip"
+                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-${{ matrix.arch }}.zip"
                   [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
                   zip -Xry $ARCHIVE kcserver LICENSE
 
@@ -54,6 +61,6 @@ jobs:
             - name: Upload archive
               uses: actions/upload-artifact@v3
               with:
-                  name: kallichore-${{ matrix.flavor }}-linux-x64-archive
-                  path: kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-x64.zip
+                  name: kallichore-${{ matrix.flavor }}-linux-${{ matrix.arch }}-archive
+                  path: kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-${{ matrix.arch }}.zip
 
