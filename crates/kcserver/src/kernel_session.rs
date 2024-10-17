@@ -7,7 +7,7 @@
 
 //! Wraps Jupyter kernel sessions.
 
-use std::{process::Stdio, sync::Arc};
+use std::{fs, process::Stdio, sync::Arc};
 
 use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
@@ -125,10 +125,32 @@ impl KernelSession {
             self.argv
         );
 
+        // Create the command to start the kernel
+        let mut command = tokio::process::Command::new(&self.argv[0]);
+        command.args(&self.argv[1..]);
+
+        // If a working directory was specified, test the working directory to
+        // see if it exists. If it doesn't, log a warning and don't set the
+        // process's working directory.
+        let working_directory = self.model.working_directory.clone();
+        if working_directory != "" {
+            let exists = fs::metadata(&working_directory).is_ok();
+            if exists {
+                command.current_dir(working_directory.clone());
+            } else {
+                log::warn!(
+                    "[session {}] Requested working directory '{}' does not exist; using current directory '{}'",
+                    self.model.session_id.clone(),
+                    working_directory,
+                    match std::env::current_dir() {
+                        Ok(dir) => dir.display().to_string(),
+                        Err(e) => format!("<error: {}>", e),
+                    }
+                );
+            }
+        }
         // Attempt to actually start the kernel process
-        let mut child = match tokio::process::Command::new(&self.argv[0])
-            .args(&self.argv[1..])
-            .current_dir(self.model.working_directory.clone())
+        let mut child = match command
             .envs(&self.model.env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
