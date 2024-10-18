@@ -321,14 +321,14 @@ jobs:
               uses: dsaltares/fetch-gh-release-asset@1.1.2
               with:
                   version: tags/${{ env.RELEASE_TAG }}
-                  file: kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-linux-x64.zip
+                  file: kallichore-${{ env.RELEASE_TAG }}-linux-x64.zip
                   token: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Download Windows release
               uses: dsaltares/fetch-gh-release-asset@1.1.2
               with:
                   version: tags/${{ env.RELEASE_TAG }}
-                  file: kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-windows-x64.zip
+                  file: kallichore-${{ env.RELEASE_TAG }}-windows-x64.zip
                   token: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Create access token
@@ -355,8 +355,8 @@ jobs:
                       Kallichore ${{env.RELEASE_TAG }}
                   files: |
                       kallichore-${{ env.RELEASE_TAG }}-darwin-universal.zip
-                      kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-windows-x64.zip
-                      kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-linux-x64.zip
+                      kallichore-${{ env.RELEASE_TAG }}-windows-x64.zip
+                      kallichore-${{ env.RELEASE_TAG }}-linux-x64.zip
 
     status:
         if: ${{ failure() }}
