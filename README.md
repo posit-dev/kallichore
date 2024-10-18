@@ -1,4 +1,4 @@
-## Kallichore
+# Kallichore <img src="doc/Kallichore.webp" align="right" height=160 />
 
 Kallichore is an experimental, headless supervisor for Jupyter kernels.
 
