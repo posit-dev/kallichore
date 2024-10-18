@@ -333,7 +333,7 @@ impl KernelSession {
         // Make and send the shutdown request.
         let msg = JupyterMessage {
             header: JupyterMessageHeader {
-                msg_id: self.make_message_id(),
+                msg_id: make_message_id(),
                 msg_type: "shutdown_request".to_string(),
             },
             parent_header: None,
@@ -474,7 +474,7 @@ impl KernelSession {
             models::InterruptMode::Message => {
                 let msg = JupyterMessage {
                     header: JupyterMessageHeader {
-                        msg_id: self.make_message_id(),
+                        msg_id: make_message_id(),
                         msg_type: "interrupt_request".to_string(),
                     },
                     parent_header: None,
@@ -487,13 +487,6 @@ impl KernelSession {
             }
         }
         Ok(())
-    }
-
-    fn make_message_id(&self) -> String {
-        let mut rng = rand::thread_rng();
-        iter::repeat_with(|| format!("{:x}", rng.gen_range(0..16)))
-            .take(10)
-            .collect()
     }
 
     /// Stream output from a child process to the WebSocket.
@@ -658,4 +651,11 @@ impl KernelSession {
         }
         output
     }
+}
+
+pub fn make_message_id() -> String {
+    let mut rng = rand::thread_rng();
+    iter::repeat_with(|| format!("{:x}", rng.gen_range(0..16)))
+        .take(10)
+        .collect()
 }

@@ -10,7 +10,7 @@ use std::{str::FromStr, sync::Arc};
 use async_channel::{Receiver, Sender};
 use kallichore_api::models;
 use kcshared::{
-    jupyter_message::{JupyterChannel, JupyterMessage},
+    jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_message::KernelMessage,
     websocket_message::WebsocketMessage,
 };
@@ -25,6 +25,7 @@ use crate::{
     heartbeat::HeartbeatMonitor,
     jupyter_messages::{ExecutionState, JupyterMsg},
     kernel_connection::KernelConnection,
+    kernel_session::make_message_id,
     kernel_state::KernelState,
     wire_message::WireMessage,
 };
@@ -185,6 +186,78 @@ impl ZmqWsProxy {
         self.heartbeat.monitor();
 
         Ok(())
+    }
+
+    /// Gets the kernel info by sending a kernel_info_request message to the
+    /// kernel and waiting for the reply. Returns the kernel info as a JSON
+    /// object.
+    pub async fn get_kernel_info(&mut self) -> Result<serde_json::Value, anyhow::Error> {
+        // Create a random message ID for the kernel info request
+        let msg_id = make_message_id();
+
+        // Form the kernel_info_request message
+        let request = JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_id: msg_id.clone(),
+                msg_type: "kernel_info_request".to_string(),
+            },
+            parent_header: None,
+            channel: JupyterChannel::Shell,
+            content: serde_json::json!({}),
+            metadata: serde_json::json!({}),
+            buffers: vec![],
+        };
+
+        // Translate it into a wire message and send it to the shell socket
+        let wire_message = WireMessage::from_jupyter(request, self.connection.clone())?;
+        let zmq_message: ZmqMessage = wire_message.into();
+        self.shell_socket
+            .as_mut()
+            .unwrap()
+            .send(zmq_message)
+            .await?;
+
+        // Wait for the reply
+        let reply = self.wait_for_shell_reply(msg_id.clone()).await?;
+
+        Ok(reply.content)
+    }
+
+    async fn wait_for_shell_reply(
+        &mut self,
+        msg_id: String,
+    ) -> Result<JupyterMessage, anyhow::Error> {
+        let session_id = self.connection.session_id.clone();
+        loop {
+            select! {
+                shell_msg = self.shell_socket.as_mut().unwrap().recv() => {
+                    match shell_msg {
+                        Ok(msg) => {
+                            let wire_message = WireMessage::from_zmq(self.session_id.clone(), JupyterChannel::Shell, msg);
+                            let jupyter_message = wire_message.to_jupyter(JupyterChannel::Shell)?;
+                            if jupyter_message.header.msg_id == msg_id {
+                                return Ok(jupyter_message);
+                            } else {
+                                log::info!("[session {}] Discarding message with unexpected msg_id: {}", session_id, jupyter_message.header.msg_id);
+                            }
+                        },
+                        Err(e) => {
+                            return Err(anyhow::anyhow!("Failed to receive message from shell socket: {}", e));
+                        },
+                    }
+                },
+                iopub_msg = self.iopub_socket.as_mut().unwrap().recv() => {
+                    match iopub_msg {
+                        Ok(msg) => {
+                            log::trace!("[session {}] Ignoring iopub message {:?}", session_id, msg);
+                        },
+                        Err(e) => {
+                            return Err(anyhow::anyhow!("Failed to receive message from iopub socket: {}", e));
+                        },
+                    }
+                },
+            }
+        }
     }
 
     pub async fn listen(&mut self) -> Result<(), anyhow::Error> {
