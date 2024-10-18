@@ -299,22 +299,11 @@ jobs:
                   asset_name: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-linux-x64.zip
                   asset_content_type: application/octet-stream
 
-            - name: Create access token
-              uses: actions/create-github-app-token@v1
-              id: app-token
-              with:
-                  app-id: ${{ vars.POSITRON_BOT_APP_ID }}
-                  private-key: ${{ secrets.POSITRON_BOT_PRIVATE_KEY }}
-                  owner: ${{ github.repository_owner }}
-                  repositories: |
-                      kallichore
-                      kallichore-builds
-
             - name: Create public release
               if: ${{ matrix.flavor == 'release' }}
               uses: softprops/action-gh-release@v2
               with:
-                  token: ${{ steps.app-token.outputs.token }}
+                  token: ${{ secrets.POSITRON_GITHUB_PAT }}
                   repository: posit-dev/kallichore-builds
                   tag_name: ${{ env.RELEASE_TAG }}
                   prerelease: true
