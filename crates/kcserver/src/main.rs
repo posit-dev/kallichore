@@ -117,6 +117,7 @@ async fn main() {
   | \   /  |  |/  |/  |  /    |/ \   /  \_/  |  |/  
   |  \_/\_/|_/|__/|__/|_/\___/|   |_/\__/    |_/|__/
   A Jupyter Kernel supervisor. Version {}.
+  Copyright (c) 2024, Posit Software PBC. All rights reserved.
 "#,
         env!("CARGO_PKG_VERSION")
     );
