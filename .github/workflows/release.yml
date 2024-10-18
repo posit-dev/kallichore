@@ -307,11 +307,10 @@ jobs:
                   repository: posit-dev/kallichore-builds
                   tag_name: ${{ env.RELEASE_TAG }}
                   prerelease: true
-                  target_commitish: ${{ env.GITHUB_SHA }}
                   fail_on_unmatched_files: true
                   generate_release_notes: false
                   body: |
-                      Kallichore ${{env.RELEASE_TAG }}
+                      Kallichore ${{env.RELEASE_TAG }} (commit ${{ env.GITHUB_SHA }})
                   files: |
                       kallichore-${{ env.RELEASE_TAG }}-darwin-universal.zip
                       kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-windows-x64.zip
