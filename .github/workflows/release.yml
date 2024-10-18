@@ -215,10 +215,12 @@ jobs:
         name: Upload Release Binaries
         runs-on: [self-hosted, macos, arm64]
         needs: [create_release, get_version]
+        permissions:
+           contents: write  # Required for creating a tag and release
         env:
             GITHUB_TOKEN: ${{ github.token }}
             DEBUG_FLAG: ${{ matrix.flavor == 'debug' && '-debug' || '' }}
-
+            RELEASE_TAG: ${{ needs.get_version.outputs.KALLICHORE_VERSION }}
         strategy:
             max-parallel: 1
             matrix:
@@ -252,19 +254,19 @@ jobs:
               run: |
                   # Decompress x64 builds
                   rm -rf x64 && mkdir x64 && pushd x64
-                  unzip ../kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-x64.zip
+                  unzip ../kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-darwin-x64.zip
                   popd
 
                   # Decompress arm64 build
                   rm -rf arm64 && mkdir arm64 && pushd arm64
-                  unzip ../kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-arm64.zip
+                  unzip ../kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-darwin-arm64.zip
                   popd
 
                   # Create a universal binary
                   lipo -create x64/kcserver arm64/kcserver -output kcserver
 
                   # Compress and bundle licenses
-                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-universal.zip"
+                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-universal.zip"
                   zip -Xry $ARCHIVE kcserver
 
             - name: Upload macOS release artifact (universal)
@@ -273,7 +275,7 @@ jobs:
                   GITHUB_TOKEN: ${{ github.token }}
               with:
                   upload_url: ${{ needs.create_release.outputs.upload_url }}
-                  asset_path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-universal.zip
+                  asset_path: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-universal.zip
                   asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-universal.zip
                   asset_content_type: application/octet-stream
 
@@ -283,8 +285,8 @@ jobs:
                   GITHUB_TOKEN: ${{ github.token }}
               with:
                   upload_url: ${{ needs.create_release.outputs.upload_url }}
-                  asset_path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-x64.zip
-                  asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-windows-x64.zip
+                  asset_path: kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-windows-x64.zip
+                  asset_name: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-windows-x64.zip
                   asset_content_type: application/octet-stream
 
             - name: Upload Linux release artifacts (x64)
@@ -293,9 +295,38 @@ jobs:
                   GITHUB_TOKEN: ${{ github.token }}
               with:
                   upload_url: ${{ needs.create_release.outputs.upload_url }}
-                  asset_path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-linux-x64.zip
-                  asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-linux-x64.zip
+                  asset_path: kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-linux-x64.zip
+                  asset_name: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-linux-x64.zip
                   asset_content_type: application/octet-stream
+
+            - name: Create access token
+              uses: actions/create-github-app-token@v1
+              id: app-token
+              with:
+                  app-id: ${{ vars.POSITRON_BOT_APP_ID }}
+                  private-key: ${{ secrets.POSITRON_BOT_PRIVATE_KEY }}
+                  owner: ${{ github.repository_owner }}
+                  repositories: |
+                      kallichore
+                      kallichore-builds
+
+            - name: Create public release
+              if: ${{ matrix.flavor == 'release' }}
+              uses: softprops/action-gh-release@v2
+              with:
+                  token: ${{ steps.app-token.outputs.token }}
+                  repository: posit-dev/kallichore-builds
+                  tag_name: ${{ env.RELEASE_TAG }}
+                  prerelease: true
+                  target_commitish: ${{ env.GITHUB_SHA }}
+                  fail_on_unmatched_files: true
+                  generate_release_notes: false
+                  body: |
+                      Kallichore ${{env.RELEASE_TAG }}
+                  files: |
+                      kallichore-${{ env.RELEASE_TAG }}-darwin-universal.zip
+                      kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-windows-x64.zip
+                      kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-linux-x64.zip
 
     status:
         if: ${{ failure() }}
