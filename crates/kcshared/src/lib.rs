@@ -8,3 +8,6 @@ pub mod kernel_message;
 
 /// WebSocket message types
 pub mod websocket_message;
+
+/// Kernel info messages
+pub mod kernel_info;
