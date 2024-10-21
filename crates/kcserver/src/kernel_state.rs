@@ -38,6 +38,12 @@ pub struct KernelState {
     /// The execution queue for the kernel.
     pub execution_queue: ExecutionQueue,
 
+    /// The current input prompt.
+    pub input_prompt: String,
+
+    /// The current continuation prompt.
+    pub continuation_prompt: String,
+
     /// The time at which the kernel last became idle.
     pub idle_since: Option<std::time::Instant>,
 
@@ -51,18 +57,20 @@ pub struct KernelState {
 impl KernelState {
     /// Create a new kernel state.
     pub fn new(
-        session_id: String,
+        session: models::NewSession,
         working_directory: String,
         ws_status_tx: Sender<models::Status>,
     ) -> Self {
         KernelState {
-            session_id,
+            session_id: session.session_id.clone(),
             status: models::Status::Idle,
             working_directory,
             connected: false,
             restarting: false,
             process_id: None,
             execution_queue: ExecutionQueue::new(),
+            input_prompt: session.input_prompt.clone(),
+            continuation_prompt: session.continuation_prompt.clone(),
             ws_status_tx,
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,

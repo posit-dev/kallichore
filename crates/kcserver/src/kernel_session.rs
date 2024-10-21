@@ -89,7 +89,7 @@ impl KernelSession {
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
         let (status_tx, status_rx) = async_channel::unbounded::<models::Status>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
-            session.session_id.clone(),
+            session.clone(),
             session.working_directory.clone(),
             status_tx.clone(),
         )));
@@ -295,9 +295,25 @@ impl KernelSession {
             let kernel_info = serde_json::from_value::<KernelInfoReply>(value.clone());
             match kernel_info {
                 Ok(info) => match info.language_info.positron {
-                    Some(_language_info) => {
-                        // TODO: write to session state
-                        ();
+                    Some(language_info) => {
+                        // Write the input and continuation prompts to the kernel state
+                        let mut state = self.state.write().await;
+                        if let Some(input_prompt) = &language_info.input_prompt {
+                            log::trace!(
+                                "[session {}] Setting input prompt to '{}'",
+                                self.connection.session_id,
+                                input_prompt,
+                            );
+                            state.input_prompt = input_prompt.clone();
+                        }
+                        if let Some(continuation_promt) = &language_info.continuation_prompt {
+                            log::trace!(
+                                "[session {}] Setting continuation prompt to '{}'",
+                                self.connection.session_id,
+                                continuation_promt,
+                            );
+                            state.continuation_prompt = continuation_promt.clone();
+                        }
                     }
                     None => {
                         // Not an error; not all kernels provide this
@@ -508,10 +524,10 @@ impl KernelSession {
                 Some(pid) => Some(pid as i32),
                 None => None,
             },
-            input_prompt: self.model.input_prompt.clone(),
+            input_prompt: state.input_prompt.clone(),
             idle_seconds,
             busy_seconds,
-            continuation_prompt: self.model.continuation_prompt.clone(),
+            continuation_prompt: state.continuation_prompt.clone(),
             connected: state.connected,
             working_directory: state.working_directory.clone(),
             started: self.started.clone(),
