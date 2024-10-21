@@ -112,7 +112,12 @@ impl KernelSession {
         Ok(kernel_session)
     }
 
-    pub async fn start(&self) -> Result<(), StartupError> {
+    /// Start the kernel.
+    ///
+    /// # Returns
+    ///
+    /// The kernel info, as a JSON object.
+    pub async fn start(&self) -> Result<serde_json::Value, StartupError> {
         // Mark the kernel as starting
         {
             let mut state = self.state.write().await;
@@ -237,12 +242,12 @@ impl KernelSession {
         let startup_result = startup_rx.recv().await;
 
         match startup_result {
-            Ok(StartupStatus::Connected) => {
+            Ok(StartupStatus::Connected(kernel_info)) => {
                 log::trace!(
                     "[session {}] Kernel sockets connected successfully, returning from start",
                     self.connection.session_id.clone()
                 );
-                Ok(())
+                Ok(kernel_info)
             }
             Ok(StartupStatus::ConnectionFailed(output, err)) => {
                 // This error is emitted when the ZeroMQ proxy fails to connect
@@ -273,8 +278,13 @@ impl KernelSession {
                 })
             }
             Err(e) => {
-                log::error!("Failed to get kernel startup status: {}", e);
-                Ok(())
+                let err = KSError::StartFailed(anyhow::anyhow!("{}", e));
+                err.log();
+                Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: err.to_json(None),
+                })
             }
         }
     }
@@ -395,6 +405,8 @@ impl KernelSession {
         return self.complete_restart().await;
     }
 
+    /// Complete restart by waiting for the kernel to exit and then starting it
+    /// again.
     async fn complete_restart(&self) -> Result<(), StartupError> {
         // Wait for the kernel to exit
         let listener = self.exit_event.listen();
@@ -414,7 +426,23 @@ impl KernelSession {
             state.restarting = false;
         }
 
-        return self.start().await;
+        match self.start().await {
+            Ok(_) => {
+                log::debug!(
+                    "[session {}] Kernel restarted successfully",
+                    self.connection.session_id
+                );
+                Ok(())
+            }
+            Err(e) => {
+                log::error!(
+                    "[session {}] Failed to restart kernel: {}",
+                    self.connection.session_id,
+                    e.error.message
+                );
+                Err(e)
+            }
+        }
     }
 
     /// Format this session as an active session.
@@ -575,11 +603,24 @@ impl KernelSession {
         // CONSIDER: Should we make this timeout configurable?
         match tokio::time::timeout(std::time::Duration::new(20, 0), connect_or_exit).await {
             Ok(Ok(())) => {
-                // Once connected, send the status to the caller
-                status_tx
-                    .send(StartupStatus::Connected)
-                    .await
-                    .expect("Could not send startup status");
+                // Get the kernel info from the shell channel
+                let kernel_info = proxy.get_kernel_info().await;
+                match kernel_info {
+                    Ok(info) => {
+                        status_tx
+                            .send(StartupStatus::Connected(info))
+                            .await
+                            .expect("Failed to send startup status");
+                    }
+                    Err(e) => {
+                        let error = KSError::NoKernelInfo(e);
+                        let output = self.consume_output_streams();
+                        status_tx
+                            .send(StartupStatus::ConnectionFailed(output, error))
+                            .await
+                            .expect("Failed to send startup status");
+                    }
+                }
             }
             Ok(Err(e)) => {
                 // If the connection failed, send an error status to the caller.

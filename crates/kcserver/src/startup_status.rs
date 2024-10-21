@@ -19,6 +19,6 @@ pub enum StartupStatus {
     /// underlying error.
     ConnectionFailed(String, KSError),
 
-    /// The kernel started up and connected to its 0MQ sockets successfully.
-    Connected,
+    /// The kernel started up and connected to its 0MQ sockets successfully. The payload is the kernel information.
+    Connected(serde_json::Value),
 }

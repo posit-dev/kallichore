@@ -235,10 +235,17 @@ impl ZmqWsProxy {
                         Ok(msg) => {
                             let wire_message = WireMessage::from_zmq(self.session_id.clone(), JupyterChannel::Shell, msg);
                             let jupyter_message = wire_message.to_jupyter(JupyterChannel::Shell)?;
-                            if jupyter_message.header.msg_id == msg_id {
+                            let parent = match jupyter_message.parent_header {
+                                None => {
+                                    log::warn!("[session {}] Discarding message with no parent header: {}", session_id, jupyter_message.header.msg_id);
+                                    continue;
+                                },
+                                Some(ref parent_header) => parent_header,
+                            };
+                            if parent.msg_id == msg_id {
                                 return Ok(jupyter_message);
                             } else {
-                                log::info!("[session {}] Discarding message with unexpected msg_id: {}", session_id, jupyter_message.header.msg_id);
+                                log::warn!("[session {}] Discarding message with unexpected parent msg_id: {}", session_id, jupyter_message.header.msg_id);
                             }
                         },
                         Err(e) => {

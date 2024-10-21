@@ -32,6 +32,8 @@ pub enum KSError {
     NoProcess(String),
     RestartFailed(anyhow::Error),
     ExitedBeforeConnection,
+    NoKernelInfo(anyhow::Error),
+    StartFailed(anyhow::Error),
 }
 
 impl fmt::Display for KSError {
@@ -67,7 +69,7 @@ impl fmt::Display for KSError {
             KSError::SessionConnectionTimeout(seconds) => {
                 write!(
                     f,
-                    "Timed out waiting to sessin's ZeroMQ sockets after {} seconds",
+                    "Timed out waiting to session's ZeroMQ sockets after {} seconds",
                     seconds
                 )
             }
@@ -95,6 +97,16 @@ impl fmt::Display for KSError {
                     f,
                     "The kernel exited before a connection could be established"
                 )
+            }
+            KSError::NoKernelInfo(e) => {
+                write!(
+                    f,
+                    "Failed to get kernel info from the kernel process: {}",
+                    e
+                )
+            }
+            KSError::StartFailed(e) => {
+                write!(f, "Failed to start kernel: {}", e)
             }
         }
     }
