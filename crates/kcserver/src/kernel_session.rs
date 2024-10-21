@@ -15,6 +15,7 @@ use event_listener::Event;
 use kallichore_api::models::{self, StartupError};
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
+    kernel_info::KernelInfoReply,
     kernel_message::{KernelMessage, OutputStream},
     websocket_message::WebsocketMessage,
 };
@@ -241,7 +242,7 @@ impl KernelSession {
         // something awful to happen
         let startup_result = startup_rx.recv().await;
 
-        match startup_result {
+        let result = match startup_result {
             Ok(StartupStatus::Connected(kernel_info)) => {
                 log::trace!(
                     "[session {}] Kernel sockets connected successfully, returning from start",
@@ -286,7 +287,43 @@ impl KernelSession {
                     error: err.to_json(None),
                 })
             }
+        };
+
+        // If the session reported kernel info, mine it to get the initial
+        // values for our input and continuation prompts
+        if let Ok(value) = &result {
+            let kernel_info = serde_json::from_value::<KernelInfoReply>(value.clone());
+            match kernel_info {
+                Ok(info) => match info.language_info.positron {
+                    Some(_language_info) => {
+                        // TODO: write to session state
+                        ();
+                    }
+                    None => {
+                        // Not an error; not all kernels provide this
+                        // information (it's a Posit specific extension)
+                        log::trace!(
+                            "[session {}] Kernel did not provide Positron language info",
+                            self.connection.session_id
+                        );
+                    }
+                },
+                Err(e) => {
+                    // If we got here, the kernel emitted kernel information but
+                    // we could not parse it into our internal format. It's
+                    // probably not compliant with the Jupyter spec. We'll still
+                    // pass it to the client, but log a warning.
+                    log::warn!(
+                        "[session {}] Failed to parse kernel info: {}",
+                        self.connection.session_id,
+                        e
+                    );
+                }
+            }
         }
+
+        // Return the result to the caller
+        result
     }
 
     async fn run_child(&self, mut child: tokio::process::Child, startup_tx: Sender<StartupStatus>) {
