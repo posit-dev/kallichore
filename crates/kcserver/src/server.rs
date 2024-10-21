@@ -528,7 +528,7 @@ where
         // Attempt to start the kernel; blocks until the kernel sockets are
         // connected or a failure occurs
         match kernel_session.start().await {
-            Ok(_) => Ok(StartSessionResponse::Started(serde_json::Value::Null)),
+            Ok(kernel_info) => Ok(StartSessionResponse::Started(kernel_info)),
             Err(e) => Ok(StartSessionResponse::StartFailed(e)),
         }
     }
