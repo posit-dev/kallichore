@@ -35,13 +35,13 @@ pub struct LanguageInfo {
     pub file_extension: String,
 
     /// Pygments lexer (for highlighting), if different than `name`
-    pub pygments_lexer: Option<String>,
+    pub pygments_lexer: Option<serde_json::Value>,
 
     /// Codemirror mode (for editing), if different than `name`
-    pub codemirror_mode: Option<String>,
+    pub codemirror_mode: Option<serde_json::Value>,
 
     /// Nbconvert exporter, if not the default 'script' exporter
-    pub nbconvert_exporter: Option<String>,
+    pub nbconvert_exporter: Option<serde_json::Value>,
 
     /// Posit extension
     pub positron: Option<LanguageInfoPositron>,
@@ -74,7 +74,7 @@ pub struct KernelInfoReply {
     pub banner: String,
 
     /// Whether debugging is supported
-    pub debugger: bool,
+    pub debugger: Option<bool>,
 
     /// A list of help links
     pub help_links: Vec<HelpLink>,

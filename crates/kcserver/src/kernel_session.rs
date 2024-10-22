@@ -330,8 +330,9 @@ impl KernelSession {
                     // probably not compliant with the Jupyter spec. We'll still
                     // pass it to the client, but log a warning.
                     log::warn!(
-                        "[session {}] Failed to parse kernel info: {}",
+                        "[session {}] Failed to parse kernel info: {} (content: {}); passing to client anyway",
                         self.connection.session_id,
+                        serde_json::to_string(value).unwrap_or_else(|_| "<could not serialize>".to_string()),
                         e
                     );
                 }
