@@ -71,6 +71,17 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
       +-- kcclient -- Command-line client (for testing), using the kallichore_api crate
 ```
 
+
+## Builds and Versions
+
+Kallichore is versioned similar to ARK. No release builds are produced by default. When you want to release a new version of Kallichore (for integrating into Positron, etc.), bump the version of the `kcserver` crate. This will trigger a release build.
+
+Note that because this repository is private, and Positron is public, there's a public repository that hosts Kallichore builds for Positron to download while building. You can find that here:
+
+<https://github.com/posit-dev/kallichore-builds>
+
+All Kallichore releases are automatically copied to the `kallichore-builds` repository.
+
 ## Adjacent Projects/Links
 
 [Jupyter Kernel Gateway](https://jupyter-kernel-gateway.readthedocs.io/en/latest/): a headless Jupyter server that uses WebSockets to deliver Jupyter messages.
