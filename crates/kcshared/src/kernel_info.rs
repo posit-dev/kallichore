@@ -64,6 +64,12 @@ pub struct KernelInfoReply {
     /// The execution status ("ok" or "error")
     pub status: String,
 
+    /// Additional supported features. Note that this is not yet part of the
+    /// official Jupyter protocol; it is described in JEP 92.
+    ///
+    /// https://github.com/jupyter/enhancement-proposals/blob/master/92-jupyter-optional-features/jupyter-optional-features.md
+    pub supported_features: Option<Vec<String>>,
+
     /// Version of messaging protocol
     pub protocol_version: String,
 
