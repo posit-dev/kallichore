@@ -21,7 +21,6 @@ use kcshared::{
 };
 use rand::Rng;
 use std::iter;
-use sysinfo::{Pid, Signal, System};
 use tokio::io::{AsyncBufReadExt, AsyncRead};
 use tokio::sync::RwLock;
 
@@ -47,7 +46,7 @@ pub struct KernelSession {
     pub model: models::NewSession,
 
     /// The interrupt event handle, if we have one. Only used on Windows.
-    pub interrupt_event_handle: Option<i32>,
+    pub interrupt_event_handle: Option<i64>,
 
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
@@ -99,18 +98,15 @@ impl KernelSession {
         let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
         let started = Utc::now();
 
-
         // On Windows, if the interrupt mode is Signal, create an event for
         // interruptions since Windows doesn't have signals.
         #[cfg(windows)]
         let interrupt_event_handle = match session.interrupt_mode {
-            models::InterruptMode::Signal  => {
-                match KernelSession::create_interrupt_event() {
-                    Ok(event) => Some(event),
-                    Err(e) => {
-                        log::error!("Failed to create interrupt event: {}", e);
-                        None
-                    }
+            models::InterruptMode::Signal => match KernelSession::create_interrupt_event() {
+                Ok(event) => Some(event),
+                Err(e) => {
+                    log::error!("Failed to create interrupt event: {}", e);
+                    None
                 }
             },
             models::InterruptMode::Message => None,
@@ -208,6 +204,11 @@ impl KernelSession {
             // On Windows, if we have an interrupt event, add it to the environment
             // so we can pass it to the kernel process.
             if let Some(handle) = self.interrupt_event_handle {
+                log::trace!(
+                    "[session {}] Adding interrupt event handle to environment: {}",
+                    self.connection.session_id,
+                    handle
+                );
                 initial_env.insert("JPY_INTERRUPT_EVENT".to_string(), format!("{}", handle));
             }
         }
@@ -576,17 +577,54 @@ impl KernelSession {
     pub async fn interrupt(&self) -> Result<(), anyhow::Error> {
         match self.model.interrupt_mode {
             models::InterruptMode::Signal => {
-                let pid = self.state.read().await.process_id.unwrap_or(0);
-                if pid == 0 {
-                    return Err(anyhow::anyhow!("No process ID to interrupt"));
+                // On Windows, interrupts are signaled by setting a kernel event.
+                // 
+                // Note that this requires coordination with the kernel to check
+                // the event and interrupt itself. Currently, only ipykernel
+                // supports this.
+                #[cfg(windows)]
+                {
+                    use windows::Win32::Foundation::HANDLE;
+                    use windows::Win32::System::Threading::SetEvent;
+                    if let Some(handle) = self.interrupt_event_handle {
+                        #[allow(unsafe_code)]
+                        unsafe {
+                            log::debug!(
+                                "Setting interrupt event {} for session {}",
+                                handle,
+                                self.connection.session_id
+                            );
+                            let handle = std::mem::transmute::<i64, HANDLE>(handle);
+                            return match SetEvent(handle) {
+                                Ok(_) => Ok(()),
+                                Err(e) => Err(anyhow::anyhow!(
+                                    "Failed to set interrupt event: {}, process not interrupted",
+                                    e
+                                )),
+                            };
+                        }
+                    } else {
+                        return Err(anyhow::anyhow!("No interrupt event to set"));
+                    }
                 }
-                let mut system = System::new();
-                let pid = Pid::from_u32(pid);
-                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]));
-                if let Some(process) = system.process(pid) {
-                    process.kill_with(Signal::Interrupt);
-                } else {
-                    return Err(anyhow::anyhow!("Process {} not found", pid));
+
+                // On Unix-alikes, interrupts are signaled by sending a SIGINT
+                // signal to the process.
+                #[cfg(not(windows))]
+                {
+                    use sysinfo::{Pid, Signal, System};
+                    let pid = self.state.read().await.process_id.unwrap_or(0);
+                    if pid == 0 {
+                        return Err(anyhow::anyhow!("No process ID to interrupt"));
+                    }
+                    let mut system = System::new();
+                    let pid = Pid::from_u32(pid);
+                    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]));
+                    if let Some(process) = system.process(pid) {
+                        process.kill_with(Signal::Interrupt);
+                    } else {
+                        return Err(anyhow::anyhow!("Process {} not found", pid));
+                    }
                 }
             }
             models::InterruptMode::Message => {
@@ -784,24 +822,24 @@ impl KernelSession {
     }
 
     #[cfg(windows)]
-    fn create_interrupt_event() -> Result<i32, anyhow::Error> {
+    fn create_interrupt_event() -> Result<i64, anyhow::Error> {
         use windows::Win32::Security::SECURITY_ATTRIBUTES;
-        use windows::Win32::System::Threading::CreateEventW;
+        use windows::Win32::System::Threading::CreateEventA;
 
         #[allow(unsafe_code)]
-        unsafe{
+        unsafe {
             // Create a security attributes struct that permits inheritance of the handle by new processes
             let sa = SECURITY_ATTRIBUTES {
                 #[allow(unused_qualifications)]
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: std::ptr::null_mut(),
-                bInheritHandle: windows::Win32::Foundation::BOOL(1)
+                bInheritHandle: windows::Win32::Foundation::BOOL(1),
             };
-            let event = CreateEventW(Some(&sa), false, false, None);
+            let event = CreateEventA(Some(&sa), false, false, None);
             match event {
                 Ok(handle) => {
                     let handle = handle.0;
-                    Ok(handle as i32)
+                    Ok(handle as i64)
                 }
                 Err(e) => Err(anyhow::anyhow!("Failed to create interrupt event: {}", e)),
             }
