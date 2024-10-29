@@ -46,6 +46,9 @@ pub struct KernelSession {
     /// The session model that was used to create this session
     pub model: models::NewSession,
 
+    /// The interrupt event handle, if we have one. Only used on Windows.
+    pub interrupt_event_handle: Option<i32>,
+
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
     pub argv: Vec<String>,
@@ -95,6 +98,27 @@ impl KernelSession {
         )));
         let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
         let started = Utc::now();
+
+
+        // On Windows, if the interrupt mode is Signal, create an event for
+        // interruptions since Windows doesn't have signals.
+        #[cfg(windows)]
+        let interrupt_event_handle = match session.interrupt_mode {
+            models::InterruptMode::Signal  => {
+                match KernelSession::create_interrupt_event() {
+                    Ok(event) => Some(event),
+                    Err(e) => {
+                        log::error!("Failed to create interrupt event: {}", e);
+                        None
+                    }
+                }
+            },
+            models::InterruptMode::Message => None,
+        };
+
+        #[cfg(not(windows))]
+        let interrupt_event_handle = None;
+
         let kernel_session = KernelSession {
             argv: session.argv.clone(),
             state: kernel_state.clone(),
@@ -106,6 +130,7 @@ impl KernelSession {
             status_rx,
             connection,
             started,
+            interrupt_event_handle,
             exit_event: Arc::new(Event::new()),
             connection_file,
             reserved_ports,
@@ -178,12 +203,13 @@ impl KernelSession {
 
         let mut initial_env = self.model.env.clone();
 
-        // On Windows, if the interrupt mode is Signal, create an event for
-        // interruptions since Windows doesn't have signals.
         #[cfg(windows)]
-        if self.model.interrupt_mode == models::InterruptMode::Signal {
-            let interrupt_event = self.create_interrupt_event();
-            initial_env.insert("JPY_INTERRUPT_EVENT".to_string(), format!("{}", interrupt_event));
+        {
+            // On Windows, if we have an interrupt event, add it to the environment
+            // so we can pass it to the kernel process.
+            if let Some(handle) = self.interrupt_event_handle {
+                initial_env.insert("JPY_INTERRUPT_EVENT".to_string(), format!("{}", handle));
+            }
         }
 
         // Attempt to actually start the kernel process
@@ -758,8 +784,28 @@ impl KernelSession {
     }
 
     #[cfg(windows)]
-    fn create_interrupt_event(&self) -> i32 {
-        451
+    fn create_interrupt_event() -> Result<i32, anyhow::Error> {
+        use windows::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows::Win32::System::Threading::CreateEventW;
+
+        #[allow(unsafe_code)]
+        unsafe{
+            // Create a security attributes struct that permits inheritance of the handle by new processes
+            let sa = SECURITY_ATTRIBUTES {
+                #[allow(unused_qualifications)]
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: std::ptr::null_mut(),
+                bInheritHandle: windows::Win32::Foundation::BOOL(1)
+            };
+            let event = CreateEventW(Some(&sa), false, false, None);
+            match event {
+                Ok(handle) => {
+                    let handle = handle.0;
+                    Ok(handle as i32)
+                }
+                Err(e) => Err(anyhow::anyhow!("Failed to create interrupt event: {}", e)),
+            }
+        }
     }
 }
 
