@@ -176,9 +176,19 @@ impl KernelSession {
             }
         }
 
+        let mut initial_env = self.model.env.clone();
+
+        // On Windows, if the interrupt mode is Signal, create an event for
+        // interruptions since Windows doesn't have signals.
+        #[cfg(windows)]
+        if self.model.interrupt_mode == models::InterruptMode::Signal {
+            let interrupt_event = self.create_interrupt_event();
+            initial_env.insert("JPY_INTERRUPT_EVENT".to_string(), format!("{}", interrupt_event));
+        }
+
         // Attempt to actually start the kernel process
         let mut child = match command
-            .envs(&self.model.env)
+            .envs(&initial_env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -745,6 +755,11 @@ impl KernelSession {
             }
         }
         output
+    }
+
+    #[cfg(windows)]
+    fn create_interrupt_event(&self) -> i32 {
+        451
     }
 }
 
