@@ -7,7 +7,7 @@
 
 //! Wraps Jupyter kernel sessions.
 
-use std::{fs, process::Stdio, sync::Arc};
+use std::{fs, os::raw::c_void, process::Stdio, sync::Arc};
 
 use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
@@ -201,6 +201,11 @@ impl KernelSession {
 
         #[cfg(windows)]
         {
+            use windows::Win32::System::Threading::GetCurrentProcess;
+            use windows::Win32::Foundation::DuplicateHandle;
+            use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
+            use windows::Win32::Foundation::HANDLE;
+
             // On Windows, if we have an interrupt event, add it to the environment
             // so we can pass it to the kernel process.
             if let Some(handle) = self.interrupt_event_handle {
@@ -210,6 +215,33 @@ impl KernelSession {
                     handle
                 );
                 initial_env.insert("JPY_INTERRUPT_EVENT".to_string(), format!("{}", handle));
+            }
+
+            #[allow(unsafe_code)]
+            unsafe {
+                let pid = GetCurrentProcess();
+                let mut target = HANDLE::default();
+                match DuplicateHandle(
+                    pid, // Source process handle
+                    pid, // Source handle to duplicate
+                    pid, // Target process handle
+                    &mut target, // Destination handle (out)
+                    0, // Desired access
+                    windows::Win32::Foundation::BOOL(1), // Inheritable
+                    DUPLICATE_SAME_ACCESS) {
+                    Ok(_) => {
+                       let handle = target.0 as i64; 
+                       log::trace!(
+                            "[session {}] Adding parent handle to environment: {}",
+                            self.connection.session_id,
+                            handle
+                        );
+                        initial_env.insert("JPY_PARENT_PID".to_string(), format!("{}", handle));
+                    },
+                    Err(e) => {
+                        log::error!("Failed to duplicate handle: {}", e);
+                    }
+                }
             }
         }
 
@@ -594,7 +626,7 @@ impl KernelSession {
                                 handle,
                                 self.connection.session_id
                             );
-                            let handle = std::mem::transmute::<i64, HANDLE>(handle);
+                            let handle = HANDLE(std::mem::transmute::<i64, *mut c_void>(handle));
                             return match SetEvent(handle) {
                                 Ok(_) => Ok(()),
                                 Err(e) => Err(anyhow::anyhow!(
