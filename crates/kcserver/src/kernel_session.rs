@@ -16,7 +16,7 @@ use kallichore_api::models::{self, StartupError};
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_info::KernelInfoReply,
-    kernel_message::{KernelMessage, OutputStream},
+    kernel_message::{KernelMessage, OutputStream, StatusUpdate},
     websocket_message::WebsocketMessage,
 };
 use rand::Rng;
@@ -72,7 +72,7 @@ pub struct KernelSession {
     pub ws_zmq_rx: Receiver<JupyterMessage>,
 
     /// The channel to receive status updates
-    pub status_rx: Receiver<models::Status>,
+    pub status_rx: Receiver<StatusUpdate>,
 
     /// The exit event; fires when the kernel process exits
     pub exit_event: Arc<Event>,
@@ -87,7 +87,7 @@ impl KernelSession {
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
-        let (status_tx, status_rx) = async_channel::unbounded::<models::Status>();
+        let (status_tx, status_rx) = async_channel::unbounded::<StatusUpdate>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
             session.clone(),
             session.working_directory.clone(),
@@ -122,7 +122,12 @@ impl KernelSession {
         // Mark the kernel as starting
         {
             let mut state = self.state.write().await;
-            state.set_status(models::Status::Starting).await;
+            state
+                .set_status(
+                    models::Status::Starting,
+                    Some(String::from("start API called")),
+                )
+                .await;
         }
 
         log::debug!(
@@ -189,7 +194,12 @@ impl KernelSession {
                 {
                     let mut state = self.state.write().await;
                     self.exit_event.notify(usize::MAX);
-                    state.set_status(models::Status::Exited).await;
+                    state
+                        .set_status(
+                            models::Status::Exited,
+                            Some(String::from("kernel start failed")),
+                        )
+                        .await;
                 }
                 let err = KSError::ProcessStartFailed(anyhow::anyhow!("{}", e));
                 return Err(StartupError {
@@ -375,7 +385,12 @@ impl KernelSession {
         {
             // update the status of the session
             let mut state = self.state.write().await;
-            state.set_status(models::Status::Exited).await;
+            state
+                .set_status(
+                    models::Status::Exited,
+                    Some(String::from("child process exited")),
+                )
+                .await;
         }
 
         // Notify anyone listening that the kernel has exited

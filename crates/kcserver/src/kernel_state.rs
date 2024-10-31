@@ -7,6 +7,7 @@
 
 use async_channel::Sender;
 use kallichore_api::models;
+use kcshared::kernel_message::StatusUpdate;
 
 use crate::execution_queue::ExecutionQueue;
 
@@ -51,7 +52,7 @@ pub struct KernelState {
     pub busy_since: Option<std::time::Instant>,
 
     /// A channel to publish status updates
-    ws_status_tx: Sender<models::Status>,
+    ws_status_tx: Sender<StatusUpdate>,
 }
 
 impl KernelState {
@@ -59,7 +60,7 @@ impl KernelState {
     pub fn new(
         session: models::NewSession,
         working_directory: String,
-        ws_status_tx: Sender<models::Status>,
+        ws_status_tx: Sender<StatusUpdate>,
     ) -> Self {
         KernelState {
             session_id: session.session_id.clone(),
@@ -78,12 +79,16 @@ impl KernelState {
     }
 
     /// Set the kernel's status.
-    pub async fn set_status(&mut self, status: models::Status) {
+    pub async fn set_status(&mut self, status: models::Status, reason: Option<String>) {
         log::debug!(
-            "[session {}] status '{}' => '{}'",
+            "[session {}] status '{}' => '{}' {}",
             self.session_id,
             self.status,
-            status
+            status,
+            match reason {
+                Some(ref r) => format!("({})", r),
+                None => "".to_string(),
+            }
         );
         self.status = status;
 
@@ -113,6 +118,10 @@ impl KernelState {
         }
 
         // Publish the new status to the status stream (for internal use)
-        self.ws_status_tx.send(status.clone()).await.unwrap();
+        let update = StatusUpdate {
+            status: self.status.clone(),
+            reason,
+        };
+        self.ws_status_tx.send(update).await.unwrap();
     }
 }

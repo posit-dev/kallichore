@@ -11,7 +11,7 @@ use async_channel::{Receiver, Sender};
 use kallichore_api::models;
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
-    kernel_message::KernelMessage,
+    kernel_message::{KernelMessage, StatusUpdate},
     websocket_message::WebsocketMessage,
 };
 use tokio::{select, sync::RwLock};
@@ -42,7 +42,7 @@ pub struct ZmqWsProxy {
     pub closed: bool,
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
-    pub status_rx: Receiver<models::Status>,
+    pub status_rx: Receiver<StatusUpdate>,
     pub state: Arc<RwLock<KernelState>>,
 }
 
@@ -66,7 +66,7 @@ impl ZmqWsProxy {
         state: Arc<RwLock<KernelState>>,
         ws_json_tx: Sender<WebsocketMessage>,
         ws_zmq_rx: Receiver<JupyterMessage>,
-        status_rx: Receiver<models::Status>,
+        status_rx: Receiver<StatusUpdate>,
     ) -> Self {
         let session_id = connection.session_id.clone();
         let hb_address = format!("tcp://{}:{}", connection_file.ip, connection_file.hb_port);
@@ -338,7 +338,7 @@ impl ZmqWsProxy {
                             let status_message = WebsocketMessage::Kernel(KernelMessage::Status(status.clone()));
                             self.ws_json_tx.send(status_message).await.unwrap();
 
-                            if status == models::Status::Exited {
+                            if status.status == models::Status::Exited {
                                 break;
                             }
                         }
@@ -481,12 +481,18 @@ impl ZmqWsProxy {
                 // Write the new status to the kernel state
                 let state = {
                     let mut state = self.state.write().await;
+                    // Deliver the status update with the parent message type's
+                    // name if known
+                    let reason = match message.parent_header {
+                        Some(ref parent) => Some(parent.msg_type.clone()),
+                        None => None,
+                    };
                     match status.execution_state {
                         ExecutionState::Busy => {
-                            state.set_status(models::Status::Busy).await;
+                            state.set_status(models::Status::Busy, reason).await;
                         }
                         ExecutionState::Idle => {
-                            state.set_status(models::Status::Idle).await;
+                            state.set_status(models::Status::Idle, reason).await;
                         }
                     };
                     status.execution_state
