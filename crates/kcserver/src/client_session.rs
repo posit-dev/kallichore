@@ -22,16 +22,31 @@ use tokio_tungstenite::WebSocketStream;
 
 use crate::kernel_connection::KernelConnection;
 use crate::kernel_state::KernelState;
+use event_listener::Event;
 
+#[derive(Clone)]
 pub struct ClientSession {
+    /// Metadata about the connection to the Jupyter side of the kernel
     pub connection: KernelConnection,
+
+    /// The unique ID of the client session
     pub client_id: String,
+
+    /// The receiver for messages to be sent to the websocket
     ws_json_rx: Receiver<WebsocketMessage>,
+
+    /// The sender for messages to be sent to the Jupyter kernel
     ws_zmq_tx: Sender<JupyterMessage>,
+
+    /// The current state of the kernel
     state: Arc<RwLock<KernelState>>,
+
+    /// An event that can be triggered to disconnect the session; used when we
+    /// need to reconnect a new client to the same kernel.
+    pub disconnect: Arc<Event>,
 }
 
-// A client session counter
+// An atomic counter for generating unique client IDs
 static mut SESSION_COUNTER: atomic::AtomicU32 = atomic::AtomicU32::new(0);
 
 impl ClientSession {
@@ -53,6 +68,7 @@ impl ClientSession {
             ws_zmq_tx,
             client_id: session_id,
             state,
+            disconnect: Arc::new(Event::new()),
         }
     }
 
@@ -112,6 +128,8 @@ impl ClientSession {
                     "[client {}] Received connection request for already-connected session.",
                     self.client_id
                 );
+            } else {
+                log::info!("[client {}] Connecting to websocket", self.client_id);
             }
             state.connected = true;
         }
@@ -124,17 +142,17 @@ impl ClientSession {
                         Some(data) => match data {
                             Ok(data) => data.into_data(),
                             Err(e) => {
-                                log::error!("Failed to read data from websocket: {}", e);
+                                log::error!("[client {}] Failed to read data from websocket: {}", self.client_id, e);
                                 break;
                             }
                         },
                         None => {
-                            log::info!("No data from websocket; closing");
+                            log::info!("[client {}] No data from websocket; closing", self.client_id);
                             break;
                         }
                     };
                     if data.is_empty() {
-                        log::info!("Empty message from websocket; closing");
+                        log::info!("[client {}] Empty message from websocket; closing", self.client_id);
                         break;
                     }
                     self.handle_ws_message(data).await;
@@ -154,6 +172,10 @@ impl ClientSession {
                             log::error!("Failed to receive websocket message: {}", e);
                         }
                     }
+                },
+                _ = self.disconnect.listen() => {
+                    log::info!("[client {}] Disconnecting", self.client_id);
+                    break;
                 }
             }
         }

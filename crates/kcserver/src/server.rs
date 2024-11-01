@@ -26,7 +26,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
-use std::{any, env};
+use std::{any, env, usize};
 use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Authorization, Push};
@@ -734,21 +734,22 @@ where
         let client_sessions: Arc<RwLock<Vec<ClientSession>>> = self.client_sessions.clone();
         {
             // Check if the session already exists
-            let client_sessions = client_sessions.read().unwrap();
-            if client_sessions
+            let mut client_sessions = client_sessions.write().unwrap();
+            let index = client_sessions
                 .iter()
-                .find(|s| s.connection.session_id == session_id)
-                .is_some()
-            {
-                let err = KSError::SessionConnected(session_id.clone());
-                err.log();
-
-                // Serialize the error to JSON
-                let err = err.to_json(None);
-                let err = serde_json::to_string(&err).unwrap();
-                let mut response = Response::new(err.into());
-                *response.status_mut() = StatusCode::BAD_REQUEST;
-                return Ok(response);
+                .position(|s| s.connection.session_id == session_id);
+            match index {
+                Some(pos) => {
+                    let session = client_sessions.get(pos).unwrap();
+                    // Disconnect the existing session
+                    log::debug!("Disconnecting existing client session for '{}'", session_id);
+                    session.disconnect.notify(usize::MAX);
+                    // Remove the existing session
+                    client_sessions.remove(pos);
+                }
+                None => {
+                    log::trace!("No existing client session found for '{}'", session_id);
+                }
             }
         }
 
@@ -771,6 +772,12 @@ where
                         let state = session.state.clone();
                         ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
                     };
+
+                    // Add it to the list of client sessions
+                    {
+                        let mut client_sessions = client_sessions.write().unwrap();
+                        client_sessions.push(client_session.clone());
+                    }
 
                     log::debug!(
                         "Connection upgraded to websocket for session '{}'",
