@@ -5,6 +5,7 @@
 //
 //
 
+use std::sync::atomic;
 use std::sync::Arc;
 
 use async_channel::Receiver;
@@ -24,10 +25,14 @@ use crate::kernel_state::KernelState;
 
 pub struct ClientSession {
     pub connection: KernelConnection,
+    pub client_id: String,
     ws_json_rx: Receiver<WebsocketMessage>,
     ws_zmq_tx: Sender<JupyterMessage>,
     state: Arc<RwLock<KernelState>>,
 }
+
+// A client session counter
+static mut SESSION_COUNTER: atomic::AtomicU32 = atomic::AtomicU32::new(0);
 
 impl ClientSession {
     pub fn new(
@@ -36,10 +41,17 @@ impl ClientSession {
         ws_zmq_tx: Sender<JupyterMessage>,
         state: Arc<RwLock<KernelState>>,
     ) -> Self {
+        // Derive a unique client ID for this connection by combining the
+        // session ID and a counter
+        #[allow(unsafe_code)]
+        let session_id = format!("{}-{}", connection.session_id.clone(), unsafe {
+            SESSION_COUNTER.fetch_add(1, atomic::Ordering::SeqCst)
+        });
         Self {
             connection,
             ws_json_rx,
             ws_zmq_tx,
+            client_id: session_id,
             state,
         }
     }
@@ -71,8 +83,8 @@ impl ClientSession {
 
         // Log the message ID and type
         log::info!(
-            "[session {}] Got message {} of type {}; sending to Jupyter socket {:?}",
-            self.connection.session_id,
+            "[client {}] Got message {} of type {}; sending to Jupyter socket {:?}",
+            self.client_id,
             channel_message.header.msg_id.clone(),
             channel_message.header.msg_type.clone(),
             channel_message.channel
@@ -97,8 +109,8 @@ impl ClientSession {
             // already-connected session.
             if state.connected {
                 log::warn!(
-                    "[session {}] Received connection request for already-connected session.",
-                    self.connection.session_id
+                    "[client {}] Received connection request for already-connected session.",
+                    self.client_id
                 );
             }
             state.connected = true;
