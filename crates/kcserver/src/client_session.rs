@@ -72,22 +72,14 @@ impl ClientSession {
         }
     }
 
-    async fn handle_ws_message(&self, data: Vec<u8>) {
+    async fn handle_ws_message(&self, data: String) {
         // parse the message into a JupyterMessage
-        let channel_message = serde_json::from_slice::<JupyterMessage>(&data);
+        let channel_message = serde_json::from_str::<JupyterMessage>(&data);
 
         // if the message is not a Jupyter message, log an error and return
         let channel_message = match channel_message {
             Ok(channel_message) => channel_message,
             Err(e) => {
-                // Convert the vector to a string for logging
-                let data = match String::from_utf8(data) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        log::error!("Failed to convert message to string: {}", e);
-                        return;
-                    }
-                };
                 log::error!(
                     "Failed to parse Jupyter message: {}. Raw message: {:?}",
                     e,
@@ -134,13 +126,20 @@ impl ClientSession {
             state.connected = true;
         }
 
+        // Interval timer for client pings
+        let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(10));
+
+        // Ping counters
+        let mut ping_outbound: u64 = 0;
+        let mut pong_inbound: u64 = 0;
+
         // Loop to handle messages from the websocket and the ZMQ channel
         loop {
             select! {
                 from_socket = ws_stream.next() => {
-                    let data = match from_socket {
-                        Some(data) => match data {
-                            Ok(data) => data.into_data(),
+                    let message = match from_socket {
+                        Some(out) => match out {
+                            Ok(m) => m,
                             Err(e) => {
                                 log::error!("[client {}] Failed to read data from websocket: {}", self.client_id, e);
                                 break;
@@ -151,11 +150,49 @@ impl ClientSession {
                             break;
                         }
                     };
-                    if data.is_empty() {
-                        log::info!("[client {}] Empty message from websocket; closing", self.client_id);
-                        break;
+                    match message {
+                        Message::Text(data) => {
+                            if data.is_empty() {
+                                log::info!("[client {}] Empty message from websocket; closing", self.client_id);
+                                break;
+                            }
+                            self.handle_ws_message(data).await;
+                        },
+                        Message::Ping(data) => {
+                            // Tungstenite should handle the pong response, so
+                            // we just log the ping
+                            log::trace!("[client {}] Got ping from websocket ({} bytes)", self.client_id, data.len());
+                        },
+                        Message::Pong(data) => {
+                            // Sanity check data size
+                            if data.len() != 8 {
+                                log::warn!("[client {}] Got pong with invalid data size ({} bytes); ignoring", self.client_id, data.len());
+                                continue;
+                            }
+
+                            // Log the pong and update the counter
+                            let last_pong = pong_inbound;
+                            pong_inbound = u64::from_be_bytes(data.as_slice().try_into().unwrap());
+
+                            // We expect the pong to be one more than the last pong
+                            if pong_inbound != last_pong + 1 {
+                                log::warn!("[client {}] Got pong {} from websocket; expected {}", self.client_id, pong_inbound, last_pong + 1);
+                            }
+
+                            log::trace!("[client {}] Got pong {} from websocket", self.client_id, pong_inbound);
+                        },
+                        Message::Binary(data) => {
+                            // Ignore binary messages for now
+                            log::warn!("[client {}] Got binary message from websocket ({} bytes); ignoring", self.client_id, data.len());
+                        },
+                        Message::Frame(_) => {
+                            // Ignore frame messages; these are not received by socket reads.
+                        },
+                        Message::Close(_) => {
+                            log::info!("[client {}] Websocket closed by client", self.client_id);
+                            break;
+                        },
                     }
-                    self.handle_ws_message(data).await;
                 },
                 json = self.ws_json_rx.recv() => {
                     match json {
@@ -170,6 +207,27 @@ impl ClientSession {
                         },
                         Err(e) => {
                             log::error!("Failed to receive websocket message: {}", e);
+                        }
+                    }
+                },
+                _ = tick.tick() => {
+                    // Check to see how far behind the pong counter is
+                    let diff = ping_outbound - pong_inbound;
+                    if diff > 3 {
+                        log::warn!("[client {}] Lost connection with client; websocket pong counter is behind by {} pings", self.client_id, diff);
+                        break;
+                    }
+
+                    // Send a ping
+                    ping_outbound += 1;
+                    let ping_data = ping_outbound.to_be_bytes().to_vec();
+                    match ws_stream.send(Message::Ping(ping_data)).await {
+                        Ok(_) => {
+                            log::trace!("[client {}] Ping {} / Pong {}", self.client_id, ping_outbound, pong_inbound);
+                        }
+                        Err(e) => {
+                            log::error!("[client {}] Failed to send ping to websocket: {}", self.client_id, e);
+                            break;
                         }
                     }
                 },
