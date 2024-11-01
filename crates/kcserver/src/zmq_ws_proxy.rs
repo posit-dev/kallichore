@@ -472,8 +472,26 @@ impl ZmqWsProxy {
         let message = WireMessage::from_zmq(self.session_id.clone(), channel, message);
 
         // (2) convert it into a Jupyter message; this can fail if the message is
-        // not a valid Jupyter message.
-        let message = message.to_jupyter(channel)?;
+        // not a valid Jupyter message, in which case we will discard it.
+        let message = match message.to_jupyter(channel) {
+            Ok(msg) => msg,
+            Err(e) => {
+                log::warn!(
+                    "[session {}] Discarding invalid message from 0MQ on '{:?}': {}",
+                    self.session_id,
+                    channel,
+                    e,
+                );
+                return Ok(());
+            }
+        };
+
+        log::debug!(
+            "[session {}] Forward from '{:?}' to WebSocket: {}",
+            self.session_id,
+            channel,
+            message.header.msg_type
+        );
 
         let jupyter = JupyterMsg::from(message.clone());
         match jupyter {

@@ -92,6 +92,15 @@ impl ClientSession {
         // Mark the session as connected
         {
             let mut state = self.state.write().await;
+
+            // We should never receive a connection request for an
+            // already-connected session.
+            if state.connected {
+                log::warn!(
+                    "[session {}] Received connection request for already-connected session.",
+                    self.connection.session_id
+                );
+            }
             state.connected = true;
         }
 
@@ -108,10 +117,14 @@ impl ClientSession {
                             }
                         },
                         None => {
-                            log::error!("No data from websocket");
+                            log::info!("No data from websocket; closing");
                             break;
                         }
                     };
+                    if data.is_empty() {
+                        log::info!("Empty message from websocket; closing");
+                        break;
+                    }
                     self.handle_ws_message(data).await;
                 },
                 json = self.ws_json_rx.recv() => {
@@ -126,7 +139,7 @@ impl ClientSession {
                             }
                         },
                         Err(e) => {
-                            log::error!("Failed to receive message from websocket: {}", e);
+                            log::error!("Failed to receive websocket message: {}", e);
                         }
                     }
                 }
