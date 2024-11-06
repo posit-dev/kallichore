@@ -59,7 +59,7 @@ jobs:
                   popd
 
             - name: Upload archive
-              uses: actions/upload-artifact@v3
+              uses: actions/upload-artifact@v4
               with:
                   name: kallichore-${{ matrix.flavor }}-linux-${{ matrix.arch }}-archive
                   path: kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-${{ matrix.arch }}.zip

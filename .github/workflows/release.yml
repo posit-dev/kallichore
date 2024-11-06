@@ -133,7 +133,7 @@ jobs:
 
             # Create build artifact
             - name: Upload client archive
-              uses: actions/upload-artifact@v3
+              uses: actions/upload-artifact@v4
               with:
                   name: kallichore-${{ matrix.flavor }}-darwin-${{ matrix.arch }}-archive
                   path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-${{ matrix.arch }}.zip
@@ -179,7 +179,7 @@ jobs:
                   Compress-Archive @params
 
             - name: Upload client archive
-              uses: actions/upload-artifact@v3
+              uses: actions/upload-artifact@v4
               with:
                   name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-archive
                   path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip
@@ -229,22 +229,22 @@ jobs:
         steps:
             # Download all binaries
             - name: Download Kallichore for macOS arm64 server (${{ matrix.flavor }})
-              uses: actions/download-artifact@v3
+              uses: actions/download-artifact@v4
               with:
                   name: kallichore-${{ matrix.flavor }}-darwin-arm64-archive
 
             - name: Download Kallichore for macOS x64 (${{ matrix.flavor}})
-              uses: actions/download-artifact@v3
+              uses: actions/download-artifact@v4
               with:
                   name: kallichore-${{ matrix.flavor }}-darwin-x64-archive
 
             - name: Download Kallichore for Windows x64 (${{ matrix.flavor}})
-              uses: actions/download-artifact@v3
+              uses: actions/download-artifact@v4
               with:
                   name: kallichore-${{ matrix.flavor }}-windows-x64-archive
 
             - name: Download Kallichore for Linux x64 (${{ matrix.flavor}})
-              uses: actions/download-artifact@v3
+              uses: actions/download-artifact@v4
               with:
                   name: kallichore-${{ matrix.flavor }}-linux-x64-archive
 
