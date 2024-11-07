@@ -46,7 +46,7 @@ struct Args {
 
     /// The path to a log file. If specified, log output will be written to this
     /// file in addition to standard streams.
-    #[arg(short, long)]
+    #[arg(long)]
     log_file: Option<String>,
 
     /// The log level to use. Valid values are "trace", "debug", "info", "warn",
