@@ -16,7 +16,7 @@ use kallichore_api::models::{self, StartupError};
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_info::KernelInfoReply,
-    kernel_message::{KernelMessage, OutputStream, StatusUpdate},
+    kernel_message::{KernelMessage, OutputStream},
     websocket_message::WebsocketMessage,
 };
 use rand::Rng;
@@ -71,9 +71,6 @@ pub struct KernelSession {
     /// The channel to receive ZMQ messages from the kernel
     pub ws_zmq_rx: Receiver<JupyterMessage>,
 
-    /// The channel to receive status updates
-    pub status_rx: Receiver<StatusUpdate>,
-
     /// The exit event; fires when the kernel process exits
     pub exit_event: Arc<Event>,
 }
@@ -87,11 +84,10 @@ impl KernelSession {
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
-        let (status_tx, status_rx) = async_channel::unbounded::<StatusUpdate>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
             session.clone(),
             session.working_directory.clone(),
-            status_tx.clone(),
+            json_tx.clone(),
         )));
         let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
         let started = Utc::now();
@@ -103,7 +99,6 @@ impl KernelSession {
             ws_json_rx: json_rx,
             ws_zmq_tx: zmq_tx,
             ws_zmq_rx: zmq_rx,
-            status_rx,
             connection,
             started,
             exit_event: Arc::new(Event::new()),
@@ -465,7 +460,7 @@ impl KernelSession {
             }
         }
 
-        // Spawn a task to wait for the kernel to exit; when it does, complete
+        // Spawn a task to wait for tho kernel to exit; when it does, complete
         // the restart by starting it again.
         log::debug!(
             "[session {}] Waiting for kernel to exit before restarting",
@@ -637,7 +632,7 @@ impl KernelSession {
             self.state.clone(),
             self.ws_json_tx.clone(),
             self.ws_zmq_rx.clone(),
-            self.status_rx.clone(),
+            self.exit_event.clone()
         );
 
         // Wait for either the proxy to connect or for the session to exit

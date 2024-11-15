@@ -7,7 +7,7 @@
 
 use async_channel::Sender;
 use kallichore_api::models;
-use kcshared::kernel_message::StatusUpdate;
+use kcshared::{kernel_message::{KernelMessage, StatusUpdate}, websocket_message::WebsocketMessage};
 
 use crate::execution_queue::ExecutionQueue;
 
@@ -51,8 +51,8 @@ pub struct KernelState {
     /// The time at which the kernel last became busy.
     pub busy_since: Option<std::time::Instant>,
 
-    /// A channel to publish status updates
-    ws_status_tx: Sender<StatusUpdate>,
+    /// A channel to publish status updates to the websocket
+    ws_json_tx: Sender<WebsocketMessage>,
 }
 
 impl KernelState {
@@ -60,7 +60,7 @@ impl KernelState {
     pub fn new(
         session: models::NewSession,
         working_directory: String,
-        ws_status_tx: Sender<StatusUpdate>,
+        ws_json_tx: Sender<WebsocketMessage>,
     ) -> Self {
         KernelState {
             session_id: session.session_id.clone(),
@@ -72,7 +72,7 @@ impl KernelState {
             execution_queue: ExecutionQueue::new(),
             input_prompt: session.input_prompt.clone(),
             continuation_prompt: session.continuation_prompt.clone(),
-            ws_status_tx,
+            ws_json_tx,
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,
         }
@@ -122,6 +122,8 @@ impl KernelState {
             status: self.status.clone(),
             reason,
         };
-        self.ws_status_tx.send(update).await.unwrap();
+
+        let status_message = WebsocketMessage::Kernel(KernelMessage::Status(update.clone()));
+        self.ws_json_tx.send(status_message).await.unwrap();
     }
 }

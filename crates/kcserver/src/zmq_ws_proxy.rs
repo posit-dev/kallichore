@@ -8,10 +8,11 @@
 use std::{str::FromStr, sync::Arc};
 
 use async_channel::{Receiver, Sender};
+use event_listener::Event;
 use kallichore_api::models;
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
-    kernel_message::{KernelMessage, StatusUpdate},
+    kernel_message::KernelMessage,
     websocket_message::WebsocketMessage,
 };
 use tokio::{select, sync::RwLock};
@@ -42,7 +43,7 @@ pub struct ZmqWsProxy {
     pub closed: bool,
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
-    pub status_rx: Receiver<StatusUpdate>,
+    pub exit_event: Arc<Event>,
     pub state: Arc<RwLock<KernelState>>,
 }
 
@@ -60,13 +61,15 @@ impl ZmqWsProxy {
     /// - `state`: The current state of the kernel
     /// - `ws_json_tx`: A channel to send JSON messages to the WebSocket
     /// - `ws_zmq_rx`: A channel to receive messages from the WebSocket
+    /// - `exit_event`: An event listener that notifies the proxy when the
+    ///    kernel has exited
     pub fn new(
         connection_file: ConnectionFile,
         connection: KernelConnection,
         state: Arc<RwLock<KernelState>>,
         ws_json_tx: Sender<WebsocketMessage>,
         ws_zmq_rx: Receiver<JupyterMessage>,
-        status_rx: Receiver<StatusUpdate>,
+        exit_event: Arc<Event>,
     ) -> Self {
         let session_id = connection.session_id.clone();
         let hb_address = format!("tcp://{}:{}", connection_file.ip, connection_file.hb_port);
@@ -87,7 +90,7 @@ impl ZmqWsProxy {
             connection,
             ws_json_tx,
             ws_zmq_rx,
-            status_rx,
+            exit_event,
             state,
             session_id: session_id.clone(),
             closed: false,
@@ -332,21 +335,9 @@ impl ZmqWsProxy {
                         },
                     }
                 },
-                status = self.status_rx.recv() => {
-                    match status {
-                        Ok(status) => {
-                            let status_message = WebsocketMessage::Kernel(KernelMessage::Status(status.clone()));
-                            self.ws_json_tx.send(status_message).await.unwrap();
-
-                            if status.status == models::Status::Exited {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("[session {}] Failed to receive status message: {}", session_id, e);
-                            break;
-                        }
-                    }
+                _ = self.exit_event.listen() => {
+                    // The kernel has exited; close the proxy
+                    break;
                 },
             };
         }
