@@ -263,6 +263,11 @@ impl KernelSession {
                     self.connection.session_id.clone(),
                     err
                 );
+                log::error!(
+                    "[session {}] Output before failure: \n{}",
+                    self.connection.session_id.clone(),
+                    output
+                );
                 Err(StartupError {
                     exit_code: Some(130),
                     output: Some(output),
@@ -273,9 +278,15 @@ impl KernelSession {
                 // This error is emitted when the process exits before it
                 // finishes starting.
                 log::error!(
-                    "[session {}] Startup failed; abnormal exit: {}",
+                    "[session {}] Startup failed; abnormal exit with code {}: {}",
                     self.connection.session_id.clone(),
+                    exit_code,
                     err
+                );
+                log::error!(
+                    "[session {}] Output before exit: \n{}",
+                    self.connection.session_id.clone(),
+                    output
                 );
                 Err(StartupError {
                     exit_code: Some(exit_code),
@@ -632,7 +643,7 @@ impl KernelSession {
             self.state.clone(),
             self.ws_json_tx.clone(),
             self.ws_zmq_rx.clone(),
-            self.exit_event.clone()
+            self.exit_event.clone(),
         );
 
         // Wait for either the proxy to connect or for the session to exit
