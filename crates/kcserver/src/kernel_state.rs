@@ -7,7 +7,10 @@
 
 use async_channel::Sender;
 use kallichore_api::models;
-use kcshared::{kernel_message::{KernelMessage, StatusUpdate}, websocket_message::WebsocketMessage};
+use kcshared::{
+    kernel_message::{KernelMessage, StatusUpdate},
+    websocket_message::WebsocketMessage,
+};
 
 use crate::execution_queue::ExecutionQueue;
 
@@ -90,6 +93,12 @@ impl KernelState {
                 None => "".to_string(),
             }
         );
+
+        // If the status didn't change, don't perform any side effects or notify the client.
+        if self.status == status {
+            return;
+        }
+
         self.status = status;
 
         // When exiting ...
