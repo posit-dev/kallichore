@@ -15,6 +15,7 @@ use futures::StreamExt;
 use hyper::upgrade::Upgraded;
 use kcshared::jupyter_message::JupyterMessage;
 use kcshared::websocket_message::WebsocketMessage;
+use once_cell::sync::Lazy;
 use tokio::select;
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
@@ -47,7 +48,7 @@ pub struct ClientSession {
 }
 
 // An atomic counter for generating unique client IDs
-static mut SESSION_COUNTER: atomic::AtomicU32 = atomic::AtomicU32::new(0);
+static SESSION_COUNTER: Lazy<atomic::AtomicU32> = Lazy::new(|| atomic::AtomicU32::new(0));
 
 impl ClientSession {
     pub fn new(
@@ -59,9 +60,11 @@ impl ClientSession {
         // Derive a unique client ID for this connection by combining the
         // session ID and a counter
         #[allow(unsafe_code)]
-        let session_id = format!("{}-{}", connection.session_id.clone(), unsafe {
+        let session_id = format!(
+            "{}-{}",
+            connection.session_id.clone(),
             SESSION_COUNTER.fetch_add(1, atomic::Ordering::SeqCst)
-        });
+        );
         Self {
             connection,
             ws_json_rx,
