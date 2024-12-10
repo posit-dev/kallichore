@@ -672,11 +672,19 @@ impl KernelSession {
             }
         };
 
-        // Connect to the ZeroMQ sockets. Wait a maximum of 20 seconds for the
-        // connection to be established, or for the session to exit.
-        //
-        // CONSIDER: Should we make this timeout configurable?
-        match tokio::time::timeout(std::time::Duration::new(20, 0), connect_or_exit).await {
+        // Read the timeout from the model, defaulting to 30 seconds
+        let connection_timeout = match self.model.connection_timeout {
+            Some(timeout) => timeout as u64,
+            None => 30,
+        };
+
+        // Wait for the proxy to connect or for the session to exit
+        match tokio::time::timeout(
+            std::time::Duration::new(connection_timeout, 0),
+            connect_or_exit,
+        )
+        .await
+        {
             Ok(Ok(())) => {
                 // Get the kernel info from the shell channel
                 let kernel_info = proxy.get_kernel_info().await;
@@ -715,7 +723,7 @@ impl KernelSession {
             }
             Err(_) => {
                 // If the connection timed out, send an error status to the caller
-                let error = KSError::SessionConnectionTimeout(20);
+                let error = KSError::SessionConnectionTimeout(connection_timeout as u32);
                 error.log();
                 let output = self.consume_output_streams();
                 status_tx
