@@ -455,6 +455,7 @@ fn main() {
                 input_prompt: String::from("In> "),
                 continuation_prompt: String::from("..."),
                 working_directory: working_directory.to_string_lossy().to_string(),
+                connection_timeout: Some(30),
                 env,
                 interrupt_mode: models::InterruptMode::Message,
             };

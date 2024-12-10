@@ -433,6 +433,446 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+/// The session to adopt
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct AdoptedSession {
+    #[serde(rename = "session")]
+    pub session: models::NewSession,
+
+    #[serde(rename = "connection_info")]
+    pub connection_info: models::ConnectionInfo,
+}
+
+impl AdoptedSession {
+    #[allow(clippy::new_without_default)]
+    pub fn new(
+        session: models::NewSession,
+        connection_info: models::ConnectionInfo,
+    ) -> AdoptedSession {
+        AdoptedSession {
+            session,
+            connection_info,
+        }
+    }
+}
+
+/// Converts the AdoptedSession value to the Query Parameters representation (style=form, explode=false)
+/// specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde serializer
+impl std::string::ToString for AdoptedSession {
+    fn to_string(&self) -> String {
+        let params: Vec<Option<String>> = vec![
+            // Skipping session in query parameter serialization
+
+            // Skipping connection_info in query parameter serialization
+
+        ];
+
+        params.into_iter().flatten().collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a AdoptedSession value
+/// as specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for AdoptedSession {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub session: Vec<models::NewSession>,
+            pub connection_info: Vec<models::ConnectionInfo>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing AdoptedSession".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "session" => intermediate_rep.session.push(
+                        <models::NewSession as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "connection_info" => intermediate_rep.connection_info.push(
+                        <models::ConnectionInfo as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing AdoptedSession".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(AdoptedSession {
+            session: intermediate_rep
+                .session
+                .into_iter()
+                .next()
+                .ok_or_else(|| "session missing in AdoptedSession".to_string())?,
+            connection_info: intermediate_rep
+                .connection_info
+                .into_iter()
+                .next()
+                .ok_or_else(|| "connection_info missing in AdoptedSession".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<AdoptedSession> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<AdoptedSession>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<AdoptedSession>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for AdoptedSession - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<AdoptedSession> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <AdoptedSession as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into AdoptedSession - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+/// Connection information for an existing session
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ConnectionInfo {
+    /// The port for control messages
+    #[serde(rename = "control_port")]
+    pub control_port: i32,
+
+    /// The port for shell messages
+    #[serde(rename = "shell_port")]
+    pub shell_port: i32,
+
+    /// The port for stdin messages
+    #[serde(rename = "stdin_port")]
+    pub stdin_port: i32,
+
+    /// The port for heartbeat messages
+    #[serde(rename = "hb_port")]
+    pub hb_port: i32,
+
+    /// The port for IOPub messages
+    #[serde(rename = "iopub_port")]
+    pub iopub_port: i32,
+
+    /// The signature scheme for messages
+    #[serde(rename = "signature_scheme")]
+    pub signature_scheme: String,
+
+    /// The key for messages
+    #[serde(rename = "key")]
+    pub key: String,
+
+    /// The transport protocol
+    #[serde(rename = "transport")]
+    pub transport: String,
+
+    /// The IP address for the connection
+    #[serde(rename = "ip")]
+    pub ip: String,
+}
+
+impl ConnectionInfo {
+    #[allow(clippy::new_without_default)]
+    pub fn new(
+        control_port: i32,
+        shell_port: i32,
+        stdin_port: i32,
+        hb_port: i32,
+        iopub_port: i32,
+        signature_scheme: String,
+        key: String,
+        transport: String,
+        ip: String,
+    ) -> ConnectionInfo {
+        ConnectionInfo {
+            control_port,
+            shell_port,
+            stdin_port,
+            hb_port,
+            iopub_port,
+            signature_scheme,
+            key,
+            transport,
+            ip,
+        }
+    }
+}
+
+/// Converts the ConnectionInfo value to the Query Parameters representation (style=form, explode=false)
+/// specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde serializer
+impl std::string::ToString for ConnectionInfo {
+    fn to_string(&self) -> String {
+        let params: Vec<Option<String>> = vec![
+            Some("control_port".to_string()),
+            Some(self.control_port.to_string()),
+            Some("shell_port".to_string()),
+            Some(self.shell_port.to_string()),
+            Some("stdin_port".to_string()),
+            Some(self.stdin_port.to_string()),
+            Some("hb_port".to_string()),
+            Some(self.hb_port.to_string()),
+            Some("iopub_port".to_string()),
+            Some(self.iopub_port.to_string()),
+            Some("signature_scheme".to_string()),
+            Some(self.signature_scheme.to_string()),
+            Some("key".to_string()),
+            Some(self.key.to_string()),
+            Some("transport".to_string()),
+            Some(self.transport.to_string()),
+            Some("ip".to_string()),
+            Some(self.ip.to_string()),
+        ];
+
+        params.into_iter().flatten().collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ConnectionInfo value
+/// as specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ConnectionInfo {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub control_port: Vec<i32>,
+            pub shell_port: Vec<i32>,
+            pub stdin_port: Vec<i32>,
+            pub hb_port: Vec<i32>,
+            pub iopub_port: Vec<i32>,
+            pub signature_scheme: Vec<String>,
+            pub key: Vec<String>,
+            pub transport: Vec<String>,
+            pub ip: Vec<String>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ConnectionInfo".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "control_port" => intermediate_rep.control_port.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "shell_port" => intermediate_rep.shell_port.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "stdin_port" => intermediate_rep.stdin_port.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "hb_port" => intermediate_rep.hb_port.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "iopub_port" => intermediate_rep.iopub_port.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "signature_scheme" => intermediate_rep.signature_scheme.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "key" => intermediate_rep.key.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "transport" => intermediate_rep.transport.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "ip" => intermediate_rep.ip.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ConnectionInfo".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ConnectionInfo {
+            control_port: intermediate_rep
+                .control_port
+                .into_iter()
+                .next()
+                .ok_or_else(|| "control_port missing in ConnectionInfo".to_string())?,
+            shell_port: intermediate_rep
+                .shell_port
+                .into_iter()
+                .next()
+                .ok_or_else(|| "shell_port missing in ConnectionInfo".to_string())?,
+            stdin_port: intermediate_rep
+                .stdin_port
+                .into_iter()
+                .next()
+                .ok_or_else(|| "stdin_port missing in ConnectionInfo".to_string())?,
+            hb_port: intermediate_rep
+                .hb_port
+                .into_iter()
+                .next()
+                .ok_or_else(|| "hb_port missing in ConnectionInfo".to_string())?,
+            iopub_port: intermediate_rep
+                .iopub_port
+                .into_iter()
+                .next()
+                .ok_or_else(|| "iopub_port missing in ConnectionInfo".to_string())?,
+            signature_scheme: intermediate_rep
+                .signature_scheme
+                .into_iter()
+                .next()
+                .ok_or_else(|| "signature_scheme missing in ConnectionInfo".to_string())?,
+            key: intermediate_rep
+                .key
+                .into_iter()
+                .next()
+                .ok_or_else(|| "key missing in ConnectionInfo".to_string())?,
+            transport: intermediate_rep
+                .transport
+                .into_iter()
+                .next()
+                .ok_or_else(|| "transport missing in ConnectionInfo".to_string())?,
+            ip: intermediate_rep
+                .ip
+                .into_iter()
+                .next()
+                .ok_or_else(|| "ip missing in ConnectionInfo".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ConnectionInfo> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ConnectionInfo>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ConnectionInfo>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for ConnectionInfo - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<ConnectionInfo> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <ConnectionInfo as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into ConnectionInfo - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct Error {
@@ -842,6 +1282,11 @@ pub struct NewSession {
     #[serde(rename = "env")]
     pub env: std::collections::HashMap<String, String>,
 
+    /// The number of seconds to wait for a connection to the session's ZeroMQ sockets before timing out
+    #[serde(rename = "connection_timeout")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_timeout: Option<i32>,
+
     #[serde(rename = "interrupt_mode")]
     pub interrupt_mode: models::InterruptMode,
 }
@@ -870,6 +1315,7 @@ impl NewSession {
             argv,
             working_directory,
             env,
+            connection_timeout: Some(30),
             interrupt_mode,
         }
     }
@@ -904,7 +1350,13 @@ impl std::string::ToString for NewSession {
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
             // Skipping env in query parameter serialization
-
+            self.connection_timeout.as_ref().map(|connection_timeout| {
+                [
+                    "connection_timeout".to_string(),
+                    connection_timeout.to_string(),
+                ]
+                .join(",")
+            }),
             // Skipping interrupt_mode in query parameter serialization
         ];
 
@@ -932,6 +1384,7 @@ impl std::str::FromStr for NewSession {
             pub argv: Vec<Vec<String>>,
             pub working_directory: Vec<String>,
             pub env: Vec<std::collections::HashMap<String, String>>,
+            pub connection_timeout: Vec<i32>,
             pub interrupt_mode: Vec<models::InterruptMode>,
         }
 
@@ -994,6 +1447,10 @@ impl std::str::FromStr for NewSession {
                                 .to_string(),
                         )
                     }
+                    #[allow(clippy::redundant_clone)]
+                    "connection_timeout" => intermediate_rep.connection_timeout.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     #[allow(clippy::redundant_clone)]
                     "interrupt_mode" => intermediate_rep.interrupt_mode.push(
                         <models::InterruptMode as std::str::FromStr>::from_str(val)
@@ -1058,6 +1515,7 @@ impl std::str::FromStr for NewSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "env missing in NewSession".to_string())?,
+            connection_timeout: intermediate_rep.connection_timeout.into_iter().next(),
             interrupt_mode: intermediate_rep
                 .interrupt_mode
                 .into_iter()

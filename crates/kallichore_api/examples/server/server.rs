@@ -100,9 +100,10 @@ impl<C> Server<C> {
 
 use kallichore_api::server::MakeService;
 use kallichore_api::{
-    Api, ChannelsWebsocketResponse, DeleteSessionResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
-    RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
+    AdoptSessionResponse, Api, ChannelsWebsocketResponse, DeleteSessionResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    NewSessionResponse, RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse,
+    StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -112,6 +113,20 @@ impl<C> Api<C> for Server<C>
 where
     C: Has<XSpanIdString> + Send + Sync,
 {
+    /// Adopt an existing session
+    async fn adopt_session(
+        &self,
+        adopted_session: models::AdoptedSession,
+        context: &C,
+    ) -> Result<AdoptSessionResponse, ApiError> {
+        info!(
+            "adopt_session({:?}) - X-Span-ID: {:?}",
+            adopted_session,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
+
     /// Upgrade to a WebSocket for channel communication
     async fn channels_websocket(
         &self,

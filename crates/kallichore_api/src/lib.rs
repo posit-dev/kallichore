@@ -31,6 +31,17 @@ pub const API_VERSION: &str = "1.0.0";
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum AdoptSessionResponse {
+    /// Session ID
+    SessionID(models::NewSession200Response),
+    /// Invalid request
+    InvalidRequest(models::Error),
+    /// Unauthorized
+    Unauthorized,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum ChannelsWebsocketResponse {
     /// Upgrade connection to a websocket
     UpgradeConnectionToAWebsocket,
@@ -166,6 +177,13 @@ pub trait Api<C: Send + Sync> {
         Poll::Ready(Ok(()))
     }
 
+    /// Adopt an existing session
+    async fn adopt_session(
+        &self,
+        adopted_session: models::AdoptedSession,
+        context: &C,
+    ) -> Result<AdoptSessionResponse, ApiError>;
+
     /// Upgrade to a WebSocket for channel communication
     async fn channels_websocket(
         &self,
@@ -253,6 +271,12 @@ pub trait ApiNoContext<C: Send + Sync> {
 
     fn context(&self) -> &C;
 
+    /// Adopt an existing session
+    async fn adopt_session(
+        &self,
+        adopted_session: models::AdoptedSession,
+    ) -> Result<AdoptSessionResponse, ApiError>;
+
     /// Upgrade to a WebSocket for channel communication
     async fn channels_websocket(
         &self,
@@ -329,6 +353,15 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
 
     fn context(&self) -> &C {
         ContextWrapper::context(self)
+    }
+
+    /// Adopt an existing session
+    async fn adopt_session(
+        &self,
+        adopted_session: models::AdoptedSession,
+    ) -> Result<AdoptSessionResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().adopt_session(adopted_session, &context).await
     }
 
     /// Upgrade to a WebSocket for channel communication

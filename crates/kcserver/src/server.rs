@@ -18,7 +18,7 @@ use hyper::service::Service;
 use hyper::upgrade::Upgraded;
 use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use kallichore_api::models::ServerStatus;
+use kallichore_api::models::{NewSession200Response, ServerStatus};
 use log::info;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -39,9 +39,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
-    models, ChannelsWebsocketResponse, DeleteSessionResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, NewSessionResponse, RestartSessionResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    models, AdoptSessionResponse, ChannelsWebsocketResponse, DeleteSessionResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, NewSessionResponse,
+    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 pub async fn create(addr: &str, token: Option<String>) {
@@ -251,7 +251,7 @@ where
         }
 
         let new_session_id = session.session_id.clone();
-        let session_id = models::NewSession200Response {
+        let session_id = NewSession200Response {
             session_id: new_session_id.clone(),
         };
         let args = session.argv.clone();
@@ -334,6 +334,7 @@ where
             username: session.username.clone(),
             env: session.env.clone(),
             interrupt_mode: session.interrupt_mode.clone(),
+            connection_timeout: session.connection_timeout.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
@@ -355,6 +356,18 @@ where
         let mut sessions = sessions.write().unwrap();
         sessions.push(kernel_session);
         Ok(NewSessionResponse::TheSessionID(session_id))
+    }
+
+    /// Adopt a session
+    async fn adopt_session(
+        &self,
+        adopted_session: models::AdoptedSession,
+        _context: &C,
+    ) -> Result<AdoptSessionResponse, ApiError> {
+        info!("adopt_session not yet implemented");
+        Ok(AdoptSessionResponse::SessionID(NewSession200Response {
+            session_id: adopted_session.session.session_id,
+        }))
     }
 
     /// Delete a session

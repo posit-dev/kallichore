@@ -47,6 +47,33 @@ paths:
           description: Unauthorized
       security: []
       summary: Create a new session
+  /sessions/adopt:
+    put:
+      operationId: adopt-session
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/adoptedSession'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/new_session_200_response'
+          description: Session ID
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Invalid request
+        "401":
+          content: {}
+          description: Unauthorized
+      security: []
+      summary: Adopt an existing session
   /sessions/{session_id}:
     delete:
       operationId: delete-session
@@ -324,6 +351,47 @@ components:
       - code
       - message
       type: object
+    connectionInfo:
+      description: Connection information for an existing session
+      properties:
+        control_port:
+          description: The port for control messages
+          type: integer
+        shell_port:
+          description: The port for shell messages
+          type: integer
+        stdin_port:
+          description: The port for stdin messages
+          type: integer
+        hb_port:
+          description: The port for heartbeat messages
+          type: integer
+        iopub_port:
+          description: The port for IOPub messages
+          type: integer
+        signature_scheme:
+          description: The signature scheme for messages
+          type: string
+        key:
+          description: The key for messages
+          type: string
+        transport:
+          description: The transport protocol
+          type: string
+        ip:
+          description: The IP address for the connection
+          type: string
+      required:
+      - control_port
+      - hb_port
+      - iopub_port
+      - ip
+      - key
+      - shell_port
+      - signature_scheme
+      - stdin_port
+      - transport
+      type: object
     startupError:
       example:
         output: output
@@ -395,6 +463,11 @@ components:
             type: string
           description: Environment variables to set for the session
           type: object
+        connection_timeout:
+          default: 30
+          description: The number of seconds to wait for a connection to the session's
+            ZeroMQ sockets before timing out
+          type: integer
         interrupt_mode:
           $ref: '#/components/schemas/interrupt_mode'
       required:
@@ -408,6 +481,17 @@ components:
       - session_id
       - username
       - working_directory
+      type: object
+    adoptedSession:
+      description: The session to adopt
+      properties:
+        session:
+          $ref: '#/components/schemas/newSession'
+        connection_info:
+          $ref: '#/components/schemas/connectionInfo'
+      required:
+      - connection_info
+      - session
       type: object
     execution_queue:
       description: The execution queue for a session

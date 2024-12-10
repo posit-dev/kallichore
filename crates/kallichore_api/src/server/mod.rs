@@ -29,9 +29,10 @@ pub use crate::context;
 type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
 
 use crate::{
-    Api, ChannelsWebsocketResponse, DeleteSessionResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
-    RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
+    AdoptSessionResponse, Api, ChannelsWebsocketResponse, DeleteSessionResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    NewSessionResponse, RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse,
+    StartSessionResponse,
 };
 
 mod paths {
@@ -40,6 +41,7 @@ mod paths {
     lazy_static! {
         pub static ref GLOBAL_REGEX_SET: regex::RegexSet = regex::RegexSet::new(vec![
             r"^/sessions$",
+            r"^/sessions/adopt$",
             r"^/sessions/(?P<session_id>[^/?#]*)$",
             r"^/sessions/(?P<session_id>[^/?#]*)/channels$",
             r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$",
@@ -52,50 +54,51 @@ mod paths {
         .expect("Unable to create global regex set");
     }
     pub(crate) static ID_SESSIONS: usize = 0;
-    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 1;
+    pub(crate) static ID_SESSIONS_ADOPT: usize = 1;
+    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 2;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 2;
+    pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 3;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_CHANNELS: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/channels$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CHANNELS");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 3;
+    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 4;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_INTERRUPT: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_INTERRUPT");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 4;
+    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 5;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_KILL: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/kill$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_KILL");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 5;
+    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 6;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_RESTART: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/restart$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_RESTART");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 6;
+    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 7;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_START: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/start$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_START");
     }
-    pub(crate) static ID_SHUTDOWN: usize = 7;
-    pub(crate) static ID_STATUS: usize = 8;
+    pub(crate) static ID_SHUTDOWN: usize = 8;
+    pub(crate) static ID_STATUS: usize = 9;
 }
 
 pub struct MakeService<T, C>
@@ -212,9 +215,110 @@ where
             let uri = request.uri().clone();
             let headers = request.headers().clone();
             // --- End Kallichore ---
+
             let path = paths::GLOBAL_REGEX_SET.matches(uri.path());
 
             match method {
+                // AdoptSession - PUT /sessions/adopt
+                hyper::Method::PUT if path.matched(paths::ID_SESSIONS_ADOPT) => {
+                    // --- Start Kallichore ---
+                    let body = request.into_body();
+                    // --- End Kallichore ---
+                    //
+                    // Body parameters (note that non-required body parameters will ignore garbage
+                    // values, rather than causing a 400 response). Produce warning header and logs for
+                    // any unused fields.
+                    let result = body.into_raw().await;
+                    match result {
+                            Ok(body) => {
+                                let mut unused_elements = Vec::new();
+                                let param_adopted_session: Option<models::AdoptedSession> = if !body.is_empty() {
+                                    let deserializer = &mut serde_json::Deserializer::from_slice(&body);
+                                    let handle_unknown_field = |path: serde_ignored::Path<'_>| {
+                                        warn!("Ignoring unknown field in body: {}", path);
+                                        unused_elements.push(path.to_string());
+                                    };
+                                    match serde_ignored::deserialize(deserializer, handle_unknown_field) {
+                                        Ok(param_adopted_session) => param_adopted_session,
+                                        Err(e) => return Ok(Response::builder()
+                                                        .status(StatusCode::BAD_REQUEST)
+                                                        .body(Body::from(format!("Couldn't parse body parameter AdoptedSession - doesn't match schema: {}", e)))
+                                                        .expect("Unable to create Bad Request response for invalid body parameter AdoptedSession due to schema")),
+                                    }
+                                } else {
+                                    None
+                                };
+                                let param_adopted_session = match param_adopted_session {
+                                    Some(param_adopted_session) => param_adopted_session,
+                                    None => return Ok(Response::builder()
+                                                        .status(StatusCode::BAD_REQUEST)
+                                                        .body(Body::from("Missing required body parameter AdoptedSession"))
+                                                        .expect("Unable to create Bad Request response for missing body parameter AdoptedSession")),
+                                };
+
+                                let result = api_impl.adopt_session(
+                                            param_adopted_session,
+                                        &context
+                                    ).await;
+                                let mut response = Response::new(Body::empty());
+                                response.headers_mut().insert(
+                                            HeaderName::from_static("x-span-id"),
+                                            HeaderValue::from_str((&context as &dyn Has<XSpanIdString>).get().0.clone().as_str())
+                                                .expect("Unable to create X-Span-ID header value"));
+
+                                        if !unused_elements.is_empty() {
+                                            response.headers_mut().insert(
+                                                HeaderName::from_static("warning"),
+                                                HeaderValue::from_str(format!("Ignoring unknown fields in body: {:?}", unused_elements).as_str())
+                                                    .expect("Unable to create Warning header value"));
+                                        }
+
+                                        match result {
+                                            Ok(rsp) => match rsp {
+                                                AdoptSessionResponse::SessionID
+                                                    (body)
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(200).expect("Unable to turn 200 into a StatusCode");
+                                                    response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for ADOPT_SESSION_SESSION_ID"));
+                                                    let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
+                                                    *response.body_mut() = Body::from(body_content);
+                                                },
+                                                AdoptSessionResponse::InvalidRequest
+                                                    (body)
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(400).expect("Unable to turn 400 into a StatusCode");
+                                                    response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for ADOPT_SESSION_INVALID_REQUEST"));
+                                                    let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
+                                                    *response.body_mut() = Body::from(body_content);
+                                                },
+                                                AdoptSessionResponse::Unauthorized
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(401).expect("Unable to turn 401 into a StatusCode");
+                                                },
+                                            },
+                                            Err(_) => {
+                                                // Application code returned an error. This should not happen, as the implementation should
+                                                // return a valid response.
+                                                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                                                *response.body_mut() = Body::from("An internal error occurred");
+                                            },
+                                        }
+
+                                        Ok(response)
+                            },
+                            Err(e) => Ok(Response::builder()
+                                                .status(StatusCode::BAD_REQUEST)
+                                                .body(Body::from(format!("Couldn't read body parameter AdoptedSession: {}", e)))
+                                                .expect("Unable to create Bad Request response due to unable to read body parameter AdoptedSession")),
+                        }
+                }
+
                 // ChannelsWebsocket - GET /sessions/{session_id}/channels
                 hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                     // Path parameters
@@ -254,6 +358,18 @@ where
                     let result = api_impl
                         .channels_websocket(param_session_id, &context)
                         .await;
+                    let mut response = Response::new(Body::empty());
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
 
                     match result {
                         Ok(rsp) => match rsp {
@@ -1035,6 +1151,7 @@ where
                 }
 
                 _ if path.matched(paths::ID_SESSIONS) => method_not_allowed(),
+                _ if path.matched(paths::ID_SESSIONS_ADOPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => method_not_allowed(),
@@ -1059,6 +1176,8 @@ impl<T> RequestParser<T> for ApiRequestParser {
     fn parse_operation_id(request: &Request<T>) -> Option<&'static str> {
         let path = paths::GLOBAL_REGEX_SET.matches(request.uri().path());
         match *request.method() {
+            // AdoptSession - PUT /sessions/adopt
+            hyper::Method::PUT if path.matched(paths::ID_SESSIONS_ADOPT) => Some("AdoptSession"),
             // ChannelsWebsocket - GET /sessions/{session_id}/channels
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                 Some("ChannelsWebsocket")
