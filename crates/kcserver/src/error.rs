@@ -18,7 +18,6 @@ use log::error;
 pub enum KSError {
     SessionExists(String),
     SessionNotFound(String),
-    SessionConnected(String),
     SessionRunning(String),
     SessionNotRunning(String),
     ProcessNotFound(u32, String),
@@ -41,9 +40,6 @@ impl fmt::Display for KSError {
         match self {
             KSError::SessionExists(session_id) => {
                 write!(f, "Session {} already exists", session_id)
-            }
-            KSError::SessionConnected(session_id) => {
-                write!(f, "Session {} is connected to another client", session_id)
             }
             KSError::SessionRunning(session_id) => {
                 write!(f, "Session {} is running", session_id)

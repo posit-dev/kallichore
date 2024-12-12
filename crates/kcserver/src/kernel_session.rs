@@ -73,9 +73,6 @@ pub struct KernelSession {
     /// The channel to receive ZMQ messages from the kernel
     pub ws_zmq_rx: Receiver<JupyterMessage>,
 
-    /// The channel to receive status updates
-    pub status_rx: Receiver<models::Status>,
-
     /// The exit event; fires when the kernel process exits
     pub exit_event: Arc<Event>,
 }
@@ -89,11 +86,10 @@ impl KernelSession {
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
-        let (status_tx, status_rx) = async_channel::unbounded::<models::Status>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
             session.clone(),
             session.working_directory.clone(),
-            status_tx.clone(),
+            json_tx.clone(),
         )));
         let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
         let started = Utc::now();
@@ -123,7 +119,6 @@ impl KernelSession {
             ws_json_rx: json_rx,
             ws_zmq_tx: zmq_tx,
             ws_zmq_rx: zmq_rx,
-            status_rx,
             connection,
             started,
             interrupt_event_handle,
@@ -143,7 +138,12 @@ impl KernelSession {
         // Mark the kernel as starting
         {
             let mut state = self.state.write().await;
-            state.set_status(models::Status::Starting).await;
+            state
+                .set_status(
+                    models::Status::Starting,
+                    Some(String::from("start API called")),
+                )
+                .await;
         }
 
         log::debug!(
@@ -258,7 +258,12 @@ impl KernelSession {
                 {
                     let mut state = self.state.write().await;
                     self.exit_event.notify(usize::MAX);
-                    state.set_status(models::Status::Exited).await;
+                    state
+                        .set_status(
+                            models::Status::Exited,
+                            Some(String::from("kernel start failed")),
+                        )
+                        .await;
                 }
                 let err = KSError::ProcessStartFailed(anyhow::anyhow!("{}", e));
                 return Err(StartupError {
@@ -327,6 +332,11 @@ impl KernelSession {
                     self.connection.session_id.clone(),
                     err
                 );
+                log::error!(
+                    "[session {}] Output before failure: \n{}",
+                    self.connection.session_id.clone(),
+                    output
+                );
                 Err(StartupError {
                     exit_code: Some(130),
                     output: Some(output),
@@ -337,9 +347,15 @@ impl KernelSession {
                 // This error is emitted when the process exits before it
                 // finishes starting.
                 log::error!(
-                    "[session {}] Startup failed; abnormal exit: {}",
+                    "[session {}] Startup failed; abnormal exit with code {}: {}",
                     self.connection.session_id.clone(),
+                    exit_code,
                     err
+                );
+                log::error!(
+                    "[session {}] Output before exit: \n{}",
+                    self.connection.session_id.clone(),
+                    output
                 );
                 Err(StartupError {
                     exit_code: Some(exit_code),
@@ -444,7 +460,12 @@ impl KernelSession {
         {
             // update the status of the session
             let mut state = self.state.write().await;
-            state.set_status(models::Status::Exited).await;
+            state
+                .set_status(
+                    models::Status::Exited,
+                    Some(String::from("child process exited")),
+                )
+                .await;
         }
 
         // Notify anyone listening that the kernel has exited
@@ -519,7 +540,7 @@ impl KernelSession {
             }
         }
 
-        // Spawn a task to wait for the kernel to exit; when it does, complete
+        // Spawn a task to wait for tho kernel to exit; when it does, complete
         // the restart by starting it again.
         log::debug!(
             "[session {}] Waiting for kernel to exit before restarting",
@@ -728,7 +749,7 @@ impl KernelSession {
             self.state.clone(),
             self.ws_json_tx.clone(),
             self.ws_zmq_rx.clone(),
-            self.status_rx.clone(),
+            self.exit_event.clone(),
         );
 
         // Wait for either the proxy to connect or for the session to exit
@@ -757,11 +778,19 @@ impl KernelSession {
             }
         };
 
-        // Connect to the ZeroMQ sockets. Wait a maximum of 20 seconds for the
-        // connection to be established, or for the session to exit.
-        //
-        // CONSIDER: Should we make this timeout configurable?
-        match tokio::time::timeout(std::time::Duration::new(20, 0), connect_or_exit).await {
+        // Read the timeout from the model, defaulting to 30 seconds
+        let connection_timeout = match self.model.connection_timeout {
+            Some(timeout) => timeout as u64,
+            None => 30,
+        };
+
+        // Wait for the proxy to connect or for the session to exit
+        match tokio::time::timeout(
+            std::time::Duration::new(connection_timeout, 0),
+            connect_or_exit,
+        )
+        .await
+        {
             Ok(Ok(())) => {
                 // Get the kernel info from the shell channel
                 let kernel_info = proxy.get_kernel_info().await;
@@ -800,7 +829,7 @@ impl KernelSession {
             }
             Err(_) => {
                 // If the connection timed out, send an error status to the caller
-                let error = KSError::SessionConnectionTimeout(20);
+                let error = KSError::SessionConnectionTimeout(connection_timeout as u32);
                 error.log();
                 let output = self.consume_output_streams();
                 status_tx

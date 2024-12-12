@@ -80,6 +80,59 @@
         }
       }
     },
+    "/sessions/adopt": {
+      "put": {
+        "operationId": "adopt-session",
+        "summary": "Adopt an existing session",
+        "security": [
+          "bearerAuth"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/adoptedSession"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "session_id": {
+                      "type": "string",
+                      "description": "A unique identifier for the session"
+                    }
+                  },
+                  "required": [
+                    "session_id"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          }
+        }
+      }
+    },
     "/sessions/{session_id}": {
       "get": {
         "operationId": "get-session",
@@ -487,6 +540,59 @@
           "message"
         ]
       },
+      "connectionInfo": {
+        "type": "object",
+        "description": "Connection information for an existing session",
+        "properties": {
+          "control_port": {
+            "type": "integer",
+            "description": "The port for control messages"
+          },
+          "shell_port": {
+            "type": "integer",
+            "description": "The port for shell messages"
+          },
+          "stdin_port": {
+            "type": "integer",
+            "description": "The port for stdin messages"
+          },
+          "hb_port": {
+            "type": "integer",
+            "description": "The port for heartbeat messages"
+          },
+          "iopub_port": {
+            "type": "integer",
+            "description": "The port for IOPub messages"
+          },
+          "signature_scheme": {
+            "type": "string",
+            "description": "The signature scheme for messages"
+          },
+          "key": {
+            "type": "string",
+            "description": "The key for messages"
+          },
+          "transport": {
+            "type": "string",
+            "description": "The transport protocol"
+          },
+          "ip": {
+            "type": "string",
+            "description": "The IP address for the connection"
+          }
+        },
+        "required": [
+          "control_port",
+          "hb_port",
+          "iopub_port",
+          "ip",
+          "key",
+          "shell_port",
+          "signature_scheme",
+          "stdin_port",
+          "transport"
+        ]
+      },
       "startupError": {
         "type": "object",
         "properties": {
@@ -572,6 +678,11 @@
               "type": "string"
             }
           },
+          "connection_timeout": {
+            "type": "integer",
+            "description": "The number of seconds to wait for a connection to the session's ZeroMQ sockets before timing out",
+            "default": 30
+          },
           "interrupt_mode": {
             "$ref": "#/components/schemas/interrupt_mode"
           }
@@ -587,6 +698,22 @@
           "session_id",
           "username",
           "working_directory"
+        ]
+      },
+      "adoptedSession": {
+        "type": "object",
+        "description": "The session to adopt",
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/newSession"
+          },
+          "connection_info": {
+            "$ref": "#/components/schemas/connectionInfo"
+          }
+        },
+        "required": [
+          "session",
+          "connection_info"
         ]
       },
       "execution_queue": {

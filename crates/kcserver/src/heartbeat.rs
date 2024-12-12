@@ -103,7 +103,12 @@ impl HeartbeatMonitor {
                             // CONSIDER: we don't actually know that the kernel
                             // is idle, just that it's back online. Should we
                             // instead cache the previous status and restore it?
-                            state.set_status(Status::Idle).await;
+                            state
+                                .set_status(
+                                    Status::Idle,
+                                    Some(String::from("heartbeat detected after offline")),
+                                )
+                                .await;
                         }
 
                         // If this is the first heartbeat, mark the kernel as
@@ -116,7 +121,12 @@ impl HeartbeatMonitor {
                             );
                             let mut state = state.write().await;
                             if state.status == Status::Starting {
-                                state.set_status(Status::Ready).await;
+                                state
+                                    .set_status(
+                                        Status::Ready,
+                                        Some(String::from("initial heartbeat received")),
+                                    )
+                                    .await;
                             }
                         }
                         response
@@ -152,7 +162,9 @@ impl HeartbeatMonitor {
                             "[session {}] No heartbeat response received after 5s, marking kernel as offline.", session_id
                         );
                         let mut state = state.write().await;
-                        state.set_status(Status::Offline).await;
+                        state
+                            .set_status(Status::Offline, Some(String::from("lost heartbeat")))
+                            .await;
                         break;
                     }
                 };

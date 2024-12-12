@@ -8,6 +8,7 @@
 use std::{str::FromStr, sync::Arc};
 
 use async_channel::{Receiver, Sender};
+use event_listener::Event;
 use kallichore_api::models;
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
@@ -42,7 +43,7 @@ pub struct ZmqWsProxy {
     pub closed: bool,
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
-    pub status_rx: Receiver<models::Status>,
+    pub exit_event: Arc<Event>,
     pub state: Arc<RwLock<KernelState>>,
 }
 
@@ -60,13 +61,15 @@ impl ZmqWsProxy {
     /// - `state`: The current state of the kernel
     /// - `ws_json_tx`: A channel to send JSON messages to the WebSocket
     /// - `ws_zmq_rx`: A channel to receive messages from the WebSocket
+    /// - `exit_event`: An event listener that notifies the proxy when the
+    ///    kernel has exited
     pub fn new(
         connection_file: ConnectionFile,
         connection: KernelConnection,
         state: Arc<RwLock<KernelState>>,
         ws_json_tx: Sender<WebsocketMessage>,
         ws_zmq_rx: Receiver<JupyterMessage>,
-        status_rx: Receiver<models::Status>,
+        exit_event: Arc<Event>,
     ) -> Self {
         let session_id = connection.session_id.clone();
         let hb_address = format!("tcp://{}:{}", connection_file.ip, connection_file.hb_port);
@@ -87,7 +90,7 @@ impl ZmqWsProxy {
             connection,
             ws_json_tx,
             ws_zmq_rx,
-            status_rx,
+            exit_event,
             state,
             session_id: session_id.clone(),
             closed: false,
@@ -332,21 +335,9 @@ impl ZmqWsProxy {
                         },
                     }
                 },
-                status = self.status_rx.recv() => {
-                    match status {
-                        Ok(status) => {
-                            let status_message = WebsocketMessage::Kernel(KernelMessage::Status(status.clone()));
-                            self.ws_json_tx.send(status_message).await.unwrap();
-
-                            if status == models::Status::Exited {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("[session {}] Failed to receive status message: {}", session_id, e);
-                            break;
-                        }
-                    }
+                _ = self.exit_event.listen() => {
+                    // The kernel has exited; close the proxy
+                    break;
                 },
             };
         }
@@ -472,8 +463,26 @@ impl ZmqWsProxy {
         let message = WireMessage::from_zmq(self.session_id.clone(), channel, message);
 
         // (2) convert it into a Jupyter message; this can fail if the message is
-        // not a valid Jupyter message.
-        let message = message.to_jupyter(channel)?;
+        // not a valid Jupyter message, in which case we will discard it.
+        let message = match message.to_jupyter(channel) {
+            Ok(msg) => msg,
+            Err(e) => {
+                log::warn!(
+                    "[session {}] Discarding invalid message from 0MQ on '{:?}': {}",
+                    self.session_id,
+                    channel,
+                    e,
+                );
+                return Ok(());
+            }
+        };
+
+        log::debug!(
+            "[session {}] Forward from '{:?}' to WebSocket: {}",
+            self.session_id,
+            channel,
+            message.header.msg_type
+        );
 
         let jupyter = JupyterMsg::from(message.clone());
         match jupyter {
@@ -481,12 +490,18 @@ impl ZmqWsProxy {
                 // Write the new status to the kernel state
                 let state = {
                     let mut state = self.state.write().await;
+                    // Deliver the status update with the parent message type's
+                    // name if known
+                    let reason = match message.parent_header {
+                        Some(ref parent) => Some(parent.msg_type.clone()),
+                        None => None,
+                    };
                     match status.execution_state {
                         ExecutionState::Busy => {
-                            state.set_status(models::Status::Busy).await;
+                            state.set_status(models::Status::Busy, reason).await;
                         }
                         ExecutionState::Idle => {
-                            state.set_status(models::Status::Idle).await;
+                            state.set_status(models::Status::Idle, reason).await;
                         }
                     };
                     status.execution_state

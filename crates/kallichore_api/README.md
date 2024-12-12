@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-10-11T14:40:01.239045-07:00[America/Los_Angeles]
+- Build date: 2024-12-10T08:29:19.810446-08:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -105,6 +105,7 @@ All URIs are relative to *http://localhost*
 
 Method | HTTP request | Description
 ------------- | ------------- | -------------
+[**adopt-session**](docs/default_api.md#adopt-session) | **PUT** /sessions/adopt | Adopt an existing session
 [**channels-websocket**](docs/default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
 [**delete-session**](docs/default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 [**get-session**](docs/default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
@@ -121,6 +122,8 @@ Method | HTTP request | Description
 ## Documentation For Models
 
  - [ActiveSession](docs/ActiveSession.md)
+ - [AdoptedSession](docs/AdoptedSession.md)
+ - [ConnectionInfo](docs/ConnectionInfo.md)
  - [Error](docs/Error.md)
  - [ExecutionQueue](docs/ExecutionQueue.md)
  - [InterruptMode](docs/InterruptMode.md)

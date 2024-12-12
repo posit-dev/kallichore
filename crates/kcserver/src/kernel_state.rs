@@ -7,6 +7,10 @@
 
 use async_channel::Sender;
 use kallichore_api::models;
+use kcshared::{
+    kernel_message::{KernelMessage, StatusUpdate},
+    websocket_message::WebsocketMessage,
+};
 
 use crate::execution_queue::ExecutionQueue;
 
@@ -50,8 +54,8 @@ pub struct KernelState {
     /// The time at which the kernel last became busy.
     pub busy_since: Option<std::time::Instant>,
 
-    /// A channel to publish status updates
-    ws_status_tx: Sender<models::Status>,
+    /// A channel to publish status updates to the websocket
+    ws_json_tx: Sender<WebsocketMessage>,
 }
 
 impl KernelState {
@@ -59,7 +63,7 @@ impl KernelState {
     pub fn new(
         session: models::NewSession,
         working_directory: String,
-        ws_status_tx: Sender<models::Status>,
+        ws_json_tx: Sender<WebsocketMessage>,
     ) -> Self {
         KernelState {
             session_id: session.session_id.clone(),
@@ -71,20 +75,30 @@ impl KernelState {
             execution_queue: ExecutionQueue::new(),
             input_prompt: session.input_prompt.clone(),
             continuation_prompt: session.continuation_prompt.clone(),
-            ws_status_tx,
+            ws_json_tx,
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,
         }
     }
 
     /// Set the kernel's status.
-    pub async fn set_status(&mut self, status: models::Status) {
+    pub async fn set_status(&mut self, status: models::Status, reason: Option<String>) {
         log::debug!(
-            "[session {}] status '{}' => '{}'",
+            "[session {}] status '{}' => '{}' {}",
             self.session_id,
             self.status,
-            status
+            status,
+            match reason {
+                Some(ref r) => format!("({})", r),
+                None => "".to_string(),
+            }
         );
+
+        // If the status didn't change, don't perform any side effects or notify the client.
+        if self.status == status {
+            return;
+        }
+
         self.status = status;
 
         // When exiting ...
@@ -113,6 +127,12 @@ impl KernelState {
         }
 
         // Publish the new status to the status stream (for internal use)
-        self.ws_status_tx.send(status.clone()).await.unwrap();
+        let update = StatusUpdate {
+            status: self.status.clone(),
+            reason,
+        };
+
+        let status_message = WebsocketMessage::Kernel(KernelMessage::Status(update.clone()));
+        self.ws_json_tx.send(status_message).await.unwrap();
     }
 }

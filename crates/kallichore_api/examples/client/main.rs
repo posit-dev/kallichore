@@ -5,10 +5,10 @@ use clap::{App, Arg};
 use futures::{future, stream, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{
-    models, Api, ApiNoContext, ChannelsWebsocketResponse, Client, ContextWrapperExt,
-    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
-    ListSessionsResponse, NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    models, AdoptSessionResponse, Api, ApiNoContext, ChannelsWebsocketResponse, Client,
+    ContextWrapperExt, DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
+    ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 #[allow(unused_imports)]
@@ -100,6 +100,14 @@ fn main() {
     let mut rt = tokio::runtime::Runtime::new().unwrap();
 
     match matches.value_of("operation") {
+        /* Disabled because there's no example.
+        Some("AdoptSession") => {
+            let result = rt.block_on(client.adopt_session(
+                  ???
+            ));
+            info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
+        },
+        */
         Some("ChannelsWebsocket") => {
             let result = rt.block_on(client.channels_websocket("session_id_example".to_string()));
             info!(

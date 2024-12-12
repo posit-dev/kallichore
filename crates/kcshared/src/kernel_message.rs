@@ -19,13 +19,24 @@ pub enum OutputStream {
     Stderr,
 }
 
+/// A status update from the kernel
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusUpdate {
+    /// The new status
+    pub status: models::Status,
+
+    /// The reason for the status change, if any
+    pub reason: Option<String>,
+}
+
 /// Messages that are sent from Kallichore to the client about the kernel
 /// itself. For messages bridging the Jupyter protocol, see `JupyterMessage`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum KernelMessage {
-    /// The kernel's status has changed
-    Status(models::Status),
+    /// The kernel's status has changed. The parameter is the new status,
+    /// followed (optionally) by the reason for the status change.
+    Status(StatusUpdate),
 
     /// The kernel process has emitted output. Most output gets emitted on
     /// iopub, so this is for output that escapes the standard stream capture or

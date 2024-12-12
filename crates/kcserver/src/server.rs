@@ -18,7 +18,7 @@ use hyper::service::Service;
 use hyper::upgrade::Upgraded;
 use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use kallichore_api::models::ServerStatus;
+use kallichore_api::models::{NewSession200Response, ServerStatus};
 use log::info;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -26,7 +26,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
-use std::{any, env};
+use std::{any, env, usize};
 use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Authorization, Push};
@@ -39,9 +39,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
-    models, ChannelsWebsocketResponse, DeleteSessionResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, NewSessionResponse, RestartSessionResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    models, AdoptSessionResponse, ChannelsWebsocketResponse, DeleteSessionResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, NewSessionResponse,
+    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 pub async fn create(addr: &str, token: Option<String>) {
@@ -251,7 +251,7 @@ where
         }
 
         let new_session_id = session.session_id.clone();
-        let session_id = models::NewSession200Response {
+        let session_id = NewSession200Response {
             session_id: new_session_id.clone(),
         };
         let args = session.argv.clone();
@@ -334,6 +334,7 @@ where
             username: session.username.clone(),
             env: session.env.clone(),
             interrupt_mode: session.interrupt_mode.clone(),
+            connection_timeout: session.connection_timeout.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
@@ -355,6 +356,18 @@ where
         let mut sessions = sessions.write().unwrap();
         sessions.push(kernel_session);
         Ok(NewSessionResponse::TheSessionID(session_id))
+    }
+
+    /// Adopt a session
+    async fn adopt_session(
+        &self,
+        adopted_session: models::AdoptedSession,
+        _context: &C,
+    ) -> Result<AdoptSessionResponse, ApiError> {
+        info!("adopt_session not yet implemented");
+        Ok(AdoptSessionResponse::SessionID(NewSession200Response {
+            session_id: adopted_session.session.session_id,
+        }))
     }
 
     /// Delete a session
@@ -734,21 +747,22 @@ where
         let client_sessions: Arc<RwLock<Vec<ClientSession>>> = self.client_sessions.clone();
         {
             // Check if the session already exists
-            let client_sessions = client_sessions.read().unwrap();
-            if client_sessions
+            let mut client_sessions = client_sessions.write().unwrap();
+            let index = client_sessions
                 .iter()
-                .find(|s| s.connection.session_id == session_id)
-                .is_some()
-            {
-                let err = KSError::SessionConnected(session_id.clone());
-                err.log();
-
-                // Serialize the error to JSON
-                let err = err.to_json(None);
-                let err = serde_json::to_string(&err).unwrap();
-                let mut response = Response::new(err.into());
-                *response.status_mut() = StatusCode::BAD_REQUEST;
-                return Ok(response);
+                .position(|s| s.connection.session_id == session_id);
+            match index {
+                Some(pos) => {
+                    let session = client_sessions.get(pos).unwrap();
+                    // Disconnect the existing session
+                    log::debug!("Disconnecting existing client session for '{}'", session_id);
+                    session.disconnect.notify(usize::MAX);
+                    // Remove the existing session
+                    client_sessions.remove(pos);
+                }
+                None => {
+                    log::trace!("No existing client session found for '{}'", session_id);
+                }
             }
         }
 
@@ -771,6 +785,12 @@ where
                         let state = session.state.clone();
                         ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
                     };
+
+                    // Add it to the list of client sessions
+                    {
+                        let mut client_sessions = client_sessions.write().unwrap();
+                        client_sessions.push(client_session.clone());
+                    }
 
                     log::debug!(
                         "Connection upgraded to websocket for session '{}'",

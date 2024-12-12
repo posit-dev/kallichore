@@ -4,6 +4,7 @@ All URIs are relative to *http://localhost*
 
 Method | HTTP request | Description
 ------------- | ------------- | -------------
+**adopt-session**](default_api.md#adopt-session) | **PUT** /sessions/adopt | Adopt an existing session
 **channels-websocket**](default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
 **delete-session**](default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
@@ -16,6 +17,31 @@ Method | HTTP request | Description
 **shutdown-server**](default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
 **start-session**](default_api.md#start-session) | **POST** /sessions/{session_id}/start | Start a session
 
+
+# **adopt-session**
+> models::NewSession200Response adopt-session(adopted_session)
+Adopt an existing session
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **adopted_session** | [**AdoptedSession**](AdoptedSession.md)|  | 
+
+### Return type
+
+[**models::NewSession200Response**](new_session_200_response.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: application/json
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 
 # **channels-websocket**
 > channels-websocket(session_id)
