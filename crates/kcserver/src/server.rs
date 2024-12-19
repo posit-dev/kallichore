@@ -72,7 +72,7 @@ pub struct Server<C> {
     started_time: std::time::Instant,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
-    reserved_ports: Arc<RwLock<Vec<u16>>>,
+    reserved_ports: Arc<RwLock<Vec<i32>>>,
 }
 
 impl<C> Server<C> {
@@ -362,11 +362,55 @@ where
     async fn adopt_session(
         &self,
         adopted_session: models::AdoptedSession,
-        _context: &C,
+        context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
-        info!("adopt_session not yet implemented");
+        let session = adopted_session.session;
+        {
+            let ctx_span: &dyn Has<XSpanIdString> = context;
+            info!(
+                "adopt_session(\"{}\") - X-Span-ID: {:?}",
+                session.session_id,
+                ctx_span.get().0.clone(),
+            );
+
+            // Token validation
+            if !self.validate_token(context) {
+                return Ok(AdoptSessionResponse::Unauthorized);
+            }
+
+            // Check to see if the session already exists, dropping the read
+            // lock afterwards.
+            let sessions = self.kernel_sessions.read().unwrap();
+            for s in sessions.iter() {
+                if s.connection.session_id == session.session_id {
+                    let error = KSError::SessionExists(session.session_id.clone());
+                    error.log();
+                    return Ok(AdoptSessionResponse::InvalidRequest(error.to_json(None)));
+                }
+            }
+        }
+
+        let sessions = self.kernel_sessions.clone();
+        let new_session_id = session.session_id.clone();
+        let connection_file = ConnectionFile::from_info(adopted_session.connection_info.clone());
+        let kernel_session =
+            match KernelSession::new(session, connection_file, self.reserved_ports.clone()) {
+                Ok(kernel_session) => kernel_session,
+                Err(e) => {
+                    let error = KSError::SessionCreateFailed(
+                        new_session_id.clone(),
+                        anyhow!("Kernel session couldn't be adopted: {}", e),
+                    );
+                    return Ok(AdoptSessionResponse::InvalidRequest(error.to_json(None)));
+                }
+            };
+
+        // Save the new session
+        let mut sessions = sessions.write().unwrap();
+        sessions.push(kernel_session);
+
         Ok(AdoptSessionResponse::SessionID(NewSession200Response {
-            session_id: adopted_session.session.session_id,
+            session_id: new_session_id,
         }))
     }
 

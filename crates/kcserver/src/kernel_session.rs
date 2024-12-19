@@ -54,7 +54,7 @@ pub struct KernelSession {
     pub state: Arc<RwLock<KernelState>>,
 
     /// The current set of reserved ports for all kernels
-    pub reserved_ports: Arc<std::sync::RwLock<Vec<u16>>>,
+    pub reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
 
     /// The date and time the kernel was started
     pub started: DateTime<Utc>,
@@ -80,7 +80,7 @@ impl KernelSession {
     pub fn new(
         session: models::NewSession,
         connection_file: ConnectionFile,
-        reserved_ports: Arc<std::sync::RwLock<Vec<u16>>>,
+        reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
@@ -89,7 +89,8 @@ impl KernelSession {
             session.working_directory.clone(),
             json_tx.clone(),
         )));
-        let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
+        let connection =
+            KernelConnection::from_session(&session, connection_file.info.key.clone())?;
         let started = Utc::now();
         let kernel_session = KernelSession {
             argv: session.argv.clone(),
@@ -748,11 +749,11 @@ impl KernelSession {
         // sockets are closed; release the reserved ports
         let mut reserved_ports = self.reserved_ports.write().unwrap();
         reserved_ports.retain(|&port| {
-            port != self.connection_file.control_port
-                && port != self.connection_file.shell_port
-                && port != self.connection_file.stdin_port
-                && port != self.connection_file.iopub_port
-                && port != self.connection_file.hb_port
+            port != self.connection_file.info.control_port
+                && port != self.connection_file.info.shell_port
+                && port != self.connection_file.info.stdin_port
+                && port != self.connection_file.info.iopub_port
+                && port != self.connection_file.info.hb_port
         });
         log::trace!(
             "Released reserved ports for session {}; there are now {} reserved ports",
