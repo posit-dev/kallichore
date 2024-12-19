@@ -637,6 +637,48 @@ impl KernelSession {
         });
     }
 
+    pub async fn connect(&self) -> Result<(), KSError> {
+        let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
+
+        let kernel = self.clone();
+        tokio::spawn(async move {
+            kernel.start_zmq_proxy(startup_tx).await;
+        });
+
+        let startup_result = startup_rx.recv().await;
+        let result = match startup_result {
+            Ok(StartupStatus::Connected(_kernel_info)) => {
+                log::trace!(
+                    "[session {}] Kernel sockets connected successfully, returning from start",
+                    self.connection.session_id.clone()
+                );
+                Ok(())
+            }
+            Ok(StartupStatus::ConnectionFailed(_, e)) => {
+                log::error!(
+                    "[session {}] Failed to connect to kernel: {}",
+                    self.connection.session_id.clone(),
+                    e
+                );
+                Err(e)
+            }
+            Err(e) => {
+                log::error!(
+                    "[session {}] Failed to connect to kernel: {}",
+                    self.connection.session_id.clone(),
+                    e
+                );
+                Err(KSError::StartFailed(anyhow::anyhow!("{}", e)))
+            }
+            _ => {
+                let e = KSError::StartFailed(anyhow::anyhow!("Failed to start kernel"));
+                e.log();
+                Err(e)
+            }
+        };
+        result
+    }
+
     pub async fn start_zmq_proxy(&self, status_tx: Sender<StartupStatus>) {
         let mut proxy = ZmqWsProxy::new(
             self.connection_file.clone(),
