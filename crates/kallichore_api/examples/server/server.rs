@@ -116,12 +116,14 @@ where
     /// Adopt an existing session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
         info!(
-            "adopt_session({:?}) - X-Span-ID: {:?}",
-            adopted_session,
+            "adopt_session(\"{}\", {:?}) - X-Span-ID: {:?}",
+            session_id,
+            connection_info,
             context.get().0.clone()
         );
         Err(ApiError("Generic failure".into()))

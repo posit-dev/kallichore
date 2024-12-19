@@ -394,11 +394,16 @@ where
 
     async fn adopt_session(
         &self,
-        param_adopted_session: models::AdoptedSession,
+        param_session_id: String,
+        param_connection_info: models::ConnectionInfo,
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
         let mut client_service = self.client_service.clone();
-        let mut uri = format!("{}/sessions/adopt", self.base_path);
+        let mut uri = format!(
+            "{}/sessions/{session_id}/adopt",
+            self.base_path,
+            session_id = utf8_percent_encode(&param_session_id.to_string(), ID_ENCODE_SET)
+        );
 
         // Query parameters
         let query_string = {
@@ -426,7 +431,7 @@ where
 
         // Body parameter
         let body =
-            serde_json::to_string(&param_adopted_session).expect("impossible to fail to serialize");
+            serde_json::to_string(&param_connection_info).expect("impossible to fail to serialize");
         *request.body_mut() = Body::from(body);
 
         let header = "application/json";
@@ -470,13 +475,12 @@ where
                     .await?;
                 let body = str::from_utf8(&body)
                     .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
-                let body =
-                    serde_json::from_str::<models::NewSession200Response>(body).map_err(|e| {
-                        ApiError(format!("Response body did not match the schema: {}", e))
-                    })?;
-                Ok(AdoptSessionResponse::SessionID(body))
+                let body = serde_json::from_str::<serde_json::Value>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(AdoptSessionResponse::Adopted(body))
             }
-            400 => {
+            500 => {
                 let body = response.into_body();
                 let body = body
                     .into_raw()
@@ -487,8 +491,9 @@ where
                 let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
-                Ok(AdoptSessionResponse::InvalidRequest(body))
+                Ok(AdoptSessionResponse::AdoptionFailed(body))
             }
+            404 => Ok(AdoptSessionResponse::SessionNotFound),
             401 => Ok(AdoptSessionResponse::Unauthorized),
             code => {
                 let headers = response.headers().clone();

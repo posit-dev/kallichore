@@ -32,10 +32,12 @@ pub const API_VERSION: &str = "1.0.0";
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub enum AdoptSessionResponse {
-    /// Session ID
-    SessionID(models::NewSession200Response),
-    /// Invalid request
-    InvalidRequest(models::Error),
+    /// Adopted
+    Adopted(serde_json::Value),
+    /// Adoption failed
+    AdoptionFailed(models::Error),
+    /// Session not found
+    SessionNotFound,
     /// Unauthorized
     Unauthorized,
 }
@@ -180,7 +182,8 @@ pub trait Api<C: Send + Sync> {
     /// Adopt an existing session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError>;
 
@@ -274,7 +277,8 @@ pub trait ApiNoContext<C: Send + Sync> {
     /// Adopt an existing session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
     ) -> Result<AdoptSessionResponse, ApiError>;
 
     /// Upgrade to a WebSocket for channel communication
@@ -358,10 +362,13 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     /// Adopt an existing session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
     ) -> Result<AdoptSessionResponse, ApiError> {
         let context = self.context().clone();
-        self.api().adopt_session(adopted_session, &context).await
+        self.api()
+            .adopt_session(session_id, connection_info, &context)
+            .await
     }
 
     /// Upgrade to a WebSocket for channel communication

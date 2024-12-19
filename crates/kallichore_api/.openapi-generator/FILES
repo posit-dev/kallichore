@@ -4,7 +4,6 @@ Cargo.toml
 README.md
 api/openapi.yaml
 docs/ActiveSession.md
-docs/AdoptedSession.md
 docs/ConnectionInfo.md
 docs/Error.md
 docs/ExecutionQueue.md

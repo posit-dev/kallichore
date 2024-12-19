@@ -20,6 +20,7 @@ use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use kallichore_api::models::{NewSession200Response, ServerStatus};
 use log::info;
+use serde_json::json;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -361,9 +362,11 @@ where
     /// Adopt a session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
-        context: &C,
+        _session_id: String,
+        _connection_info: models::ConnectionInfo,
+        _context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
+        /*
         let session = adopted_session.session;
         {
             let ctx_span: &dyn Has<XSpanIdString> = context;
@@ -424,6 +427,8 @@ where
         Ok(AdoptSessionResponse::SessionID(NewSession200Response {
             session_id: new_session_id,
         }))
+         */
+        Ok(AdoptSessionResponse::Adopted(json!({})))
     }
 
     /// Delete a session

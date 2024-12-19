@@ -103,6 +103,7 @@ fn main() {
         /* Disabled because there's no example.
         Some("AdoptSession") => {
             let result = rt.block_on(client.adopt_session(
+                  "session_id_example".to_string(),
                   ???
             ));
             info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());

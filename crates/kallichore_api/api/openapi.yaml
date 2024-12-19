@@ -47,33 +47,6 @@ paths:
           description: Unauthorized
       security: []
       summary: Create a new session
-  /sessions/adopt:
-    put:
-      operationId: adopt-session
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/adoptedSession'
-        required: true
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/new_session_200_response'
-          description: Session ID
-        "400":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/error'
-          description: Invalid request
-        "401":
-          content: {}
-          description: Unauthorized
-      security: []
-      summary: Adopt an existing session
   /sessions/{session_id}:
     delete:
       operationId: delete-session
@@ -230,6 +203,44 @@ paths:
           description: Session not found
       security: []
       summary: Force quit session
+  /sessions/{session_id}/adopt:
+    put:
+      operationId: adopt-session
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/connectionInfo'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Adopted
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Adoption failed
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
+        "401":
+          content: {}
+          description: Unauthorized
+      security: []
+      summary: Adopt an existing session
   /sessions/{session_id}/interrupt:
     post:
       operationId: interrupt-session
@@ -481,17 +492,6 @@ components:
       - session_id
       - username
       - working_directory
-      type: object
-    adoptedSession:
-      description: The session to adopt
-      properties:
-        session:
-          $ref: '#/components/schemas/newSession'
-        connection_info:
-          $ref: '#/components/schemas/connectionInfo'
-      required:
-      - connection_info
-      - session
       type: object
     execution_queue:
       description: The execution queue for a session

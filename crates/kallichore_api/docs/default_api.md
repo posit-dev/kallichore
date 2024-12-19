@@ -4,7 +4,7 @@ All URIs are relative to *http://localhost*
 
 Method | HTTP request | Description
 ------------- | ------------- | -------------
-**adopt-session**](default_api.md#adopt-session) | **PUT** /sessions/adopt | Adopt an existing session
+**adopt-session**](default_api.md#adopt-session) | **PUT** /sessions/{session_id}/adopt | Adopt an existing session
 **channels-websocket**](default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
 **delete-session**](default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
@@ -19,18 +19,19 @@ Method | HTTP request | Description
 
 
 # **adopt-session**
-> models::NewSession200Response adopt-session(adopted_session)
+> serde_json::Value adopt-session(session_id, connection_info)
 Adopt an existing session
 
 ### Required Parameters
 
 Name | Type | Description  | Notes
 ------------- | ------------- | ------------- | -------------
-  **adopted_session** | [**AdoptedSession**](AdoptedSession.md)|  | 
+  **session_id** | **String**|  | 
+  **connection_info** | [**ConnectionInfo**](ConnectionInfo.md)|  | 
 
 ### Return type
 
-[**models::NewSession200Response**](new_session_200_response.md)
+[**serde_json::Value**](AnyType.md)
 
 ### Authorization
 

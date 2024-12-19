@@ -41,8 +41,8 @@ mod paths {
     lazy_static! {
         pub static ref GLOBAL_REGEX_SET: regex::RegexSet = regex::RegexSet::new(vec![
             r"^/sessions$",
-            r"^/sessions/adopt$",
             r"^/sessions/(?P<session_id>[^/?#]*)$",
+            r"^/sessions/(?P<session_id>[^/?#]*)/adopt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/channels$",
             r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/kill$",
@@ -54,13 +54,19 @@ mod paths {
         .expect("Unable to create global regex set");
     }
     pub(crate) static ID_SESSIONS: usize = 0;
-    pub(crate) static ID_SESSIONS_ADOPT: usize = 1;
-    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 2;
+    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 1;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID");
+    }
+    pub(crate) static ID_SESSIONS_SESSION_ID_ADOPT: usize = 2;
+    lazy_static! {
+        pub static ref REGEX_SESSIONS_SESSION_ID_ADOPT: regex::Regex =
+            #[allow(clippy::invalid_regex)]
+            regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/adopt$")
+                .expect("Unable to create regex for SESSIONS_SESSION_ID_ADOPT");
     }
     pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 3;
     lazy_static! {
@@ -219,45 +225,68 @@ where
             let path = paths::GLOBAL_REGEX_SET.matches(uri.path());
 
             match method {
-                // AdoptSession - PUT /sessions/adopt
-                hyper::Method::PUT if path.matched(paths::ID_SESSIONS_ADOPT) => {
-                    // --- Start Kallichore ---
-                    let body = request.into_body();
-                    // --- End Kallichore ---
-                    //
+                // AdoptSession - PUT /sessions/{session_id}/adopt
+                hyper::Method::PUT if path.matched(paths::ID_SESSIONS_SESSION_ID_ADOPT) => {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_SESSIONS_SESSION_ID_ADOPT
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE SESSIONS_SESSION_ID_ADOPT in set but failed match against \"{}\"", path, paths::REGEX_SESSIONS_SESSION_ID_ADOPT.as_str())
+                    );
+
+                    let param_session_id = match percent_encoding::percent_decode(path_params["session_id"].as_bytes()).decode_utf8() {
+                    Ok(param_session_id) => match param_session_id.parse::<String>() {
+                        Ok(param_session_id) => param_session_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
                     // Body parameters (note that non-required body parameters will ignore garbage
                     // values, rather than causing a 400 response). Produce warning header and logs for
                     // any unused fields.
+                    // --- Start Kallichore ---
+                    let body = request.into_body();
+                    // --- End Kallichore ---
                     let result = body.into_raw().await;
                     match result {
                             Ok(body) => {
                                 let mut unused_elements = Vec::new();
-                                let param_adopted_session: Option<models::AdoptedSession> = if !body.is_empty() {
+                                let param_connection_info: Option<models::ConnectionInfo> = if !body.is_empty() {
                                     let deserializer = &mut serde_json::Deserializer::from_slice(&body);
                                     let handle_unknown_field = |path: serde_ignored::Path<'_>| {
                                         warn!("Ignoring unknown field in body: {}", path);
                                         unused_elements.push(path.to_string());
                                     };
                                     match serde_ignored::deserialize(deserializer, handle_unknown_field) {
-                                        Ok(param_adopted_session) => param_adopted_session,
+                                        Ok(param_connection_info) => param_connection_info,
                                         Err(e) => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from(format!("Couldn't parse body parameter AdoptedSession - doesn't match schema: {}", e)))
-                                                        .expect("Unable to create Bad Request response for invalid body parameter AdoptedSession due to schema")),
+                                                        .body(Body::from(format!("Couldn't parse body parameter ConnectionInfo - doesn't match schema: {}", e)))
+                                                        .expect("Unable to create Bad Request response for invalid body parameter ConnectionInfo due to schema")),
                                     }
                                 } else {
                                     None
                                 };
-                                let param_adopted_session = match param_adopted_session {
-                                    Some(param_adopted_session) => param_adopted_session,
+                                let param_connection_info = match param_connection_info {
+                                    Some(param_connection_info) => param_connection_info,
                                     None => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from("Missing required body parameter AdoptedSession"))
-                                                        .expect("Unable to create Bad Request response for missing body parameter AdoptedSession")),
+                                                        .body(Body::from("Missing required body parameter ConnectionInfo"))
+                                                        .expect("Unable to create Bad Request response for missing body parameter ConnectionInfo")),
                                 };
 
                                 let result = api_impl.adopt_session(
-                                            param_adopted_session,
+                                            param_session_id,
+                                            param_connection_info,
                                         &context
                                     ).await;
                                 let mut response = Response::new(Body::empty());
@@ -275,27 +304,31 @@ where
 
                                         match result {
                                             Ok(rsp) => match rsp {
-                                                AdoptSessionResponse::SessionID
+                                                AdoptSessionResponse::Adopted
                                                     (body)
                                                 => {
                                                     *response.status_mut() = StatusCode::from_u16(200).expect("Unable to turn 200 into a StatusCode");
                                                     response.headers_mut().insert(
                                                         CONTENT_TYPE,
                                                         HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for ADOPT_SESSION_SESSION_ID"));
+                                                            .expect("Unable to create Content-Type header for ADOPT_SESSION_ADOPTED"));
                                                     let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
                                                     *response.body_mut() = Body::from(body_content);
                                                 },
-                                                AdoptSessionResponse::InvalidRequest
+                                                AdoptSessionResponse::AdoptionFailed
                                                     (body)
                                                 => {
-                                                    *response.status_mut() = StatusCode::from_u16(400).expect("Unable to turn 400 into a StatusCode");
+                                                    *response.status_mut() = StatusCode::from_u16(500).expect("Unable to turn 500 into a StatusCode");
                                                     response.headers_mut().insert(
                                                         CONTENT_TYPE,
                                                         HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for ADOPT_SESSION_INVALID_REQUEST"));
+                                                            .expect("Unable to create Content-Type header for ADOPT_SESSION_ADOPTION_FAILED"));
                                                     let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
                                                     *response.body_mut() = Body::from(body_content);
+                                                },
+                                                AdoptSessionResponse::SessionNotFound
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(404).expect("Unable to turn 404 into a StatusCode");
                                                 },
                                                 AdoptSessionResponse::Unauthorized
                                                 => {
@@ -314,8 +347,8 @@ where
                             },
                             Err(e) => Ok(Response::builder()
                                                 .status(StatusCode::BAD_REQUEST)
-                                                .body(Body::from(format!("Couldn't read body parameter AdoptedSession: {}", e)))
-                                                .expect("Unable to create Bad Request response due to unable to read body parameter AdoptedSession")),
+                                                .body(Body::from(format!("Couldn't read body parameter ConnectionInfo: {}", e)))
+                                                .expect("Unable to create Bad Request response due to unable to read body parameter ConnectionInfo")),
                         }
                 }
 
@@ -1151,8 +1184,8 @@ where
                 }
 
                 _ if path.matched(paths::ID_SESSIONS) => method_not_allowed(),
-                _ if path.matched(paths::ID_SESSIONS_ADOPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID) => method_not_allowed(),
+                _ if path.matched(paths::ID_SESSIONS_SESSION_ID_ADOPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => method_not_allowed(),
@@ -1176,8 +1209,10 @@ impl<T> RequestParser<T> for ApiRequestParser {
     fn parse_operation_id(request: &Request<T>) -> Option<&'static str> {
         let path = paths::GLOBAL_REGEX_SET.matches(request.uri().path());
         match *request.method() {
-            // AdoptSession - PUT /sessions/adopt
-            hyper::Method::PUT if path.matched(paths::ID_SESSIONS_ADOPT) => Some("AdoptSession"),
+            // AdoptSession - PUT /sessions/{session_id}/adopt
+            hyper::Method::PUT if path.matched(paths::ID_SESSIONS_SESSION_ID_ADOPT) => {
+                Some("AdoptSession")
+            }
             // ChannelsWebsocket - GET /sessions/{session_id}/channels
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                 Some("ChannelsWebsocket")
