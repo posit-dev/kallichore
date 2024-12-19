@@ -405,9 +405,21 @@ where
                 }
             };
 
-        // Save the new session
-        let mut sessions = sessions.write().unwrap();
-        sessions.push(kernel_session);
+        // Attempt to connect to the new session
+        let result = kernel_session.connect().await;
+        match result {
+            Ok(_) => {}
+            Err(error) => {
+                error.log();
+                return Ok(AdoptSessionResponse::InvalidRequest(error.to_json(None)));
+            }
+        }
+
+        // Connected! Save the new session.
+        {
+            let mut sessions = sessions.write().unwrap();
+            sessions.push(kernel_session);
+        }
 
         Ok(AdoptSessionResponse::SessionID(NewSession200Response {
             session_id: new_session_id,
@@ -552,6 +564,8 @@ where
                 }
             }
             None => {
+                // This could happen if it's an adopted session (for which we don't have a process
+                // ID)
                 let err = KSError::NoProcess(session_id.clone());
                 err.log();
                 Ok(KillSessionResponse::KillFailed(err.to_json(None)))

@@ -637,26 +637,46 @@ impl KernelSession {
         });
     }
 
+    /**
+     * Connect to the kernel. This is only used when connecting to a kernel that is already running
+     * (i.e. when adopting a kernel).
+     */
     pub async fn connect(&self) -> Result<(), KSError> {
+        // Create a channel to receive startup status from the kernel.
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
+        // Attempt to start the ZeroMQ proxy.
         let kernel = self.clone();
         tokio::spawn(async move {
             kernel.start_zmq_proxy(startup_tx).await;
         });
 
+        // Wait for the proxy to connect
         let startup_result = startup_rx.recv().await;
         let result = match startup_result {
             Ok(StartupStatus::Connected(_kernel_info)) => {
                 log::trace!(
-                    "[session {}] Kernel sockets connected successfully, returning from start",
+                    "[session {}] Kernel sockets connected successfully; kernel successfully adopted",
                     self.connection.session_id.clone()
                 );
                 Ok(())
             }
-            Ok(StartupStatus::ConnectionFailed(_, e)) => {
+            Ok(StartupStatus::ConnectionFailed(_output, e)) => {
+                // Ignore the output; we can't capture output from an adopted kernel so it'll be
+                // empty
                 log::error!(
-                    "[session {}] Failed to connect to kernel: {}",
+                    "[session {}] Failed to connect to adopted kernel: {}",
+                    self.connection.session_id.clone(),
+                    e
+                );
+                Err(e)
+            }
+            Ok(StartupStatus::AbnormalExit(_, _, e)) => {
+                // We don't expect an adopted kernel to exit before connecting; in fact, we can't
+                // even detect it since we don't have the process ID, so this should be considered
+                // an error.
+                log::error!(
+                    "[session {}] Unexpected exit from adopted kernel: {}",
                     self.connection.session_id.clone(),
                     e
                 );
@@ -664,16 +684,11 @@ impl KernelSession {
             }
             Err(e) => {
                 log::error!(
-                    "[session {}] Failed to connect to kernel: {}",
+                    "[session {}] Failed to connect to adopted kernel: {}",
                     self.connection.session_id.clone(),
                     e
                 );
-                Err(KSError::StartFailed(anyhow::anyhow!("{}", e)))
-            }
-            _ => {
-                let e = KSError::StartFailed(anyhow::anyhow!("Failed to start kernel"));
-                e.log();
-                Err(e)
+                Err(KSError::SessionConnectionFailed(anyhow::anyhow!("{}", e)))
             }
         };
         result
