@@ -65,7 +65,7 @@ impl fmt::Display for KSError {
             KSError::SessionConnectionTimeout(seconds) => {
                 write!(
                     f,
-                    "Timed out waiting to session's ZeroMQ sockets after {} seconds",
+                    "Timed out waiting to connect to session's ZeroMQ sockets after {} seconds",
                     seconds
                 )
             }
