@@ -116,6 +116,16 @@ impl ZmqWsProxy {
             anyhow::bail!("Cannot connect; proxy is closed.");
         }
 
+        log::trace!(
+            "[session {}] Connecting to sockets on ip ${} (shell = {}, iopub = {}, control = {}, stdin = {})",
+            self.connection.session_id,
+            self.connection_file.info.ip,
+            self.connection_file.info.shell_port,
+            self.connection_file.info.iopub_port,
+            self.connection_file.info.control_port,
+            self.connection_file.info.stdin_port,
+        );
+
         self.shell_socket
             .as_mut()
             .unwrap()

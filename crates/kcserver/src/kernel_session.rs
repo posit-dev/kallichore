@@ -666,6 +666,10 @@ impl KernelSession {
         // Attempt to start the ZeroMQ proxy.
         let kernel = self.clone();
         tokio::spawn(async move {
+            log::trace!(
+                "[session {}] Starting ZeroMQ proxy for adopted kernel",
+                kernel.connection.session_id.clone()
+            );
             kernel.start_zmq_proxy(connection_file, startup_tx).await;
         });
 
