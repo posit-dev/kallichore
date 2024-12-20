@@ -362,73 +362,42 @@ where
     /// Adopt a session
     async fn adopt_session(
         &self,
-        _session_id: String,
-        _connection_info: models::ConnectionInfo,
-        _context: &C,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
+        context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
-        /*
-        let session = adopted_session.session;
-        {
-            let ctx_span: &dyn Has<XSpanIdString> = context;
-            info!(
-                "adopt_session(\"{}\") - X-Span-ID: {:?}",
-                session.session_id,
-                ctx_span.get().0.clone(),
-            );
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "adopt_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
 
-            // Token validation
-            if !self.validate_token(context) {
-                return Ok(AdoptSessionResponse::Unauthorized);
-            }
-
-            // Check to see if the session already exists, dropping the read
-            // lock afterwards.
-            let sessions = self.kernel_sessions.read().unwrap();
-            for s in sessions.iter() {
-                if s.connection.session_id == session.session_id {
-                    let error = KSError::SessionExists(session.session_id.clone());
-                    error.log();
-                    return Ok(AdoptSessionResponse::InvalidRequest(error.to_json(None)));
-                }
-            }
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(AdoptSessionResponse::Unauthorized);
         }
 
-        let sessions = self.kernel_sessions.clone();
-        let new_session_id = session.session_id.clone();
-        let connection_file = ConnectionFile::from_info(adopted_session.connection_info.clone());
-        let kernel_session =
-            match KernelSession::new(session, connection_file, self.reserved_ports.clone()) {
-                Ok(kernel_session) => kernel_session,
-                Err(e) => {
-                    let error = KSError::SessionCreateFailed(
-                        new_session_id.clone(),
-                        anyhow!("Kernel session couldn't be adopted: {}", e),
-                    );
-                    return Ok(AdoptSessionResponse::InvalidRequest(error.to_json(None)));
-                }
-            };
+        // Find the session with the given ID
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(AdoptSessionResponse::SessionNotFound);
+            }
+        };
+
+        // Create the connection file from the connection info
+        let connection_file = ConnectionFile::from_info(connection_info.clone());
 
         // Attempt to connect to the new session
-        let result = kernel_session.connect().await;
+        let result = kernel_session.connect(connection_file).await;
         match result {
-            Ok(_) => {}
+            Ok(v) => Ok(AdoptSessionResponse::Adopted(v)),
             Err(error) => {
                 error.log();
-                return Ok(AdoptSessionResponse::InvalidRequest(error.to_json(None)));
+                Ok(AdoptSessionResponse::AdoptionFailed(error.to_json(None)))
             }
         }
-
-        // Connected! Save the new session.
-        {
-            let mut sessions = sessions.write().unwrap();
-            sessions.push(kernel_session);
-        }
-
-        Ok(AdoptSessionResponse::SessionID(NewSession200Response {
-            session_id: new_session_id,
-        }))
-         */
-        Ok(AdoptSessionResponse::Adopted(json!({})))
     }
 
     /// Delete a session

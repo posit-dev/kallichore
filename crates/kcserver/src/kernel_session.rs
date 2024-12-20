@@ -232,9 +232,12 @@ impl KernelSession {
 
         // Spawn the ZeroMQ proxy thread
         let kernel = self.clone();
+        let connection_file = self.connection_file.clone();
         let startup_proxy_tx = startup_tx.clone();
         tokio::spawn(async move {
-            kernel.start_zmq_proxy(startup_proxy_tx).await;
+            kernel
+                .start_zmq_proxy(connection_file, startup_proxy_tx)
+                .await;
         });
 
         // Spawn a task to wait for the child process to exit
@@ -641,25 +644,28 @@ impl KernelSession {
      * Connect to the kernel. This is only used when connecting to a kernel that is already running
      * (i.e. when adopting a kernel).
      */
-    pub async fn connect(&self) -> Result<(), KSError> {
+    pub async fn connect(
+        &self,
+        connection_file: ConnectionFile,
+    ) -> Result<serde_json::Value, KSError> {
         // Create a channel to receive startup status from the kernel.
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
         // Attempt to start the ZeroMQ proxy.
         let kernel = self.clone();
         tokio::spawn(async move {
-            kernel.start_zmq_proxy(startup_tx).await;
+            kernel.start_zmq_proxy(connection_file, startup_tx).await;
         });
 
         // Wait for the proxy to connect
         let startup_result = startup_rx.recv().await;
         let result = match startup_result {
-            Ok(StartupStatus::Connected(_kernel_info)) => {
+            Ok(StartupStatus::Connected(kernel_info)) => {
                 log::trace!(
                     "[session {}] Kernel sockets connected successfully; kernel successfully adopted",
                     self.connection.session_id.clone()
                 );
-                Ok(())
+                Ok(kernel_info)
             }
             Ok(StartupStatus::ConnectionFailed(_output, e)) => {
                 // Ignore the output; we can't capture output from an adopted kernel so it'll be
@@ -694,9 +700,13 @@ impl KernelSession {
         result
     }
 
-    pub async fn start_zmq_proxy(&self, status_tx: Sender<StartupStatus>) {
+    pub async fn start_zmq_proxy(
+        &self,
+        connection_file: ConnectionFile,
+        status_tx: Sender<StartupStatus>,
+    ) {
         let mut proxy = ZmqWsProxy::new(
-            self.connection_file.clone(),
+            connection_file.clone(),
             self.connection.clone(),
             self.state.clone(),
             self.ws_json_tx.clone(),
@@ -806,11 +816,11 @@ impl KernelSession {
         // sockets are closed; release the reserved ports
         let mut reserved_ports = self.reserved_ports.write().unwrap();
         reserved_ports.retain(|&port| {
-            port != self.connection_file.info.control_port
-                && port != self.connection_file.info.shell_port
-                && port != self.connection_file.info.stdin_port
-                && port != self.connection_file.info.iopub_port
-                && port != self.connection_file.info.hb_port
+            port != connection_file.info.control_port
+                && port != connection_file.info.shell_port
+                && port != connection_file.info.stdin_port
+                && port != connection_file.info.iopub_port
+                && port != connection_file.info.hb_port
         });
         log::trace!(
             "Released reserved ports for session {}; there are now {} reserved ports",
