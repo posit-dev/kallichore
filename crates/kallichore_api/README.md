@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-12-10T08:29:19.810446-08:00[America/Los_Angeles]
+- Build date: 2024-12-19T16:20:32.173635-08:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -63,6 +63,7 @@ To run a client, follow one of the following simple steps:
 
 ```
 cargo run --example client ChannelsWebsocket
+cargo run --example client ConnectionInfo
 cargo run --example client DeleteSession
 cargo run --example client GetSession
 cargo run --example client InterruptSession
@@ -105,8 +106,9 @@ All URIs are relative to *http://localhost*
 
 Method | HTTP request | Description
 ------------- | ------------- | -------------
-[**adopt-session**](docs/default_api.md#adopt-session) | **PUT** /sessions/adopt | Adopt an existing session
+[**adopt-session**](docs/default_api.md#adopt-session) | **PUT** /sessions/{session_id}/adopt | Adopt an existing session
 [**channels-websocket**](docs/default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+[**connection-info**](docs/default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 [**delete-session**](docs/default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 [**get-session**](docs/default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
 [**interrupt-session**](docs/default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
@@ -122,7 +124,6 @@ Method | HTTP request | Description
 ## Documentation For Models
 
  - [ActiveSession](docs/ActiveSession.md)
- - [AdoptedSession](docs/AdoptedSession.md)
  - [ConnectionInfo](docs/ConnectionInfo.md)
  - [Error](docs/Error.md)
  - [ExecutionQueue](docs/ExecutionQueue.md)

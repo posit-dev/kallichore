@@ -20,6 +20,7 @@ use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use kallichore_api::models::{NewSession200Response, ServerStatus};
 use log::info;
+use serde_json::json;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -39,9 +40,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
-    models, AdoptSessionResponse, ChannelsWebsocketResponse, DeleteSessionResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, NewSessionResponse,
-    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
+    models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
+    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 pub async fn create(addr: &str, token: Option<String>) {
@@ -72,7 +73,7 @@ pub struct Server<C> {
     started_time: std::time::Instant,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
-    reserved_ports: Arc<RwLock<Vec<u16>>>,
+    reserved_ports: Arc<RwLock<Vec<i32>>>,
 }
 
 impl<C> Server<C> {
@@ -361,13 +362,42 @@ where
     /// Adopt a session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
-        _context: &C,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
+        context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
-        info!("adopt_session not yet implemented");
-        Ok(AdoptSessionResponse::SessionID(NewSession200Response {
-            session_id: adopted_session.session.session_id,
-        }))
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "adopt_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(AdoptSessionResponse::Unauthorized);
+        }
+
+        // Find the session with the given ID
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(AdoptSessionResponse::SessionNotFound);
+            }
+        };
+
+        // Create the connection file from the connection info
+        let connection_file = ConnectionFile::from_info(connection_info.clone());
+
+        // Attempt to connect to the new session
+        let result = kernel_session.connect(connection_file).await;
+        match result {
+            Ok(v) => Ok(AdoptSessionResponse::Adopted(v)),
+            Err(error) => {
+                error.log();
+                Ok(AdoptSessionResponse::AdoptionFailed(error.to_json(None)))
+            }
+        }
     }
 
     /// Delete a session
@@ -442,6 +472,37 @@ where
         Ok(ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket)
     }
 
+    async fn connection_info(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<ConnectionInfoResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "connection_info(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(ConnectionInfoResponse::Unauthorized);
+        }
+
+        // Get the kernel session with the given ID
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(ConnectionInfoResponse::SessionNotFound);
+            }
+        };
+
+        // Return the connection info
+        Ok(ConnectionInfoResponse::ConnectionInfo(
+            kernel_session.connection_file.info.clone(),
+        ))
+    }
+
     async fn kill_session(
         &self,
         session_id: String,
@@ -508,6 +569,8 @@ where
                 }
             }
             None => {
+                // This could happen if it's an adopted session (for which we don't have a process
+                // ID)
                 let err = KSError::NoProcess(session_id.clone());
                 err.log();
                 Ok(KillSessionResponse::KillFailed(err.to_json(None)))

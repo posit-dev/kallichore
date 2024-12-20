@@ -42,10 +42,10 @@ const FRAGMENT_ENCODE_SET: &AsciiSet = &percent_encoding::CONTROLS
 const ID_ENCODE_SET: &AsciiSet = &FRAGMENT_ENCODE_SET.add(b'|');
 
 use crate::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, DeleteSessionResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    NewSessionResponse, RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ConnectionInfoResponse,
+    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    ListSessionsResponse, NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 
 /// Convert input into a base path, e.g. "http://example:123". Also checks the scheme as it goes.
@@ -394,11 +394,16 @@ where
 
     async fn adopt_session(
         &self,
-        param_adopted_session: models::AdoptedSession,
+        param_session_id: String,
+        param_connection_info: models::ConnectionInfo,
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
         let mut client_service = self.client_service.clone();
-        let mut uri = format!("{}/sessions/adopt", self.base_path);
+        let mut uri = format!(
+            "{}/sessions/{session_id}/adopt",
+            self.base_path,
+            session_id = utf8_percent_encode(&param_session_id.to_string(), ID_ENCODE_SET)
+        );
 
         // Query parameters
         let query_string = {
@@ -426,7 +431,7 @@ where
 
         // Body parameter
         let body =
-            serde_json::to_string(&param_adopted_session).expect("impossible to fail to serialize");
+            serde_json::to_string(&param_connection_info).expect("impossible to fail to serialize");
         *request.body_mut() = Body::from(body);
 
         let header = "application/json";
@@ -470,13 +475,12 @@ where
                     .await?;
                 let body = str::from_utf8(&body)
                     .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
-                let body =
-                    serde_json::from_str::<models::NewSession200Response>(body).map_err(|e| {
-                        ApiError(format!("Response body did not match the schema: {}", e))
-                    })?;
-                Ok(AdoptSessionResponse::SessionID(body))
+                let body = serde_json::from_str::<serde_json::Value>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(AdoptSessionResponse::Adopted(body))
             }
-            400 => {
+            500 => {
                 let body = response.into_body();
                 let body = body
                     .into_raw()
@@ -487,8 +491,9 @@ where
                 let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
-                Ok(AdoptSessionResponse::InvalidRequest(body))
+                Ok(AdoptSessionResponse::AdoptionFailed(body))
             }
+            404 => Ok(AdoptSessionResponse::SessionNotFound),
             401 => Ok(AdoptSessionResponse::Unauthorized),
             code => {
                 let headers = response.headers().clone();
@@ -581,6 +586,109 @@ where
             }
             401 => Ok(ChannelsWebsocketResponse::Unauthorized),
             404 => Ok(ChannelsWebsocketResponse::SessionNotFound),
+            code => {
+                let headers = response.headers().clone();
+                let body = response.into_body().take(100).into_raw().await;
+                Err(ApiError(format!(
+                    "Unexpected response code {}:\n{:?}\n\n{}",
+                    code,
+                    headers,
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {:?}>", e),
+                        },
+                        Err(e) => format!("<Failed to read body: {}>", e),
+                    }
+                )))
+            }
+        }
+    }
+
+    async fn connection_info(
+        &self,
+        param_session_id: String,
+        context: &C,
+    ) -> Result<ConnectionInfoResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        let mut uri = format!(
+            "{}/sessions/{session_id}/connection_info",
+            self.base_path,
+            session_id = utf8_percent_encode(&param_session_id.to_string(), ID_ENCODE_SET)
+        );
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {}", err))),
+        };
+
+        let mut request = match Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {}", e))),
+        };
+
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {}",
+                        e
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {}", e)))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<models::ConnectionInfo>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(ConnectionInfoResponse::ConnectionInfo(body))
+            }
+            500 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(ConnectionInfoResponse::Failed(body))
+            }
+            401 => Ok(ConnectionInfoResponse::Unauthorized),
+            404 => Ok(ConnectionInfoResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;

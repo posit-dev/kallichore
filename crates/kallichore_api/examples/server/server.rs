@@ -100,10 +100,10 @@ impl<C> Server<C> {
 
 use kallichore_api::server::MakeService;
 use kallichore_api::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, DeleteSessionResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    NewSessionResponse, RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ConnectionInfoResponse,
+    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    ListSessionsResponse, NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -116,12 +116,14 @@ where
     /// Adopt an existing session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
         info!(
-            "adopt_session({:?}) - X-Span-ID: {:?}",
-            adopted_session,
+            "adopt_session(\"{}\", {:?}) - X-Span-ID: {:?}",
+            session_id,
+            connection_info,
             context.get().0.clone()
         );
         Err(ApiError("Generic failure".into()))
@@ -135,6 +137,20 @@ where
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         info!(
             "channels_websocket(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
+
+    /// Get Jupyter connection information for the session
+    async fn connection_info(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<ConnectionInfoResponse, ApiError> {
+        info!(
+            "connection_info(\"{}\") - X-Span-ID: {:?}",
             session_id,
             context.get().0.clone()
         );
