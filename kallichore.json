@@ -372,6 +372,56 @@
         }
       }
     },
+    "/sessions/{session_id}/connection_info": {
+      "get": {
+        "operationId": "connection-info",
+        "summary": "Get Jupyter connection information for the session",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connection Info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/connectionInfo"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
     "/sessions/{session_id}/interrupt": {
       "post": {
         "operationId": "interrupt-session",

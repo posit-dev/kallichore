@@ -40,9 +40,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
-    models, AdoptSessionResponse, ChannelsWebsocketResponse, DeleteSessionResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, NewSessionResponse,
-    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
+    models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
+    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 pub async fn create(addr: &str, token: Option<String>) {
@@ -470,6 +470,37 @@ where
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         info!("upgrade to websocket: {}", session_id);
         Ok(ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket)
+    }
+
+    async fn connection_info(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<ConnectionInfoResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "connection_info(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(ConnectionInfoResponse::Unauthorized);
+        }
+
+        // Get the kernel session with the given ID
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(ConnectionInfoResponse::SessionNotFound);
+            }
+        };
+
+        // Return the connection info
+        Ok(ConnectionInfoResponse::ConnectionInfo(
+            kernel_session.connection_file.info.clone(),
+        ))
     }
 
     async fn kill_session(

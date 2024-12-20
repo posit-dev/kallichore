@@ -29,10 +29,10 @@ pub use crate::context;
 type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
 
 use crate::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, DeleteSessionResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    NewSessionResponse, RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ConnectionInfoResponse,
+    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    ListSessionsResponse, NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 
 mod paths {
@@ -44,6 +44,7 @@ mod paths {
             r"^/sessions/(?P<session_id>[^/?#]*)$",
             r"^/sessions/(?P<session_id>[^/?#]*)/adopt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/channels$",
+            r"^/sessions/(?P<session_id>[^/?#]*)/connection_info$",
             r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/kill$",
             r"^/sessions/(?P<session_id>[^/?#]*)/restart$",
@@ -75,36 +76,43 @@ mod paths {
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/channels$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CHANNELS");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 4;
+    pub(crate) static ID_SESSIONS_SESSION_ID_CONNECTION_INFO: usize = 4;
+    lazy_static! {
+        pub static ref REGEX_SESSIONS_SESSION_ID_CONNECTION_INFO: regex::Regex =
+            #[allow(clippy::invalid_regex)]
+            regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/connection_info$")
+                .expect("Unable to create regex for SESSIONS_SESSION_ID_CONNECTION_INFO");
+    }
+    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 5;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_INTERRUPT: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_INTERRUPT");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 5;
+    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 6;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_KILL: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/kill$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_KILL");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 6;
+    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 7;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_RESTART: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/restart$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_RESTART");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 7;
+    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 8;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_START: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/start$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_START");
     }
-    pub(crate) static ID_SHUTDOWN: usize = 8;
-    pub(crate) static ID_STATUS: usize = 9;
+    pub(crate) static ID_SHUTDOWN: usize = 9;
+    pub(crate) static ID_STATUS: usize = 10;
 }
 
 pub struct MakeService<T, C>
@@ -437,6 +445,91 @@ where
                             *response.body_mut() = Body::from("An internal error occurred");
                         }
                     } */
+
+                    Ok(response)
+                }
+
+                // ConnectionInfo - GET /sessions/{session_id}/connection_info
+                hyper::Method::GET
+                    if path.matched(paths::ID_SESSIONS_SESSION_ID_CONNECTION_INFO) =>
+                {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_SESSIONS_SESSION_ID_CONNECTION_INFO
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE SESSIONS_SESSION_ID_CONNECTION_INFO in set but failed match against \"{}\"", path, paths::REGEX_SESSIONS_SESSION_ID_CONNECTION_INFO.as_str())
+                    );
+
+                    let param_session_id = match percent_encoding::percent_decode(path_params["session_id"].as_bytes()).decode_utf8() {
+                    Ok(param_session_id) => match param_session_id.parse::<String>() {
+                        Ok(param_session_id) => param_session_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
+                    let result = api_impl.connection_info(param_session_id, &context).await;
+                    let mut response = Response::new(Body::empty());
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            ConnectionInfoResponse::ConnectionInfo(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for CONNECTION_INFO_CONNECTION_INFO"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                            ConnectionInfoResponse::Failed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(500)
+                                    .expect("Unable to turn 500 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for CONNECTION_INFO_FAILED"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                            ConnectionInfoResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            ConnectionInfoResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = Body::from("An internal error occurred");
+                        }
+                    }
 
                     Ok(response)
                 }
@@ -1187,6 +1280,9 @@ where
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_ADOPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => method_not_allowed(),
+                _ if path.matched(paths::ID_SESSIONS_SESSION_ID_CONNECTION_INFO) => {
+                    method_not_allowed()
+                }
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => method_not_allowed(),
@@ -1216,6 +1312,10 @@ impl<T> RequestParser<T> for ApiRequestParser {
             // ChannelsWebsocket - GET /sessions/{session_id}/channels
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                 Some("ChannelsWebsocket")
+            }
+            // ConnectionInfo - GET /sessions/{session_id}/connection_info
+            hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CONNECTION_INFO) => {
+                Some("ConnectionInfo")
             }
             // DeleteSession - DELETE /sessions/{session_id}
             hyper::Method::DELETE if path.matched(paths::ID_SESSIONS_SESSION_ID) => {

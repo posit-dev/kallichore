@@ -57,6 +57,19 @@ pub enum ChannelsWebsocketResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum ConnectionInfoResponse {
+    /// Connection Info
+    ConnectionInfo(models::ConnectionInfo),
+    /// Failed
+    Failed(models::Error),
+    /// Unauthorized
+    Unauthorized,
+    /// Session not found
+    SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum DeleteSessionResponse {
     /// Session deleted
     SessionDeleted(serde_json::Value),
@@ -194,6 +207,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Get Jupyter connection information for the session
+    async fn connection_info(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<ConnectionInfoResponse, ApiError>;
+
     /// Delete session
     async fn delete_session(
         &self,
@@ -287,6 +307,10 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Get Jupyter connection information for the session
+    async fn connection_info(&self, session_id: String)
+        -> Result<ConnectionInfoResponse, ApiError>;
+
     /// Delete session
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
 
@@ -378,6 +402,15 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         let context = self.context().clone();
         self.api().channels_websocket(session_id, &context).await
+    }
+
+    /// Get Jupyter connection information for the session
+    async fn connection_info(
+        &self,
+        session_id: String,
+    ) -> Result<ConnectionInfoResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().connection_info(session_id, &context).await
     }
 
     /// Delete session

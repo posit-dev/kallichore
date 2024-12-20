@@ -241,6 +241,39 @@ paths:
           description: Unauthorized
       security: []
       summary: Adopt an existing session
+  /sessions/{session_id}/connection_info:
+    get:
+      operationId: connection-info
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connectionInfo'
+          description: Connection Info
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Failed
+        "401":
+          content: {}
+          description: Unauthorized
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
+      security: []
+      summary: Get Jupyter connection information for the session
   /sessions/{session_id}/interrupt:
     post:
       operationId: interrupt-session
@@ -364,6 +397,16 @@ components:
       type: object
     connectionInfo:
       description: Connection information for an existing session
+      example:
+        stdin_port: 1
+        control_port: 0
+        hb_port: 5
+        ip: ip
+        iopub_port: 5
+        transport: transport
+        signature_scheme: signature_scheme
+        shell_port: 6
+        key: key
       properties:
         control_port:
           description: The port for control messages

@@ -6,9 +6,9 @@ use futures::{future, stream, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{
     models, AdoptSessionResponse, Api, ApiNoContext, ChannelsWebsocketResponse, Client,
-    ContextWrapperExt, DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
+    ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse, GetSessionResponse,
+    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
+    RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 #[allow(unused_imports)]
@@ -36,6 +36,7 @@ fn main() {
                 .help("Sets the operation to run")
                 .possible_values(&[
                     "ChannelsWebsocket",
+                    "ConnectionInfo",
                     "DeleteSession",
                     "GetSession",
                     "InterruptSession",
@@ -111,6 +112,14 @@ fn main() {
         */
         Some("ChannelsWebsocket") => {
             let result = rt.block_on(client.channels_websocket("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
+        Some("ConnectionInfo") => {
+            let result = rt.block_on(client.connection_info("session_id_example".to_string()));
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,

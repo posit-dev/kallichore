@@ -6,6 +6,7 @@ Method | HTTP request | Description
 ------------- | ------------- | -------------
 **adopt-session**](default_api.md#adopt-session) | **PUT** /sessions/{session_id}/adopt | Adopt an existing session
 **channels-websocket**](default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+**connection-info**](default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 **delete-session**](default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
 **interrupt-session**](default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
@@ -57,6 +58,31 @@ Name | Type | Description  | Notes
 ### Return type
 
  (empty response body)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **connection-info**
+> models::ConnectionInfo connection-info(session_id)
+Get Jupyter connection information for the session
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **session_id** | **String**|  | 
+
+### Return type
+
+[**models::ConnectionInfo**](connectionInfo.md)
 
 ### Authorization
 
