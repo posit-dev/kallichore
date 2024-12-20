@@ -115,6 +115,18 @@ impl KernelSession {
     ///
     /// The kernel info, as a JSON object.
     pub async fn start(&self) -> Result<serde_json::Value, StartupError> {
+        // Ensure that we have some arguments. It is possible to create a session that has no
+        // arguments (because it is intended to be started externally); these sessions can't be
+        // started by the server.
+        if self.argv.is_empty() {
+            let err = KSError::ProcessStartFailed(anyhow::anyhow!("No arguments provided"));
+            return Err(StartupError {
+                exit_code: None,
+                output: None,
+                error: err.to_json(None),
+            });
+        }
+
         // Mark the kernel as starting
         {
             let mut state = self.state.write().await;
