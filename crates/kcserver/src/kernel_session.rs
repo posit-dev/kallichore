@@ -237,6 +237,14 @@ impl KernelSession {
             // update the status of the session
             let mut state = self.state.write().await;
             state.process_id = pid;
+            log::trace!(
+                "[session {}]: Session child process started with pid {}",
+                self.connection.session_id,
+                match pid {
+                    Some(pid) => pid.to_string(),
+                    None => "<none>".to_string(),
+                }
+            );
         }
 
         // Create a channel to receive startup status from the kernel
@@ -261,7 +269,12 @@ impl KernelSession {
 
         // Wait for either the session to connect to its sockets or for
         // something awful to happen
+        log::trace!(
+            "[session {}] Waiting for kernel sockets to connect",
+            self.connection.session_id
+        );
         let startup_result = startup_rx.recv().await;
+        log::trace!("[session {}] Waiting complete", self.connection.session_id);
 
         let result = match startup_result {
             Ok(StartupStatus::Connected(kernel_info)) => {
@@ -670,7 +683,24 @@ impl KernelSession {
                 "[session {}] Starting ZeroMQ proxy for adopted kernel",
                 kernel.connection.session_id.clone()
             );
+
+            // Start the proxy. The proxy runs until all sockets are disconnected.
             kernel.start_zmq_proxy(connection_file, startup_tx).await;
+
+            // Since this kernel has no backing process, once all the sockets are disconnected, we
+            // should treat the kernel as exited.
+            {
+                let mut state = kernel.state.write().await;
+                kernel.exit_event.notify(usize::MAX);
+                state
+                    .set_status(
+                        models::Status::Exited,
+                        Some(String::from(
+                            "all sockets disconnected from an adopted kernel",
+                        )),
+                    )
+                    .await;
+            }
         });
 
         // Wait for the proxy to connect
@@ -774,6 +804,11 @@ impl KernelSession {
                 let kernel_info = proxy.get_kernel_info().await;
                 match kernel_info {
                     Ok(info) => {
+                        log::trace!(
+                            "[session {}] Kernel info received: {:?}",
+                            self.connection.session_id,
+                            info
+                        );
                         status_tx
                             .send(StartupStatus::Connected(info))
                             .await

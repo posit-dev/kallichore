@@ -9,6 +9,7 @@ use std::{str::FromStr, sync::Arc};
 
 use async_channel::{Receiver, Sender};
 use event_listener::Event;
+use futures::StreamExt;
 use kallichore_api::models;
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
@@ -17,8 +18,8 @@ use kcshared::{
 };
 use tokio::{select, sync::RwLock};
 use zeromq::{
-    util::PeerIdentity, DealerSocket, Socket, SocketOptions, SocketRecv, SocketSend, SubSocket,
-    ZmqMessage,
+    util::PeerIdentity, DealerSocket, Socket, SocketEvent, SocketOptions, SocketRecv, SocketSend,
+    SubSocket, ZmqMessage,
 };
 
 use crate::{
@@ -225,6 +226,10 @@ impl ZmqWsProxy {
         };
 
         // Translate it into a wire message and send it to the shell socket
+        log::trace!(
+            "[session {}] Sending initial kernel_info_request message to kernel",
+            self.connection.session_id
+        );
         let wire_message = WireMessage::from_jupyter(request, self.connection.clone())?;
         let zmq_message: ZmqMessage = wire_message.into();
         self.shell_socket
@@ -232,9 +237,16 @@ impl ZmqWsProxy {
             .unwrap()
             .send(zmq_message)
             .await?;
-
+        log::trace!(
+            "[session {}] Waiting for kernel_info_reply message from kernel",
+            self.connection.session_id
+        );
         // Wait for the reply
         let reply = self.wait_for_shell_reply(msg_id.clone()).await?;
+        log::trace!(
+            "[session {}] Got kernel_info_reply message from kernel",
+            self.connection.session_id
+        );
 
         Ok(reply.content)
     }
@@ -289,7 +301,21 @@ impl ZmqWsProxy {
             "[session {}] Starting ZeroMQ-WebSocket proxy",
             self.connection.session_id
         );
-        // Wait for a message from any socket
+
+        // Create monitors for each socket. Note that we use block scopes to avoid holding locks on
+        // the sockets.
+        let mut sockets_connected = 4;
+        let mut shell_monitor = { self.stdin_socket.as_mut().unwrap().monitor() };
+        let mut iopub_monitor = { self.iopub_socket.as_mut().unwrap().monitor() };
+        let mut control_monitor = { self.control_socket.as_mut().unwrap().monitor() };
+        let mut stdin_monitor = { self.stdin_socket.as_mut().unwrap().monitor() };
+
+        log::debug!(
+            "[session {}] Created all socket monitors, waiting for messages",
+            self.connection.session_id
+        );
+
+        // Wait for a message from any socket, or for all sockets to close
         loop {
             select! {
                 shell_msg = self.shell_socket.as_mut().unwrap().recv() => {
@@ -303,6 +329,22 @@ impl ZmqWsProxy {
                         },
                     }
                 },
+                shell_evt = shell_monitor.next() => {
+                    match shell_evt {
+                        Some(SocketEvent::Closed) => {
+                            sockets_connected -= 1;
+                            log::info!("[session {}] Shell socket closed (there are now {} sockets connected)", session_id, sockets_connected);
+
+                            // If this was the last socket, break the loop
+                            if sockets_connected == 0 {
+                                break;
+                            }
+                        },
+                        _ => {
+                            // Nothing to do in other cases
+                        }
+                    }
+                },
                 iopub_msg = self.iopub_socket.as_mut().unwrap().recv() => {
                     match iopub_msg {
                         Ok(msg) => {
@@ -312,6 +354,22 @@ impl ZmqWsProxy {
                             log::error!("[session {}] Failed to receive message from iopub socket: {}", session_id, e);
                             break;
                         },
+                    }
+                },
+                iopub_evt = iopub_monitor.next() => {
+                    match iopub_evt {
+                        Some(SocketEvent::Closed) => {
+                            sockets_connected -= 1;
+                            log::info!("[session {}] IOPub socket closed (there are now {} sockets connected)", session_id, sockets_connected);
+
+                            // If this was the last socket, break the loop
+                            if sockets_connected == 0 {
+                                break;
+                            }
+                        },
+                        _ => {
+                            // Nothing to do in other cases
+                        }
                     }
                 },
                 control_msg = self.control_socket.as_mut().unwrap().recv() => {
@@ -325,6 +383,22 @@ impl ZmqWsProxy {
                         },
                     }
                 },
+                control_evt = control_monitor.next() => {
+                    match control_evt {
+                        Some(SocketEvent::Closed) => {
+                            sockets_connected -= 1;
+                            log::info!("[session {}] Control socket closed (there are now {} sockets connected)", session_id, sockets_connected);
+
+                            // If this was the last socket, break the loop
+                            if sockets_connected == 0 {
+                                break;
+                            }
+                        },
+                        _ => {
+                            // Nothing to do in other cases
+                        }
+                    }
+                },
                 stdin_msg = self.stdin_socket.as_mut().unwrap().recv() => {
                     match stdin_msg {
                         Ok(msg) => {
@@ -334,6 +408,22 @@ impl ZmqWsProxy {
                             log::error!("[session {}] Failed to receive message from stdin socket: {}", session_id, e);
                             break;
                         },
+                    }
+                },
+                stdin_evt = stdin_monitor.next() => {
+                    match stdin_evt {
+                        Some(SocketEvent::Closed) => {
+                            sockets_connected -= 1;
+                            log::info!("[session {}] Stdin socket closed (there are now {} sockets connected)", session_id, sockets_connected);
+
+                            // If this was the last socket, break the loop
+                            if sockets_connected == 0 {
+                                break;
+                            }
+                        },
+                        _ => {
+                            // Nothing to do in other cases
+                        }
                     }
                 },
                 ws_msg = self.ws_zmq_rx.recv() => {
