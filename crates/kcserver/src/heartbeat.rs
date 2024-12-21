@@ -129,13 +129,12 @@ impl HeartbeatMonitor {
                                     .await;
                             }
                         }
-                        response
                     }
                     Ok(Err(e)) => {
                         // We couldn't receive the heartbeat response
-                        let state = state.read().await;
+                        let current = state.read().await;
 
-                        if state.status == Status::Exited {
+                        if current.status == Status::Exited {
                             // If the kernel has exited, it's normal for that to
                             // cause a receive error (the other end of the
                             // socket is gone). We can just stop the heartbeat
@@ -148,24 +147,36 @@ impl HeartbeatMonitor {
                             return;
                         }
 
-                        log::error!(
-                            "[session {}] Error receiving heartbeat response: {:?} (kernel is {})",
+                        if !offline {
+                            log::error!(
+                            "[session {}] Error receiving heartbeat response: {:?} (kernel is {}). Marking kernel offline.",
                             session_id,
                             e,
-                            state.status
-                        );
-                        return;
+                            current.status);
+
+                            // Mark the kernel as offline
+                            offline = true;
+                            let mut state = state.write().await;
+                            state
+                                .set_status(
+                                    Status::Offline,
+                                    Some(String::from("error getting heartbeat")),
+                                )
+                                .await;
+                        }
                     }
                     Err(_) => {
                         // Handle the timeout error
-                        log::error!(
-                            "[session {}] No heartbeat response received after 5s, marking kernel as offline.", session_id
-                        );
-                        let mut state = state.write().await;
-                        state
-                            .set_status(Status::Offline, Some(String::from("lost heartbeat")))
-                            .await;
-                        break;
+                        if !offline {
+                            offline = true;
+                            log::error!(
+                                "[session {}] No heartbeat response received after 5s, marking kernel as offline.", session_id
+                            );
+                            let mut state = state.write().await;
+                            state
+                                .set_status(Status::Offline, Some(String::from("lost heartbeat")))
+                                .await;
+                        }
                     }
                 };
 
