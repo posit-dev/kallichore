@@ -706,6 +706,15 @@ impl KernelSession {
                     )
                     .await;
             }
+
+            // Fire the exit event; use a code of 0 since there's no such thing as a non-zero exit
+            // for an adopted kernel
+            let event = WebsocketMessage::Kernel(KernelMessage::Exited(0));
+            kernel
+                .ws_json_tx
+                .send(event)
+                .await
+                .expect("Failed to send exit event to client");
         });
 
         // Wait for the proxy to connect
