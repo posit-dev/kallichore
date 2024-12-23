@@ -293,7 +293,7 @@ jobs:
                   asset_name: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-windows-x64.zip
                   asset_content_type: application/octet-stream
 
-            - name: Upload Linux release artifacts
+            - name: Upload Linux release artifacts (x64)
               uses: actions/upload-release-asset@v1
               env:
                   GITHUB_TOKEN: ${{ github.token }}
@@ -301,10 +301,17 @@ jobs:
                   upload_url: ${{ needs.create_release.outputs.upload_url }}
                   asset_path: kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-linux-x64.zip
                   asset_name: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-linux-x64.zip
+                  asset_content_type: application/octet-stream
+
+            - name: Upload Linux release artifacts (arm64)
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ github.token }}
+              with:
+                  upload_url: ${{ needs.create_release.outputs.upload_url }}
                   asset_path: kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-linux-arm64.zip
                   asset_name: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-linux-arm64.zip
                   asset_content_type: application/octet-stream
-
 
     # Publish new releases to the kallichore-builds public repository
     publish_public_release:
