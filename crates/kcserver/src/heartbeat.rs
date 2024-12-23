@@ -14,7 +14,6 @@ use zeromq::ReqSocket;
 use zeromq::Socket;
 use zeromq::SocketRecv;
 use zeromq::SocketSend;
-use zeromq::ZmqError;
 
 use crate::kernel_state::KernelState;
 use event_listener::Event;
@@ -156,43 +155,20 @@ impl HeartbeatMonitor {
                             );
                             hb_socket.close().await;
                             return;
-                        }
-
-                        // The `NoMessage` error happens when there's no message to receive because
-                        // the socket has been disconnected. Currently, zmq.rs doesn't provide an
-                        // event that we can listen to for this, so this is where we detect kernel
-                        // disconnection.
-                        match e {
-                            ZmqError::NoMessage => {
-                                log::info!(
-                                    "[session {}] Heartbeat socket disconnected.",
-                                    session_id
-                                );
-                                disconnected_event.notify(usize::MAX);
-                                return;
-                            }
-                            _ => {
-                                // Not a normal error; we'll handle below.
-                            }
-                        }
-
-                        if !offline {
-                            log::error!(
-                            "[session {}] Error receiving heartbeat response: {:?} (kernel is {}). Marking kernel offline.",
+                        } else {
+                            // Otherwise, log the error and mark the kernel as disconnected.
+                            // Currently, the underlying zeromq library doesn't provide a way to
+                            // listen to socket disconnection events, so this is how we detect
+                            // disconnects.
+                            log::info!(
+                            "[session {}] Error receiving heartbeat response: {:?} (kernel is {}). Marking kernel disconnected.",
                             session_id,
                             e,
                             current.status);
-
-                            // Mark the kernel as offline
-                            offline = true;
-                            let mut state = state.write().await;
-                            state
-                                .set_status(
-                                    Status::Offline,
-                                    Some(String::from("error getting heartbeat")),
-                                )
-                                .await;
+                            disconnected_event.notify(usize::MAX);
                         }
+                        hb_socket.close().await;
+                        return;
                     }
                     Err(_) => {
                         // Handle the timeout error
