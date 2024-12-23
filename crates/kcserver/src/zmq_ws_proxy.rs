@@ -44,6 +44,7 @@ pub struct ZmqWsProxy {
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
     pub exit_event: Arc<Event>,
+    pub disconnected_event: Arc<Event>,
     pub state: Arc<RwLock<KernelState>>,
 }
 
@@ -76,6 +77,7 @@ impl ZmqWsProxy {
             "tcp://{}:{}",
             connection_file.info.ip, connection_file.info.hb_port
         );
+        let disconnected_event = Arc::new(Event::new());
 
         Self {
             shell_socket: Some(DealerSocket::with_options(ZmqWsProxy::dealer_peer_opts(
@@ -88,12 +90,18 @@ impl ZmqWsProxy {
             stdin_socket: Some(DealerSocket::with_options(ZmqWsProxy::dealer_peer_opts(
                 session_id.clone(),
             ))),
-            heartbeat: HeartbeatMonitor::new(state.clone(), session_id.clone(), hb_address),
+            heartbeat: HeartbeatMonitor::new(
+                state.clone(),
+                session_id.clone(),
+                hb_address,
+                disconnected_event.clone(),
+            ),
             connection_file,
             connection,
             ws_json_tx,
             ws_zmq_rx,
             exit_event,
+            disconnected_event,
             state,
             session_id: session_id.clone(),
             closed: false,
@@ -392,6 +400,10 @@ impl ZmqWsProxy {
                 },
                 _ = self.exit_event.listen() => {
                     // The kernel has exited; close the proxy
+                    break;
+                },
+                _ = self.disconnected_event.listen() => {
+                    // The heartbeat monitor has detected a disconnect; close the proxy
                     break;
                 },
             };

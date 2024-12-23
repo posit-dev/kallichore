@@ -679,13 +679,18 @@ impl KernelSession {
         // Attempt to start the ZeroMQ proxy.
         let kernel = self.clone();
         tokio::spawn(async move {
-            log::trace!(
+            log::debug!(
                 "[session {}] Starting ZeroMQ proxy for adopted kernel",
                 kernel.connection.session_id.clone()
             );
 
             // Start the proxy. The proxy runs until all sockets are disconnected.
             kernel.start_zmq_proxy(connection_file, startup_tx).await;
+
+            log::debug!(
+                "[session {}] ZeroMQ proxy for adopted kernel has exited",
+                kernel.connection.session_id.clone()
+            );
 
             // Since this kernel has no backing process, once all the sockets are disconnected, we
             // should treat the kernel as exited.

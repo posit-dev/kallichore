@@ -6,6 +6,7 @@
 //
 
 use std::sync::Arc;
+use std::usize;
 
 use kallichore_api::models::Status;
 use tokio::sync::RwLock;
@@ -13,14 +14,17 @@ use zeromq::ReqSocket;
 use zeromq::Socket;
 use zeromq::SocketRecv;
 use zeromq::SocketSend;
+use zeromq::ZmqError;
 
 use crate::kernel_state::KernelState;
+use event_listener::Event;
 use tokio::time::{timeout, Duration};
 
 pub struct HeartbeatMonitor {
     state: Arc<RwLock<KernelState>>,
     session_id: String,
     address: String,
+    disconnected_event: Arc<Event>,
 }
 
 const HB_PAYLOAD: &str = "kallichore-heartbeat";
@@ -34,11 +38,17 @@ impl HeartbeatMonitor {
     /// - `state`: The kernel state to monitor.
     /// - `session_id`: The ID of the session to monitor.
     /// - `address`: The address of the heartbeat socket.
-    pub fn new(state: Arc<RwLock<KernelState>>, session_id: String, address: String) -> Self {
+    pub fn new(
+        state: Arc<RwLock<KernelState>>,
+        session_id: String,
+        address: String,
+        disconnected_event: Arc<Event>,
+    ) -> Self {
         Self {
             state,
             session_id,
             address,
+            disconnected_event,
         }
     }
 
@@ -48,6 +58,7 @@ impl HeartbeatMonitor {
         let addr = self.address.clone();
         let state = self.state.clone();
         let session_id = self.session_id.clone();
+        let disconnected_event = self.disconnected_event.clone();
         tokio::spawn(async move {
             // Attempt to connect to the heartbeat socket. If we fail to connect, we won't be able to
             // send heartbeats, so we'll just return; the kernel can still function in this case,
@@ -145,6 +156,24 @@ impl HeartbeatMonitor {
                             );
                             hb_socket.close().await;
                             return;
+                        }
+
+                        // The `NoMessage` error happens when there's no message to receive because
+                        // the socket has been disconnected. Currently, zmq.rs doesn't provide an
+                        // event that we can listen to for this, so this is where we detect kernel
+                        // disconnection.
+                        match e {
+                            ZmqError::NoMessage => {
+                                log::info!(
+                                    "[session {}] Heartbeat socket disconnected.",
+                                    session_id
+                                );
+                                disconnected_event.notify(usize::MAX);
+                                return;
+                            }
+                            _ => {
+                                // Not a normal error; we'll handle below.
+                            }
                         }
 
                         if !offline {
