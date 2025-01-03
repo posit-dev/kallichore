@@ -49,8 +49,11 @@ struct Args {
     #[arg(long)]
     log_file: Option<String>,
 
-    /// The number of hours of idle time before the server shuts down. The server is considered
-    /// idle if no clients are connected and all sessions are idle.
+    /// The number of hours of idle time before the server shuts down. The
+    /// server is considered idle if all sessions are idle and no session is
+    /// connected. If not specified, the server will not shut down due to
+    /// inactivity; if set to 0, the server will shut down after 30 seconds when
+    /// idle.
     #[arg(short, long)]
     idle_shutdown_hours: Option<u16>,
 
@@ -217,5 +220,5 @@ async fn main() {
     println!("Listening at {}", addr);
 
     log::info!("Starting Kallichore server at {}", addr);
-    server::create(&addr, token).await;
+    server::create(&addr, token, args.idle_shutdown_hours).await;
 }

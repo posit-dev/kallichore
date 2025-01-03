@@ -46,10 +46,10 @@ use kallichore_api::{
     NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
-pub async fn create(addr: &str, token: Option<String>) {
+pub async fn create(addr: &str, token: Option<String>, idle_shutdown_hours: Option<u16>) {
     let addr = addr.parse().expect("Failed to parse bind address");
 
-    let server = Server::new(token);
+    let server = Server::new(token, idle_shutdown_hours);
 
     let service = MakeService::new(server);
 
@@ -79,13 +79,13 @@ pub struct Server<C> {
 }
 
 impl<C> Server<C> {
-    pub fn new(token: Option<String>) -> Self {
+    pub fn new(token: Option<String>, idle_shutdown_hours: Option<u16>) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
 
         // Start the idle poll task
         let (idle_nudge_tx, idle_nudge_rx) = tokio::sync::mpsc::channel(256);
-        Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx);
+        Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
 
         Server {
             token,
@@ -102,12 +102,48 @@ impl<C> Server<C> {
     ///
     /// This task runs in the background and periodically checks for idle
     /// sessions at a configurable interval.
+    ///
+    /// Note that we run this task even if the user has not specified an idle
+    /// shutdown time; we do this to simplify the logic around idle nudges.
+    ///
+    /// # Arguments
+    ///
+    /// - `all_sessions`: A reference to the list of all kernel sessions.
+    /// - `idle_nudge_rx`: A receiver for idle nudges.
+    /// - `idle_shutdown_hours`: The number of hours of inactivity before the
+    ///    server shuts down. If None, the server will not shut down due to
+    ///    inactivity.
     fn idle_poll_task(
         all_sessions: Arc<RwLock<Vec<KernelSession>>>,
         mut idle_nudge_rx: tokio::sync::mpsc::Receiver<()>,
+        idle_shutdown_hours: Option<u16>,
     ) {
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(20));
+            // Create the interval for the idle poll task.
+            let duration = match idle_shutdown_hours {
+                Some(hours) => match hours {
+                    0 => {
+                        // Zero hours would create a busy loop, so if 0 is
+                        // specified, check every 30 seconds
+                        log::info!("Server set to shut down after 30 seconds of inactivity");
+                        tokio::time::Duration::from_secs(30)
+                    }
+                    _ => {
+                        // Set an interval for the specified number of hours.
+                        log::info!(
+                            "Server set to shut down after {} hours of inactivity",
+                            hours
+                        );
+                        tokio::time::Duration::from_secs((hours as u64) * 3600)
+                    }
+                },
+                None => {
+                    // If no idle shutdown hours are specified, default to 24 hours
+                    log::debug!("idle_shutdown_hours not specified; the server will not shut down due to inactivity");
+                    tokio::time::Duration::from_secs(24 * 3600)
+                }
+            };
+            let mut interval = tokio::time::interval(duration);
 
             // Consume the first tick immediately (tokio intervals start at 0)
             interval.tick().await;
@@ -116,6 +152,10 @@ impl<C> Server<C> {
                 // Wait for either the interval to expire or an idle nudge
                 tokio::select! {
                     _ = interval.tick() => {
+                        // If no idle shutdown hours are specified, skip the check
+                        if idle_shutdown_hours.is_none() {
+                            continue;
+                        }
                         // The interval has expired; check for idle sessions
                         let sessions = {
                             all_sessions.read().unwrap().clone()
@@ -123,7 +163,7 @@ impl<C> Server<C> {
                         Server::<C>::check_idle_sessions(&sessions).await;
                     }
                     _ = idle_nudge_rx.recv() => {
-                        log::debug!("Received an idle nudge; resetting interval");
+                        log::trace!("Received an idle nudge; resetting interval");
                         // Received an idle nudge; reset the interval
                         interval.reset();
                     }
