@@ -1,7 +1,7 @@
 //
 // kernel_state.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -54,6 +54,9 @@ pub struct KernelState {
     /// The time at which the kernel last became busy.
     pub busy_since: Option<std::time::Instant>,
 
+    /// A channel on which to send idle nudges
+    pub idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
+
     /// A channel to publish status updates to the websocket
     ws_json_tx: Sender<WebsocketMessage>,
 }
@@ -63,6 +66,7 @@ impl KernelState {
     pub fn new(
         session: models::NewSession,
         working_directory: String,
+        idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
         ws_json_tx: Sender<WebsocketMessage>,
     ) -> Self {
         KernelState {
@@ -76,9 +80,25 @@ impl KernelState {
             input_prompt: session.input_prompt.clone(),
             continuation_prompt: session.continuation_prompt.clone(),
             ws_json_tx,
+            idle_nudge_tx,
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,
         }
+    }
+
+    async fn nudge_idle(&mut self) {
+        if let Err(err) = self.idle_nudge_tx.send(()).await {
+            log::error!(
+                "[session {}] Failed to send idle nudge: {}",
+                self.session_id,
+                err
+            );
+        }
+    }
+
+    pub async fn set_connected(&mut self, connected: bool) {
+        self.connected = connected;
+        self.nudge_idle().await;
     }
 
     /// Set the kernel's status.
@@ -115,6 +135,7 @@ impl KernelState {
             || status == models::Status::Exited
         {
             self.idle_since = Some(std::time::Instant::now());
+            self.nudge_idle().await;
         } else {
             self.idle_since = None;
         }

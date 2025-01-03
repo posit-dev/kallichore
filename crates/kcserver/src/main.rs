@@ -49,6 +49,11 @@ struct Args {
     #[arg(long)]
     log_file: Option<String>,
 
+    /// The number of hours of idle time before the server shuts down. The server is considered
+    /// idle if no clients are connected and all sessions are idle.
+    #[arg(short, long)]
+    idle_shutdown_hours: Option<u16>,
+
     /// The log level to use. Valid values are "trace", "debug", "info", "warn",
     /// and "error". If not specified, the default log level is "info", or the
     /// value of `RUST_LOG` if set.

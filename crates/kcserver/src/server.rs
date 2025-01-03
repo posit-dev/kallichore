@@ -34,6 +34,7 @@ use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
@@ -73,19 +74,163 @@ pub struct Server<C> {
     started_time: std::time::Instant,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
+    idle_nudge_tx: Sender<()>,
     reserved_ports: Arc<RwLock<Vec<i32>>>,
 }
 
 impl<C> Server<C> {
     pub fn new(token: Option<String>) -> Self {
+        let (idle_nudge_tx, mut idle_nudge_rx) = tokio::sync::mpsc::channel(1);
+
+        let kernel_sessions = Arc::new(RwLock::new(vec![]));
+
+        // Start the idle nudge task
+        let all_sessions = kernel_sessions.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+            loop {
+                // Wait for either the interval to expire or an idle nudge
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // The interval has expired; check for idle sessions
+                        let sessions = {
+                            all_sessions.read().unwrap().clone()
+                        };
+                        Server::<C>::check_idle_sessions(&sessions).await;
+                    }
+                    _ = idle_nudge_rx.recv() => {
+                        // Received an idle nudge; reset the interval
+                        interval.reset();
+                    }
+                }
+            }
+        });
+
         Server {
             token,
             started_time: std::time::Instant::now(),
             marker: PhantomData,
-            kernel_sessions: Arc::new(RwLock::new(vec![])),
+            kernel_sessions,
             client_sessions: Arc::new(RwLock::new(vec![])),
             reserved_ports: Arc::new(RwLock::new(vec![])),
+            idle_nudge_tx,
         }
+    }
+
+    async fn check_idle_sessions(sessions: &Vec<KernelSession>) {
+        let mut running_sessions = Vec::new();
+        log::debug!(
+            "Idle timeout: checking for idle sessions ({} to check)",
+            sessions.len()
+        );
+
+        // Check to see if all sessions are idle and disconnected.
+        for session in sessions.iter() {
+            let state = session.state.read().await;
+            if state.status == models::Status::Busy {
+                log::debug!(
+                    "Session {} is in busy state; server is not idle",
+                    session.connection.session_id
+                );
+                return;
+            }
+            if state.connected {
+                log::debug!(
+                    "Session {} has an active connection; server is not idle",
+                    session.connection.session_id
+                );
+                return;
+            }
+
+            // This session may need to be shut down
+            if state.status != models::Status::Exited
+                && state.status != models::Status::Uninitialized
+            {
+                running_sessions.push(session.clone());
+            }
+        }
+
+        // If we got here, all sessions are idle and disconnected.
+        if !running_sessions.is_empty() {
+            log::info!(
+                "All sessions are idle and disconnected; shutting down {} sessions",
+                running_sessions.len()
+            );
+        }
+
+        if let Err(err) = Server::<C>::shutdown_sessions_and_exit(&running_sessions).await {
+            err.log();
+        }
+    }
+
+    async fn running_sessions(sessions: &Vec<KernelSession>) -> Vec<KernelSession> {
+        let mut running_sessions = Vec::new();
+        for session in sessions.iter() {
+            let status = session.state.read().await.status;
+            if status != models::Status::Exited && status != models::Status::Uninitialized {
+                running_sessions.push(session.clone());
+            }
+        }
+        running_sessions
+    }
+
+    async fn shutdown_sessions_and_exit(
+        running_sessions: &Vec<KernelSession>,
+    ) -> Result<(), KSError> {
+        // Early exit if all sessions are already stopped
+        if running_sessions.is_empty() {
+            tokio::spawn(async move {
+                // Wait 1 second before exiting
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                log::info!("All sessions have exited; exiting Kallichore server.");
+                std::process::exit(0);
+            });
+            return Ok(());
+        }
+
+        // Spawn a task to wait for all sessions to exit
+        let exiting_sessions = running_sessions.clone();
+        tokio::spawn(async move {
+            // Create exit event listeners for each running session
+            let mut exit_listeners = Vec::new();
+            for session in &exiting_sessions {
+                let exit_listener = session.exit_event.listen();
+                exit_listeners.push(exit_listener);
+            }
+
+            loop {
+                // Wait for any of the exit events to be triggered
+                let (_, _, remaining) = future::select_all(exit_listeners).await;
+                exit_listeners = remaining;
+                if exit_listeners.is_empty() {
+                    break;
+                } else {
+                    log::info!("Session has exited; {} remaining)", exit_listeners.len());
+                }
+            }
+
+            log::info!("All sessions have exited; exiting Kallichore server.");
+            std::process::exit(0);
+        });
+
+        log::info!("Shutting down {} running sessions", running_sessions.len());
+
+        // Send a shutdown signal to each running session
+        for session in running_sessions {
+            let session_id = session.connection.session_id.clone();
+            match session.shutdown().await {
+                Ok(_) => {
+                    log::info!("Session {} has been asked to shut down", session_id);
+                }
+                Err(e) => {
+                    let error = KSError::SessionInterruptFailed(session_id, e);
+                    error.log();
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Look up a kernel session by its session ID.
@@ -342,6 +487,7 @@ where
         let kernel_session = match KernelSession::new(
             session,
             connection_file.clone(),
+            self.idle_nudge_tx.clone(),
             self.reserved_ports.clone(),
         ) {
             Ok(kernel_session) => kernel_session,
@@ -883,7 +1029,11 @@ where
     }
 
     async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {
-        info!("shutdown server");
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "shutdown_server - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
 
         // Token validation
         if !self.validate_token(context) {
@@ -893,73 +1043,14 @@ where
         // Create a vector of all the kernel sessions that are currently running
         let running_sessions = {
             let kernel_sessions = self.kernel_sessions.read().unwrap().clone();
-            let mut running_sessions: Vec<KernelSession> = vec![];
-            for session in kernel_sessions.iter() {
-                let running = session.state.read().await.status != models::Status::Exited;
-                if running {
-                    running_sessions.push(session.clone());
-                }
-            }
-            running_sessions
+            Self::running_sessions(&kernel_sessions).await
         };
 
-        // Early exit if all sessions are already stopped
-        if running_sessions.is_empty() {
-            tokio::spawn(async move {
-                // Wait 1 second before exiting
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                log::info!("All sessions have exited; exiting Kallichore server.");
-                std::process::exit(0);
-            });
-            return Ok(ShutdownServerResponse::ShuttingDown(
+        match Self::shutdown_sessions_and_exit(&running_sessions).await {
+            Ok(_) => Ok(ShutdownServerResponse::ShuttingDown(
                 serde_json::Value::Null,
-            ));
+            )),
+            Err(e) => Ok(ShutdownServerResponse::ShutdownFailed(e.to_json(None))),
         }
-
-        // Spawn a task to wait for all sessions to exit
-        let exiting_sessions = running_sessions.clone();
-        tokio::spawn(async move {
-            // Create exit event listeners for each running session
-            let mut exit_listeners = Vec::new();
-            for session in &exiting_sessions {
-                let exit_listener = session.exit_event.listen();
-                exit_listeners.push(exit_listener);
-            }
-
-            loop {
-                // Wait for any of the exit events to be triggered
-                let (_, _, remaining) = future::select_all(exit_listeners).await;
-                exit_listeners = remaining;
-                if exit_listeners.is_empty() {
-                    break;
-                } else {
-                    log::info!("Session has exited; {} remaining)", exit_listeners.len());
-                }
-            }
-
-            log::info!("All sessions have exited; exiting Kallichore server.");
-            std::process::exit(0);
-        });
-
-        log::info!("Shutting down {} running sessions", running_sessions.len());
-
-        // Send a shutdown signal to each running session
-        for session in running_sessions {
-            let session_id = session.connection.session_id.clone();
-            match session.shutdown().await {
-                Ok(_) => {
-                    log::info!("Session {} has been asked to shut down", session_id);
-                }
-                Err(e) => {
-                    let error = KSError::SessionInterruptFailed(session_id, e);
-                    error.log();
-                    return Ok(ShutdownServerResponse::ShutdownFailed(error.to_json(None)));
-                }
-            }
-        }
-
-        Ok(ShutdownServerResponse::ShuttingDown(
-            serde_json::Value::Null,
-        ))
     }
 }

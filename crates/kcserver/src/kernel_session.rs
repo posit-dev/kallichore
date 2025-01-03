@@ -80,6 +80,7 @@ impl KernelSession {
     pub fn new(
         session: models::NewSession,
         connection_file: ConnectionFile,
+        idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
@@ -87,6 +88,7 @@ impl KernelSession {
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
             session.clone(),
             session.working_directory.clone(),
+            idle_nudge_tx,
             json_tx.clone(),
         )));
         let connection =
