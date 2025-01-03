@@ -1,7 +1,7 @@
 //
 // server.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -80,31 +80,12 @@ pub struct Server<C> {
 
 impl<C> Server<C> {
     pub fn new(token: Option<String>) -> Self {
-        let (idle_nudge_tx, mut idle_nudge_rx) = tokio::sync::mpsc::channel(1);
-
+        // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
 
-        // Start the idle nudge task
-        let all_sessions = kernel_sessions.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
-            loop {
-                // Wait for either the interval to expire or an idle nudge
-                tokio::select! {
-                    _ = interval.tick() => {
-                        // The interval has expired; check for idle sessions
-                        let sessions = {
-                            all_sessions.read().unwrap().clone()
-                        };
-                        Server::<C>::check_idle_sessions(&sessions).await;
-                    }
-                    _ = idle_nudge_rx.recv() => {
-                        // Received an idle nudge; reset the interval
-                        interval.reset();
-                    }
-                }
-            }
-        });
+        // Start the idle poll task
+        let (idle_nudge_tx, idle_nudge_rx) = tokio::sync::mpsc::channel(256);
+        Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx);
 
         Server {
             token,
@@ -117,6 +98,45 @@ impl<C> Server<C> {
         }
     }
 
+    /// Starts the idle poll task.
+    ///
+    /// This task runs in the background and periodically checks for idle
+    /// sessions at a configurable interval.
+    fn idle_poll_task(
+        all_sessions: Arc<RwLock<Vec<KernelSession>>>,
+        mut idle_nudge_rx: tokio::sync::mpsc::Receiver<()>,
+    ) {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(20));
+
+            // Consume the first tick immediately (tokio intervals start at 0)
+            interval.tick().await;
+
+            loop {
+                // Wait for either the interval to expire or an idle nudge
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // The interval has expired; check for idle sessions
+                        let sessions = {
+                            all_sessions.read().unwrap().clone()
+                        };
+                        Server::<C>::check_idle_sessions(&sessions).await;
+                    }
+                    _ = idle_nudge_rx.recv() => {
+                        log::debug!("Received an idle nudge; resetting interval");
+                        // Received an idle nudge; reset the interval
+                        interval.reset();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Check for idle sessions.
+    ///
+    /// This function checks all sessions to see if they are idle and
+    /// disconnected. If all sessions are idle and disconnected, the server will
+    /// shut down.
     async fn check_idle_sessions(sessions: &Vec<KernelSession>) {
         let mut running_sessions = Vec::new();
         log::debug!(
@@ -150,7 +170,9 @@ impl<C> Server<C> {
             }
         }
 
-        // If we got here, all sessions are idle and disconnected.
+        // If we got here, all sessions are idle and disconnected (or otherwise
+        // not busy, e.g. they're exited). If we have sessions to shut down, log
+        // a message.
         if !running_sessions.is_empty() {
             log::info!(
                 "All sessions are idle and disconnected; shutting down {} sessions",
@@ -158,11 +180,13 @@ impl<C> Server<C> {
             );
         }
 
+        // Shut down all the running sessions and exit the server
         if let Err(err) = Server::<C>::shutdown_sessions_and_exit(&running_sessions).await {
             err.log();
         }
     }
 
+    /// Get the list of running sessions.
     async fn running_sessions(sessions: &Vec<KernelSession>) -> Vec<KernelSession> {
         let mut running_sessions = Vec::new();
         for session in sessions.iter() {
@@ -174,6 +198,7 @@ impl<C> Server<C> {
         running_sessions
     }
 
+    /// Shut down all running sessions and exit the server.
     async fn shutdown_sessions_and_exit(
         running_sessions: &Vec<KernelSession>,
     ) -> Result<(), KSError> {
@@ -198,8 +223,13 @@ impl<C> Server<C> {
                 exit_listeners.push(exit_listener);
             }
 
+            // Wait for all sessions to exit.
+            //
+            // Consider: we could add a timeout here to prevent the server from
+            // hanging indefinitely if a session does not exit even after being
+            // asked to do so.
             loop {
-                // Wait for any of the exit events to be triggered
+                // Wait for any of the exit events to be triggered.
                 let (_, _, remaining) = future::select_all(exit_listeners).await;
                 exit_listeners = remaining;
                 if exit_listeners.is_empty() {
