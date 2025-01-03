@@ -1,7 +1,7 @@
 //
 // main.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -210,7 +210,7 @@ async fn main() {
   | \   /  |  |/  |/  |  /    |/ \   /  \_/  |  |/  
   |  \_/\_/|_/|__/|__/|_/\___/|   |_/\__/    |_/|__/
   A Jupyter Kernel supervisor. Version {}.
-  Copyright (c) 2024, Posit Software PBC. All rights reserved.
+  Copyright (c) 2025, Posit Software PBC. All rights reserved.
 "#,
         env!("CARGO_PKG_VERSION")
     );
