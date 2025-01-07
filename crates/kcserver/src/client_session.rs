@@ -126,7 +126,7 @@ impl ClientSession {
             } else {
                 log::info!("[client {}] Connecting to websocket", self.client_id);
             }
-            state.connected = true;
+            state.set_connected(true).await
         }
 
         // Interval timer for client pings
