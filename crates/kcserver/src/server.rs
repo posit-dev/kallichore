@@ -119,6 +119,9 @@ impl<C> Server<C> {
         idle_shutdown_hours: Option<u16>,
     ) {
         tokio::spawn(async move {
+            // Mark the start time of the idle poll task
+            let start_time = std::time::Instant::now();
+
             // Create the interval for the idle poll task.
             let duration = match idle_shutdown_hours {
                 Some(hours) => match hours {
@@ -156,6 +159,18 @@ impl<C> Server<C> {
                         if idle_shutdown_hours.is_none() {
                             continue;
                         }
+
+                        // Check wall clock time; if we haven't yet passed the duration of the idle
+                        // timeout, skip the check. This should not be necessary since we consumed
+                        // the first tick already, but we've seen some cases where the interval
+                        // ticks _twice_ after being created. If this happens the server will shut
+                        // down immediately after starting since it has no sessions running.
+                        let elapsed = std::time::Instant::now().duration_since(start_time);
+                        if elapsed < duration {
+                            log::trace!("Skipping idle check; elapsed time is {:?} but idle timeout is {:?}", elapsed, duration);
+                            continue;
+                        }
+
                         // The interval has expired; check for idle sessions
                         let sessions = {
                             all_sessions.read().unwrap().clone()
