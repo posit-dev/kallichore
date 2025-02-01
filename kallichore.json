@@ -80,59 +80,6 @@
         }
       }
     },
-    "/sessions/adopt": {
-      "put": {
-        "operationId": "adopt-session",
-        "summary": "Adopt an existing session",
-        "security": [
-          "bearerAuth"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/adoptedSession"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Session ID",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "session_id": {
-                      "type": "string",
-                      "description": "A unique identifier for the session"
-                    }
-                  },
-                  "required": [
-                    "session_id"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/error"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/UnauthorizedError"
-          }
-        }
-      }
-    },
     "/sessions/{session_id}": {
       "get": {
         "operationId": "get-session",
@@ -347,6 +294,114 @@
           },
           "400": {
             "description": "Kill failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/adopt": {
+      "put": {
+        "operationId": "adopt-session",
+        "summary": "Adopt an existing session",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/connectionInfo"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Adopted",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "500": {
+            "description": "Adoption failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/connection_info": {
+      "get": {
+        "operationId": "connection-info",
+        "summary": "Get Jupyter connection information for the session",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connection Info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/connectionInfo"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -698,22 +753,6 @@
           "session_id",
           "username",
           "working_directory"
-        ]
-      },
-      "adoptedSession": {
-        "type": "object",
-        "description": "The session to adopt",
-        "properties": {
-          "session": {
-            "$ref": "#/components/schemas/newSession"
-          },
-          "connection_info": {
-            "$ref": "#/components/schemas/connectionInfo"
-          }
-        },
-        "required": [
-          "session",
-          "connection_info"
         ]
       },
       "execution_queue": {

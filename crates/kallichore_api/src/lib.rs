@@ -32,10 +32,12 @@ pub const API_VERSION: &str = "1.0.0";
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub enum AdoptSessionResponse {
-    /// Session ID
-    SessionID(models::NewSession200Response),
-    /// Invalid request
-    InvalidRequest(models::Error),
+    /// Adopted
+    Adopted(serde_json::Value),
+    /// Adoption failed
+    AdoptionFailed(models::Error),
+    /// Session not found
+    SessionNotFound,
     /// Unauthorized
     Unauthorized,
 }
@@ -47,6 +49,19 @@ pub enum ChannelsWebsocketResponse {
     UpgradeConnectionToAWebsocket,
     /// Invalid request
     InvalidRequest(models::Error),
+    /// Unauthorized
+    Unauthorized,
+    /// Session not found
+    SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum ConnectionInfoResponse {
+    /// Connection Info
+    ConnectionInfo(models::ConnectionInfo),
+    /// Failed
+    Failed(models::Error),
     /// Unauthorized
     Unauthorized,
     /// Session not found
@@ -180,7 +195,8 @@ pub trait Api<C: Send + Sync> {
     /// Adopt an existing session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError>;
 
@@ -190,6 +206,13 @@ pub trait Api<C: Send + Sync> {
         session_id: String,
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
+
+    /// Get Jupyter connection information for the session
+    async fn connection_info(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<ConnectionInfoResponse, ApiError>;
 
     /// Delete session
     async fn delete_session(
@@ -274,7 +297,8 @@ pub trait ApiNoContext<C: Send + Sync> {
     /// Adopt an existing session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
     ) -> Result<AdoptSessionResponse, ApiError>;
 
     /// Upgrade to a WebSocket for channel communication
@@ -282,6 +306,10 @@ pub trait ApiNoContext<C: Send + Sync> {
         &self,
         session_id: String,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
+
+    /// Get Jupyter connection information for the session
+    async fn connection_info(&self, session_id: String)
+        -> Result<ConnectionInfoResponse, ApiError>;
 
     /// Delete session
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
@@ -358,10 +386,13 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     /// Adopt an existing session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
     ) -> Result<AdoptSessionResponse, ApiError> {
         let context = self.context().clone();
-        self.api().adopt_session(adopted_session, &context).await
+        self.api()
+            .adopt_session(session_id, connection_info, &context)
+            .await
     }
 
     /// Upgrade to a WebSocket for channel communication
@@ -371,6 +402,15 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         let context = self.context().clone();
         self.api().channels_websocket(session_id, &context).await
+    }
+
+    /// Get Jupyter connection information for the session
+    async fn connection_info(
+        &self,
+        session_id: String,
+    ) -> Result<ConnectionInfoResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().connection_info(session_id, &context).await
     }
 
     /// Delete session

@@ -1,7 +1,7 @@
 //
 // server.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -20,6 +20,7 @@ use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use kallichore_api::models::{NewSession200Response, ServerStatus};
 use log::info;
+use serde_json::json;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -33,21 +34,22 @@ use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
-    models, AdoptSessionResponse, ChannelsWebsocketResponse, DeleteSessionResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, NewSessionResponse,
-    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
+    models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
+    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
-pub async fn create(addr: &str, token: Option<String>) {
+pub async fn create(addr: &str, token: Option<String>, idle_shutdown_hours: Option<u16>) {
     let addr = addr.parse().expect("Failed to parse bind address");
 
-    let server = Server::new(token);
+    let server = Server::new(token, idle_shutdown_hours);
 
     let service = MakeService::new(server);
 
@@ -72,19 +74,248 @@ pub struct Server<C> {
     started_time: std::time::Instant,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
-    reserved_ports: Arc<RwLock<Vec<u16>>>,
+    idle_nudge_tx: Sender<()>,
+    reserved_ports: Arc<RwLock<Vec<i32>>>,
 }
 
 impl<C> Server<C> {
-    pub fn new(token: Option<String>) -> Self {
+    pub fn new(token: Option<String>, idle_shutdown_hours: Option<u16>) -> Self {
+        // Create the list of kernel sessions we'll use throughout the server lifetime
+        let kernel_sessions = Arc::new(RwLock::new(vec![]));
+
+        // Start the idle poll task
+        let (idle_nudge_tx, idle_nudge_rx) = tokio::sync::mpsc::channel(256);
+        Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
+
         Server {
             token,
             started_time: std::time::Instant::now(),
             marker: PhantomData,
-            kernel_sessions: Arc::new(RwLock::new(vec![])),
+            kernel_sessions,
             client_sessions: Arc::new(RwLock::new(vec![])),
             reserved_ports: Arc::new(RwLock::new(vec![])),
+            idle_nudge_tx,
         }
+    }
+
+    /// Starts the idle poll task.
+    ///
+    /// This task runs in the background and periodically checks for idle
+    /// sessions at a configurable interval.
+    ///
+    /// Note that we run this task even if the user has not specified an idle
+    /// shutdown time; we do this to simplify the logic around idle nudges.
+    ///
+    /// # Arguments
+    ///
+    /// - `all_sessions`: A reference to the list of all kernel sessions.
+    /// - `idle_nudge_rx`: A receiver for idle nudges.
+    /// - `idle_shutdown_hours`: The number of hours of inactivity before the
+    ///    server shuts down. If None, the server will not shut down due to
+    ///    inactivity.
+    fn idle_poll_task(
+        all_sessions: Arc<RwLock<Vec<KernelSession>>>,
+        mut idle_nudge_rx: tokio::sync::mpsc::Receiver<()>,
+        idle_shutdown_hours: Option<u16>,
+    ) {
+        tokio::spawn(async move {
+            // Mark the start time of the idle poll task
+            let start_time = std::time::Instant::now();
+
+            // Create the interval for the idle poll task.
+            let duration = match idle_shutdown_hours {
+                Some(hours) => match hours {
+                    0 => {
+                        // Zero hours would create a busy loop, so if 0 is
+                        // specified, check every 30 seconds
+                        log::info!("Server set to shut down after 30 seconds of inactivity");
+                        tokio::time::Duration::from_secs(30)
+                    }
+                    _ => {
+                        // Set an interval for the specified number of hours.
+                        log::info!(
+                            "Server set to shut down after {} hours of inactivity",
+                            hours
+                        );
+                        tokio::time::Duration::from_secs((hours as u64) * 3600)
+                    }
+                },
+                None => {
+                    // If no idle shutdown hours are specified, default to 24 hours
+                    log::debug!("idle_shutdown_hours not specified; the server will not shut down due to inactivity");
+                    tokio::time::Duration::from_secs(24 * 3600)
+                }
+            };
+            let mut interval = tokio::time::interval(duration);
+
+            // Consume the first tick immediately (tokio intervals start at 0)
+            interval.tick().await;
+
+            loop {
+                // Wait for either the interval to expire or an idle nudge
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // If no idle shutdown hours are specified, skip the check
+                        if idle_shutdown_hours.is_none() {
+                            continue;
+                        }
+
+                        // Check wall clock time; if we haven't yet passed the duration of the idle
+                        // timeout, skip the check. This should not be necessary since we consumed
+                        // the first tick already, but we've seen some cases where the interval
+                        // ticks _twice_ after being created. If this happens the server will shut
+                        // down immediately after starting since it has no sessions running.
+                        let elapsed = std::time::Instant::now().duration_since(start_time);
+                        if elapsed < duration {
+                            log::trace!("Skipping idle check; elapsed time is {:?} but idle timeout is {:?}", elapsed, duration);
+                            continue;
+                        }
+
+                        // The interval has expired; check for idle sessions
+                        let sessions = {
+                            all_sessions.read().unwrap().clone()
+                        };
+                        Server::<C>::check_idle_sessions(&sessions).await;
+                    }
+                    _ = idle_nudge_rx.recv() => {
+                        log::trace!("Received an idle nudge; resetting interval");
+                        // Received an idle nudge; reset the interval
+                        interval.reset();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Check for idle sessions.
+    ///
+    /// This function checks all sessions to see if they are idle and
+    /// disconnected. If all sessions are idle and disconnected, the server will
+    /// shut down.
+    async fn check_idle_sessions(sessions: &Vec<KernelSession>) {
+        let mut running_sessions = Vec::new();
+        log::debug!(
+            "Idle timeout: checking for idle sessions ({} to check)",
+            sessions.len()
+        );
+
+        // Check to see if all sessions are idle and disconnected.
+        for session in sessions.iter() {
+            let state = session.state.read().await;
+            if state.status == models::Status::Busy {
+                log::debug!(
+                    "Session {} is in busy state; server is not idle",
+                    session.connection.session_id
+                );
+                return;
+            }
+            if state.connected {
+                log::debug!(
+                    "Session {} has an active connection; server is not idle",
+                    session.connection.session_id
+                );
+                return;
+            }
+
+            // This session may need to be shut down
+            if state.status != models::Status::Exited
+                && state.status != models::Status::Uninitialized
+            {
+                running_sessions.push(session.clone());
+            }
+        }
+
+        // If we got here, all sessions are idle and disconnected (or otherwise
+        // not busy, e.g. they're exited). If we have sessions to shut down, log
+        // a message.
+        if !running_sessions.is_empty() {
+            log::info!(
+                "All sessions are idle and disconnected; shutting down {} sessions",
+                running_sessions.len()
+            );
+        }
+
+        // Shut down all the running sessions and exit the server
+        if let Err(err) = Server::<C>::shutdown_sessions_and_exit(&running_sessions).await {
+            err.log();
+        }
+    }
+
+    /// Get the list of running sessions.
+    async fn running_sessions(sessions: &Vec<KernelSession>) -> Vec<KernelSession> {
+        let mut running_sessions = Vec::new();
+        for session in sessions.iter() {
+            let status = session.state.read().await.status;
+            if status != models::Status::Exited && status != models::Status::Uninitialized {
+                running_sessions.push(session.clone());
+            }
+        }
+        running_sessions
+    }
+
+    /// Shut down all running sessions and exit the server.
+    async fn shutdown_sessions_and_exit(
+        running_sessions: &Vec<KernelSession>,
+    ) -> Result<(), KSError> {
+        // Early exit if all sessions are already stopped
+        if running_sessions.is_empty() {
+            tokio::spawn(async move {
+                // Wait 1 second before exiting
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                log::info!("All sessions have exited; exiting Kallichore server.");
+                std::process::exit(0);
+            });
+            return Ok(());
+        }
+
+        // Spawn a task to wait for all sessions to exit
+        let exiting_sessions = running_sessions.clone();
+        tokio::spawn(async move {
+            // Create exit event listeners for each running session
+            let mut exit_listeners = Vec::new();
+            for session in &exiting_sessions {
+                let exit_listener = session.exit_event.listen();
+                exit_listeners.push(exit_listener);
+            }
+
+            // Wait for all sessions to exit.
+            //
+            // Consider: we could add a timeout here to prevent the server from
+            // hanging indefinitely if a session does not exit even after being
+            // asked to do so.
+            loop {
+                // Wait for any of the exit events to be triggered.
+                let (_, _, remaining) = future::select_all(exit_listeners).await;
+                exit_listeners = remaining;
+                if exit_listeners.is_empty() {
+                    break;
+                } else {
+                    log::info!("Session has exited; {} remaining)", exit_listeners.len());
+                }
+            }
+
+            log::info!("All sessions have exited; exiting Kallichore server.");
+            std::process::exit(0);
+        });
+
+        log::info!("Shutting down {} running sessions", running_sessions.len());
+
+        // Send a shutdown signal to each running session
+        for session in running_sessions {
+            let session_id = session.connection.session_id.clone();
+            match session.shutdown().await {
+                Ok(_) => {
+                    log::info!("Session {} has been asked to shut down", session_id);
+                }
+                Err(e) => {
+                    let error = KSError::SessionInterruptFailed(session_id, e);
+                    error.log();
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Look up a kernel session by its session ID.
@@ -341,6 +572,7 @@ where
         let kernel_session = match KernelSession::new(
             session,
             connection_file.clone(),
+            self.idle_nudge_tx.clone(),
             self.reserved_ports.clone(),
         ) {
             Ok(kernel_session) => kernel_session,
@@ -361,13 +593,42 @@ where
     /// Adopt a session
     async fn adopt_session(
         &self,
-        adopted_session: models::AdoptedSession,
-        _context: &C,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
+        context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
-        info!("adopt_session not yet implemented");
-        Ok(AdoptSessionResponse::SessionID(NewSession200Response {
-            session_id: adopted_session.session.session_id,
-        }))
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "adopt_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(AdoptSessionResponse::Unauthorized);
+        }
+
+        // Find the session with the given ID
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(AdoptSessionResponse::SessionNotFound);
+            }
+        };
+
+        // Create the connection file from the connection info
+        let connection_file = ConnectionFile::from_info(connection_info.clone());
+
+        // Attempt to connect to the new session
+        let result = kernel_session.connect(connection_file).await;
+        match result {
+            Ok(v) => Ok(AdoptSessionResponse::Adopted(v)),
+            Err(error) => {
+                error.log();
+                Ok(AdoptSessionResponse::AdoptionFailed(error.to_json(None)))
+            }
+        }
     }
 
     /// Delete a session
@@ -442,6 +703,37 @@ where
         Ok(ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket)
     }
 
+    async fn connection_info(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<ConnectionInfoResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "connection_info(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(ConnectionInfoResponse::Unauthorized);
+        }
+
+        // Get the kernel session with the given ID
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(ConnectionInfoResponse::SessionNotFound);
+            }
+        };
+
+        // Return the connection info
+        Ok(ConnectionInfoResponse::ConnectionInfo(
+            kernel_session.connection_file.info.clone(),
+        ))
+    }
+
     async fn kill_session(
         &self,
         session_id: String,
@@ -508,6 +800,8 @@ where
                 }
             }
             None => {
+                // This could happen if it's an adopted session (for which we don't have a process
+                // ID)
                 let err = KSError::NoProcess(session_id.clone());
                 err.log();
                 Ok(KillSessionResponse::KillFailed(err.to_json(None)))
@@ -820,7 +1114,11 @@ where
     }
 
     async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {
-        info!("shutdown server");
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "shutdown_server - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
 
         // Token validation
         if !self.validate_token(context) {
@@ -830,73 +1128,14 @@ where
         // Create a vector of all the kernel sessions that are currently running
         let running_sessions = {
             let kernel_sessions = self.kernel_sessions.read().unwrap().clone();
-            let mut running_sessions: Vec<KernelSession> = vec![];
-            for session in kernel_sessions.iter() {
-                let running = session.state.read().await.status != models::Status::Exited;
-                if running {
-                    running_sessions.push(session.clone());
-                }
-            }
-            running_sessions
+            Self::running_sessions(&kernel_sessions).await
         };
 
-        // Early exit if all sessions are already stopped
-        if running_sessions.is_empty() {
-            tokio::spawn(async move {
-                // Wait 1 second before exiting
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                log::info!("All sessions have exited; exiting Kallichore server.");
-                std::process::exit(0);
-            });
-            return Ok(ShutdownServerResponse::ShuttingDown(
+        match Self::shutdown_sessions_and_exit(&running_sessions).await {
+            Ok(_) => Ok(ShutdownServerResponse::ShuttingDown(
                 serde_json::Value::Null,
-            ));
+            )),
+            Err(e) => Ok(ShutdownServerResponse::ShutdownFailed(e.to_json(None))),
         }
-
-        // Spawn a task to wait for all sessions to exit
-        let exiting_sessions = running_sessions.clone();
-        tokio::spawn(async move {
-            // Create exit event listeners for each running session
-            let mut exit_listeners = Vec::new();
-            for session in &exiting_sessions {
-                let exit_listener = session.exit_event.listen();
-                exit_listeners.push(exit_listener);
-            }
-
-            loop {
-                // Wait for any of the exit events to be triggered
-                let (_, _, remaining) = future::select_all(exit_listeners).await;
-                exit_listeners = remaining;
-                if exit_listeners.is_empty() {
-                    break;
-                } else {
-                    log::info!("Session has exited; {} remaining)", exit_listeners.len());
-                }
-            }
-
-            log::info!("All sessions have exited; exiting Kallichore server.");
-            std::process::exit(0);
-        });
-
-        log::info!("Shutting down {} running sessions", running_sessions.len());
-
-        // Send a shutdown signal to each running session
-        for session in running_sessions {
-            let session_id = session.connection.session_id.clone();
-            match session.shutdown().await {
-                Ok(_) => {
-                    log::info!("Session {} has been asked to shut down", session_id);
-                }
-                Err(e) => {
-                    let error = KSError::SessionInterruptFailed(session_id, e);
-                    error.log();
-                    return Ok(ShutdownServerResponse::ShutdownFailed(error.to_json(None)));
-                }
-            }
-        }
-
-        Ok(ShutdownServerResponse::ShuttingDown(
-            serde_json::Value::Null,
-        ))
     }
 }

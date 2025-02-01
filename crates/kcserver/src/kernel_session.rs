@@ -56,7 +56,7 @@ pub struct KernelSession {
     pub state: Arc<RwLock<KernelState>>,
 
     /// The current set of reserved ports for all kernels
-    pub reserved_ports: Arc<std::sync::RwLock<Vec<u16>>>,
+    pub reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
 
     /// The date and time the kernel was started
     pub started: DateTime<Utc>,
@@ -82,16 +82,19 @@ impl KernelSession {
     pub fn new(
         session: models::NewSession,
         connection_file: ConnectionFile,
-        reserved_ports: Arc<std::sync::RwLock<Vec<u16>>>,
+        idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
+        reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
         let kernel_state = Arc::new(RwLock::new(KernelState::new(
             session.clone(),
             session.working_directory.clone(),
+            idle_nudge_tx,
             json_tx.clone(),
         )));
-        let connection = KernelConnection::from_session(&session, connection_file.key.clone())?;
+        let connection =
+            KernelConnection::from_session(&session, connection_file.info.key.clone())?;
         let started = Utc::now();
 
         // On Windows, if the interrupt mode is Signal, create an event for
@@ -135,6 +138,18 @@ impl KernelSession {
     ///
     /// The kernel info, as a JSON object.
     pub async fn start(&self) -> Result<serde_json::Value, StartupError> {
+        // Ensure that we have some arguments. It is possible to create a session that has no
+        // arguments (because it is intended to be started externally); these sessions can't be
+        // started by the server.
+        if self.argv.is_empty() {
+            let err = KSError::ProcessStartFailed(anyhow::anyhow!("No arguments provided"));
+            return Err(StartupError {
+                exit_code: None,
+                output: None,
+                error: err.to_json(None),
+            });
+        }
+
         // Mark the kernel as starting
         {
             let mut state = self.state.write().await;
@@ -293,6 +308,14 @@ impl KernelSession {
             // update the status of the session
             let mut state = self.state.write().await;
             state.process_id = pid;
+            log::trace!(
+                "[session {}]: Session child process started with pid {}",
+                self.connection.session_id,
+                match pid {
+                    Some(pid) => pid.to_string(),
+                    None => "<none>".to_string(),
+                }
+            );
         }
 
         // Create a channel to receive startup status from the kernel
@@ -300,9 +323,12 @@ impl KernelSession {
 
         // Spawn the ZeroMQ proxy thread
         let kernel = self.clone();
+        let connection_file = self.connection_file.clone();
         let startup_proxy_tx = startup_tx.clone();
         tokio::spawn(async move {
-            kernel.start_zmq_proxy(startup_proxy_tx).await;
+            kernel
+                .start_zmq_proxy(connection_file, startup_proxy_tx)
+                .await;
         });
 
         // Spawn a task to wait for the child process to exit
@@ -314,7 +340,12 @@ impl KernelSession {
 
         // Wait for either the session to connect to its sockets or for
         // something awful to happen
+        log::trace!(
+            "[session {}] Waiting for kernel sockets to connect",
+            self.connection.session_id
+        );
         let startup_result = startup_rx.recv().await;
+        log::trace!("[session {}] Waiting complete", self.connection.session_id);
 
         let result = match startup_result {
             Ok(StartupStatus::Connected(kernel_info)) => {
@@ -742,9 +773,108 @@ impl KernelSession {
         });
     }
 
-    pub async fn start_zmq_proxy(&self, status_tx: Sender<StartupStatus>) {
+    /**
+     * Connect to the kernel. This is only used when connecting to a kernel that is already running
+     * (i.e. when adopting a kernel).
+     */
+    pub async fn connect(
+        &self,
+        connection_file: ConnectionFile,
+    ) -> Result<serde_json::Value, KSError> {
+        // Create a channel to receive startup status from the kernel.
+        let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
+
+        // Attempt to start the ZeroMQ proxy.
+        let kernel = self.clone();
+        tokio::spawn(async move {
+            log::debug!(
+                "[session {}] Starting ZeroMQ proxy for adopted kernel",
+                kernel.connection.session_id.clone()
+            );
+
+            // Start the proxy. The proxy runs until all sockets are disconnected.
+            kernel.start_zmq_proxy(connection_file, startup_tx).await;
+
+            log::debug!(
+                "[session {}] ZeroMQ proxy for adopted kernel has exited",
+                kernel.connection.session_id.clone()
+            );
+
+            // Since this kernel has no backing process, once all the sockets are disconnected, we
+            // should treat the kernel as exited.
+            {
+                let mut state = kernel.state.write().await;
+                kernel.exit_event.notify(usize::MAX);
+                state
+                    .set_status(
+                        models::Status::Exited,
+                        Some(String::from(
+                            "all sockets disconnected from an adopted kernel",
+                        )),
+                    )
+                    .await;
+            }
+
+            // Fire the exit event; use a code of 0 since there's no such thing as a non-zero exit
+            // for an adopted kernel
+            let event = WebsocketMessage::Kernel(KernelMessage::Exited(0));
+            kernel
+                .ws_json_tx
+                .send(event)
+                .await
+                .expect("Failed to send exit event to client");
+        });
+
+        // Wait for the proxy to connect
+        let startup_result = startup_rx.recv().await;
+        let result = match startup_result {
+            Ok(StartupStatus::Connected(kernel_info)) => {
+                log::trace!(
+                    "[session {}] Kernel sockets connected successfully; kernel successfully adopted",
+                    self.connection.session_id.clone()
+                );
+                Ok(kernel_info)
+            }
+            Ok(StartupStatus::ConnectionFailed(_output, e)) => {
+                // Ignore the output; we can't capture output from an adopted kernel so it'll be
+                // empty
+                log::error!(
+                    "[session {}] Failed to connect to adopted kernel: {}",
+                    self.connection.session_id.clone(),
+                    e
+                );
+                Err(e)
+            }
+            Ok(StartupStatus::AbnormalExit(_, _, e)) => {
+                // We don't expect an adopted kernel to exit before connecting; in fact, we can't
+                // even detect it since we don't have the process ID, so this should be considered
+                // an error.
+                log::error!(
+                    "[session {}] Unexpected exit from adopted kernel: {}",
+                    self.connection.session_id.clone(),
+                    e
+                );
+                Err(e)
+            }
+            Err(e) => {
+                log::error!(
+                    "[session {}] Failed to connect to adopted kernel: {}",
+                    self.connection.session_id.clone(),
+                    e
+                );
+                Err(KSError::SessionConnectionFailed(anyhow::anyhow!("{}", e)))
+            }
+        };
+        result
+    }
+
+    pub async fn start_zmq_proxy(
+        &self,
+        connection_file: ConnectionFile,
+        status_tx: Sender<StartupStatus>,
+    ) {
         let mut proxy = ZmqWsProxy::new(
-            self.connection_file.clone(),
+            connection_file.clone(),
             self.connection.clone(),
             self.state.clone(),
             self.ws_json_tx.clone(),
@@ -796,6 +926,11 @@ impl KernelSession {
                 let kernel_info = proxy.get_kernel_info().await;
                 match kernel_info {
                     Ok(info) => {
+                        log::trace!(
+                            "[session {}] Kernel info received: {:?}",
+                            self.connection.session_id,
+                            info
+                        );
                         status_tx
                             .send(StartupStatus::Connected(info))
                             .await
@@ -854,11 +989,11 @@ impl KernelSession {
         // sockets are closed; release the reserved ports
         let mut reserved_ports = self.reserved_ports.write().unwrap();
         reserved_ports.retain(|&port| {
-            port != self.connection_file.control_port
-                && port != self.connection_file.shell_port
-                && port != self.connection_file.stdin_port
-                && port != self.connection_file.iopub_port
-                && port != self.connection_file.hb_port
+            port != connection_file.info.control_port
+                && port != connection_file.info.shell_port
+                && port != connection_file.info.stdin_port
+                && port != connection_file.info.iopub_port
+                && port != connection_file.info.hb_port
         });
         log::trace!(
             "Released reserved ports for session {}; there are now {} reserved ports",

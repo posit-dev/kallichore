@@ -1,7 +1,7 @@
 //
 // main.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -48,6 +48,14 @@ struct Args {
     /// file in addition to standard streams.
     #[arg(long)]
     log_file: Option<String>,
+
+    /// The number of hours of idle time before the server shuts down. The
+    /// server is considered idle if all sessions are idle and no session is
+    /// connected. If not specified, the server will not shut down due to
+    /// inactivity; if set to 0, the server will shut down after 30 seconds when
+    /// idle.
+    #[arg(short, long)]
+    idle_shutdown_hours: Option<u16>,
 
     /// The log level to use. Valid values are "trace", "debug", "info", "warn",
     /// and "error". If not specified, the default log level is "info", or the
@@ -202,7 +210,7 @@ async fn main() {
   | \   /  |  |/  |/  |  /    |/ \   /  \_/  |  |/  
   |  \_/\_/|_/|__/|__/|_/\___/|   |_/\__/    |_/|__/
   A Jupyter Kernel supervisor. Version {}.
-  Copyright (c) 2024, Posit Software PBC. All rights reserved.
+  Copyright (c) 2025, Posit Software PBC. All rights reserved.
 "#,
         env!("CARGO_PKG_VERSION")
     );
@@ -212,5 +220,5 @@ async fn main() {
     println!("Listening at {}", addr);
 
     log::info!("Starting Kallichore server at {}", addr);
-    server::create(&addr, token).await;
+    server::create(&addr, token, args.idle_shutdown_hours).await;
 }

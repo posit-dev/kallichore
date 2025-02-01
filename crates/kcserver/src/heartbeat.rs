@@ -6,6 +6,7 @@
 //
 
 use std::sync::Arc;
+use std::usize;
 
 use kallichore_api::models::Status;
 use tokio::sync::RwLock;
@@ -15,12 +16,14 @@ use zeromq::SocketRecv;
 use zeromq::SocketSend;
 
 use crate::kernel_state::KernelState;
+use event_listener::Event;
 use tokio::time::{timeout, Duration};
 
 pub struct HeartbeatMonitor {
     state: Arc<RwLock<KernelState>>,
     session_id: String,
     address: String,
+    disconnected_event: Arc<Event>,
 }
 
 const HB_PAYLOAD: &str = "kallichore-heartbeat";
@@ -34,11 +37,17 @@ impl HeartbeatMonitor {
     /// - `state`: The kernel state to monitor.
     /// - `session_id`: The ID of the session to monitor.
     /// - `address`: The address of the heartbeat socket.
-    pub fn new(state: Arc<RwLock<KernelState>>, session_id: String, address: String) -> Self {
+    pub fn new(
+        state: Arc<RwLock<KernelState>>,
+        session_id: String,
+        address: String,
+        disconnected_event: Arc<Event>,
+    ) -> Self {
         Self {
             state,
             session_id,
             address,
+            disconnected_event,
         }
     }
 
@@ -48,6 +57,7 @@ impl HeartbeatMonitor {
         let addr = self.address.clone();
         let state = self.state.clone();
         let session_id = self.session_id.clone();
+        let disconnected_event = self.disconnected_event.clone();
         tokio::spawn(async move {
             // Attempt to connect to the heartbeat socket. If we fail to connect, we won't be able to
             // send heartbeats, so we'll just return; the kernel can still function in this case,
@@ -129,13 +139,12 @@ impl HeartbeatMonitor {
                                     .await;
                             }
                         }
-                        response
                     }
                     Ok(Err(e)) => {
                         // We couldn't receive the heartbeat response
-                        let state = state.read().await;
+                        let current = state.read().await;
 
-                        if state.status == Status::Exited {
+                        if current.status == Status::Exited {
                             // If the kernel has exited, it's normal for that to
                             // cause a receive error (the other end of the
                             // socket is gone). We can just stop the heartbeat
@@ -146,26 +155,33 @@ impl HeartbeatMonitor {
                             );
                             hb_socket.close().await;
                             return;
-                        }
-
-                        log::error!(
-                            "[session {}] Error receiving heartbeat response: {:?} (kernel is {})",
+                        } else {
+                            // Otherwise, log the error and mark the kernel as disconnected.
+                            // Currently, the underlying zeromq library doesn't provide a way to
+                            // listen to socket disconnection events, so this is how we detect
+                            // disconnects.
+                            log::info!(
+                            "[session {}] Error receiving heartbeat response: {:?} (kernel is {}). Marking kernel disconnected.",
                             session_id,
                             e,
-                            state.status
-                        );
+                            current.status);
+                            disconnected_event.notify(usize::MAX);
+                        }
+                        hb_socket.close().await;
                         return;
                     }
                     Err(_) => {
                         // Handle the timeout error
-                        log::error!(
-                            "[session {}] No heartbeat response received after 5s, marking kernel as offline.", session_id
-                        );
-                        let mut state = state.write().await;
-                        state
-                            .set_status(Status::Offline, Some(String::from("lost heartbeat")))
-                            .await;
-                        break;
+                        if !offline {
+                            offline = true;
+                            log::error!(
+                                "[session {}] No heartbeat response received after 5s, marking kernel as offline.", session_id
+                            );
+                            let mut state = state.write().await;
+                            state
+                                .set_status(Status::Offline, Some(String::from("lost heartbeat")))
+                                .await;
+                        }
                     }
                 };
 

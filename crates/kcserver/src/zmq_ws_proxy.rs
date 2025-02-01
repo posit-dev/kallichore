@@ -5,20 +5,20 @@
 //
 //
 
-use std::{str::FromStr, sync::Arc};
-
 use async_channel::{Receiver, Sender};
 use event_listener::Event;
+use futures::{stream, StreamExt};
 use kallichore_api::models;
 use kcshared::{
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_message::KernelMessage,
     websocket_message::WebsocketMessage,
 };
+use std::{str::FromStr, sync::Arc};
 use tokio::{select, sync::RwLock};
 use zeromq::{
-    util::PeerIdentity, DealerSocket, Socket, SocketOptions, SocketRecv, SocketSend, SubSocket,
-    ZmqMessage,
+    util::PeerIdentity, DealerSocket, Socket, SocketEvent, SocketOptions, SocketRecv, SocketSend,
+    SubSocket, ZmqMessage,
 };
 
 use crate::{
@@ -44,6 +44,7 @@ pub struct ZmqWsProxy {
     pub ws_json_tx: Sender<WebsocketMessage>,
     pub ws_zmq_rx: Receiver<JupyterMessage>,
     pub exit_event: Arc<Event>,
+    pub disconnected_event: Arc<Event>,
     pub state: Arc<RwLock<KernelState>>,
 }
 
@@ -72,7 +73,11 @@ impl ZmqWsProxy {
         exit_event: Arc<Event>,
     ) -> Self {
         let session_id = connection.session_id.clone();
-        let hb_address = format!("tcp://{}:{}", connection_file.ip, connection_file.hb_port);
+        let hb_address = format!(
+            "tcp://{}:{}",
+            connection_file.info.ip, connection_file.info.hb_port
+        );
+        let disconnected_event = Arc::new(Event::new());
 
         Self {
             shell_socket: Some(DealerSocket::with_options(ZmqWsProxy::dealer_peer_opts(
@@ -85,12 +90,18 @@ impl ZmqWsProxy {
             stdin_socket: Some(DealerSocket::with_options(ZmqWsProxy::dealer_peer_opts(
                 session_id.clone(),
             ))),
-            heartbeat: HeartbeatMonitor::new(state.clone(), session_id.clone(), hb_address),
+            heartbeat: HeartbeatMonitor::new(
+                state.clone(),
+                session_id.clone(),
+                hb_address,
+                disconnected_event.clone(),
+            ),
             connection_file,
             connection,
             ws_json_tx,
             ws_zmq_rx,
             exit_event,
+            disconnected_event,
             state,
             session_id: session_id.clone(),
             closed: false,
@@ -113,13 +124,23 @@ impl ZmqWsProxy {
             anyhow::bail!("Cannot connect; proxy is closed.");
         }
 
+        log::trace!(
+            "[session {}] Connecting to sockets on ip ${} (shell = {}, iopub = {}, control = {}, stdin = {})",
+            self.connection.session_id,
+            self.connection_file.info.ip,
+            self.connection_file.info.shell_port,
+            self.connection_file.info.iopub_port,
+            self.connection_file.info.control_port,
+            self.connection_file.info.stdin_port,
+        );
+
         self.shell_socket
             .as_mut()
             .unwrap()
             .connect(
                 format!(
                     "tcp://{}:{}",
-                    self.connection_file.ip, self.connection_file.shell_port
+                    self.connection_file.info.ip, self.connection_file.info.shell_port
                 )
                 .as_str(),
             )
@@ -128,7 +149,7 @@ impl ZmqWsProxy {
         log::trace!(
             "[session {}] Connected to shell socket on port {}",
             self.connection.session_id,
-            self.connection_file.shell_port
+            self.connection_file.info.shell_port
         );
 
         self.iopub_socket
@@ -137,7 +158,7 @@ impl ZmqWsProxy {
             .connect(
                 format!(
                     "tcp://{}:{}",
-                    self.connection_file.ip, self.connection_file.iopub_port
+                    self.connection_file.info.ip, self.connection_file.info.iopub_port
                 )
                 .as_str(),
             )
@@ -145,7 +166,7 @@ impl ZmqWsProxy {
         log::trace!(
             "[session {}] Connected to iopub socket on port {}",
             self.connection.session_id,
-            self.connection_file.iopub_port
+            self.connection_file.info.iopub_port
         );
 
         // Subscribe to all messages
@@ -157,7 +178,7 @@ impl ZmqWsProxy {
             .connect(
                 format!(
                     "tcp://{}:{}",
-                    self.connection_file.ip, self.connection_file.control_port
+                    self.connection_file.info.ip, self.connection_file.info.control_port
                 )
                 .as_str(),
             )
@@ -165,7 +186,7 @@ impl ZmqWsProxy {
         log::trace!(
             "[session {}] Connected to control socket on port {}",
             self.connection.session_id,
-            self.connection_file.control_port
+            self.connection_file.info.control_port
         );
 
         self.stdin_socket
@@ -174,7 +195,7 @@ impl ZmqWsProxy {
             .connect(
                 format!(
                     "tcp://{}:{}",
-                    self.connection_file.ip, self.connection_file.stdin_port
+                    self.connection_file.info.ip, self.connection_file.info.stdin_port
                 )
                 .as_str(),
             )
@@ -182,7 +203,7 @@ impl ZmqWsProxy {
         log::trace!(
             "[session {}] Connected to stdin socket on port {}",
             self.connection.session_id,
-            self.connection_file.stdin_port
+            self.connection_file.info.stdin_port
         );
 
         // Sockets are connected; start the heartbeat monitor
@@ -212,6 +233,10 @@ impl ZmqWsProxy {
         };
 
         // Translate it into a wire message and send it to the shell socket
+        log::trace!(
+            "[session {}] Sending initial kernel_info_request message to kernel",
+            self.connection.session_id
+        );
         let wire_message = WireMessage::from_jupyter(request, self.connection.clone())?;
         let zmq_message: ZmqMessage = wire_message.into();
         self.shell_socket
@@ -219,9 +244,16 @@ impl ZmqWsProxy {
             .unwrap()
             .send(zmq_message)
             .await?;
-
+        log::trace!(
+            "[session {}] Waiting for kernel_info_reply message from kernel",
+            self.connection.session_id
+        );
         // Wait for the reply
         let reply = self.wait_for_shell_reply(msg_id.clone()).await?;
+        log::trace!(
+            "[session {}] Got kernel_info_reply message from kernel",
+            self.connection.session_id
+        );
 
         Ok(reply.content)
     }
@@ -276,9 +308,40 @@ impl ZmqWsProxy {
             "[session {}] Starting ZeroMQ-WebSocket proxy",
             self.connection.session_id
         );
-        // Wait for a message from any socket
+
+        // Create monitors for each socket.
+        //
+        // NOTE: This is currently just defensive programming; the underlying library zmq.rs does
+        // not actually report Closed socket events as of 0.4.1.
+        let shell_monitor = self.shell_socket.as_mut().unwrap().monitor();
+        let iopub_monitor = self.iopub_socket.as_mut().unwrap().monitor();
+        let control_monitor = self.control_socket.as_mut().unwrap().monitor();
+        let stdin_monitor = self.stdin_socket.as_mut().unwrap().monitor();
+
+        // Combine the streams into a single stream that we can select from
+        let all_monitors = vec![shell_monitor, iopub_monitor, control_monitor, stdin_monitor];
+        let mut sockets_connected = all_monitors.len();
+        let mut combined_stream = stream::select_all(all_monitors);
+
+        // Wait for a message from any socket, or for all sockets to close
         loop {
             select! {
+                evt = combined_stream.next() => {
+                    log::trace!("[session {}] Received event from socket monitor {:?}", session_id, evt);
+                    match evt {
+                        Some(SocketEvent::Closed) => {
+                            sockets_connected -= 1;
+                            log::info!("[session {}] Socket closed ({} remaining)", session_id, sockets_connected);
+                        },
+                        _ => {
+                            // Ignore other events
+                        }
+                    }
+                    if sockets_connected == 0 {
+                        // When all sockets are closed, exit the loop, ending the proxy
+                        break;
+                    }
+                },
                 shell_msg = self.shell_socket.as_mut().unwrap().recv() => {
                     match shell_msg {
                         Ok(msg) => {
@@ -337,6 +400,10 @@ impl ZmqWsProxy {
                 },
                 _ = self.exit_event.listen() => {
                     // The kernel has exited; close the proxy
+                    break;
+                },
+                _ = self.disconnected_event.listen() => {
+                    // The heartbeat monitor has detected a disconnect; close the proxy
                     break;
                 },
             };

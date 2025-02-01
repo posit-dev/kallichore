@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use kallichore_api::models::ConnectionInfo;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -19,36 +20,15 @@ use serde::Serialize;
 /// directly parsed from JSON.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ConnectionFile {
-    /// ZeroMQ port: Control channel (kernel interrupts)
-    pub control_port: u16,
-
-    /// ZeroMQ port: Shell channel (execution, completion)
-    pub shell_port: u16,
-
-    /// ZeroMQ port: Standard input channel (prompts)
-    pub stdin_port: u16,
-
-    /// ZeroMQ port: IOPub channel (broadcasts input/output)
-    pub iopub_port: u16,
-
-    /// ZeroMQ port: Heartbeat messages (echo)
-    pub hb_port: u16,
-
-    /// The transport type to use for ZeroMQ; generally "tcp"
-    pub transport: String,
-
-    /// The signature scheme to use for messages; generally "hmac-sha256"
-    pub signature_scheme: String,
-
-    /// The IP address to bind to
-    pub ip: String,
-
-    /// The HMAC-256 signing key, or an empty string for an unauthenticated
-    /// connection
-    pub key: String,
+    pub info: ConnectionInfo,
 }
 
 impl ConnectionFile {
+    /// Create a ConnectionFile from a ConnectionInfo struct.
+    pub fn from_info(info: ConnectionInfo) -> Self {
+        Self { info }
+    }
+
     /// Create a ConnectionFile by parsing the contents of a connection file.
     #[allow(dead_code)]
     pub fn from_file<P: AsRef<Path>>(connection_file: P) -> Result<Self, Box<dyn Error>> {
@@ -61,7 +41,7 @@ impl ConnectionFile {
 
     pub fn to_file<P: AsRef<Path>>(&self, connection_file: P) -> Result<(), Box<dyn Error>> {
         let file = File::create(connection_file)?;
-        serde_json::to_writer_pretty(file, self)?;
+        serde_json::to_writer_pretty(file, &self.info)?;
         Ok(())
     }
 
@@ -73,7 +53,7 @@ impl ConnectionFile {
     /// * `reserved_ports` - A list of ports that should not be used.
     fn find_port(
         name: String,
-        reserved_ports: Arc<RwLock<Vec<u16>>>,
+        reserved_ports: Arc<RwLock<Vec<i32>>>,
     ) -> Result<u16, anyhow::Error> {
         // The current candidate port; 0 indicates we haven't found one yet
         let mut port = 0;
@@ -96,7 +76,7 @@ impl ConnectionFile {
             // Check if the port is reserved
             {
                 let reserved_ports = reserved_ports.read().unwrap();
-                if reserved_ports.contains(&candidate) {
+                if reserved_ports.contains(&candidate.into()) {
                     // Try up to 10 times to find an unreserved port. Since
                     // we're picking from a large range of ports, hitting a
                     // previously reserved port is unlikely, but possible. If it
@@ -120,7 +100,7 @@ impl ConnectionFile {
             // Reserve the port
             {
                 let mut reserved_ports = reserved_ports.write().unwrap();
-                reserved_ports.push(candidate);
+                reserved_ports.push(candidate.into());
                 log::trace!(
                     "Picked {} port: {} ({} ports reserved)",
                     name,
@@ -146,7 +126,7 @@ impl ConnectionFile {
     /// have been reserved for use by another kernel that's also starting up.
     pub fn generate(
         ip: String,
-        reserved_ports: Arc<RwLock<Vec<u16>>>,
+        reserved_ports: Arc<RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
         use rand::Rng;
 
@@ -159,17 +139,18 @@ impl ConnectionFile {
         let iopub_port = ConnectionFile::find_port(String::from("iopub"), reserved_ports.clone())?;
         let hb_port = ConnectionFile::find_port(String::from("heartbeat"), reserved_ports.clone())?;
         let stdin_port = ConnectionFile::find_port(String::from("stdin"), reserved_ports.clone())?;
-        Ok(Self {
-            control_port,
-            shell_port,
-            stdin_port,
-            iopub_port,
-            hb_port,
+        let info = ConnectionInfo {
+            control_port: control_port.into(),
+            shell_port: shell_port.into(),
+            stdin_port: stdin_port.into(),
+            iopub_port: iopub_port.into(),
+            hb_port: hb_port.into(),
             transport: "tcp".to_string(),
             signature_scheme: "hmac-sha256".to_string(),
             key,
             ip,
-        })
+        };
+        Ok(Self { info })
     }
 
     /// Given a port, return a URI-like string that can be used to connect to
@@ -178,6 +159,6 @@ impl ConnectionFile {
     /// Example: `32` => `"tcp://127.0.0.1:32"`
     #[allow(dead_code)]
     pub fn endpoint(&self, port: u16) -> String {
-        format!("{}://{}:{}", self.transport, self.ip, port)
+        format!("{}://{}:{}", self.info.transport, self.info.ip, port)
     }
 }
