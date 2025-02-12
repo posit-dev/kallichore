@@ -999,7 +999,7 @@ where
 
     async fn channels_websocket_request(
         &self,
-        request: hyper::Request<Body>,
+        _request: hyper::Request<Body>,
         session_id: String,
         _context: &C,
     ) -> Result<Response<Body>, ApiError> {
@@ -1076,7 +1076,7 @@ where
         }
 
         #[cfg(feature = "websockets")]
-        return channels_websocket_request(request, client_session).await;
+        return channels_websocket_request(_request, client_session).await;
 
         #[cfg(not(feature = "websockets"))]
         {
