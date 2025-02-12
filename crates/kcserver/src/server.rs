@@ -35,10 +35,6 @@ use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::Sender;
-use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
-use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
@@ -395,6 +391,9 @@ use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
+
+#[cfg(feature = "websockets")]
+use crate::client_session_ws::{self, channels_websocket_request};
 
 impl<C> Server<C> {}
 
@@ -1000,7 +999,7 @@ where
 
     async fn channels_websocket_request(
         &self,
-        mut request: hyper::Request<Body>,
+        request: hyper::Request<Body>,
         session_id: String,
         _context: &C,
     ) -> Result<Response<Body>, ApiError> {
@@ -1010,12 +1009,7 @@ where
             "Upgrading channel connection to websocket for session '{}'",
             session_id
         );
-        let derived = {
-            let headers = request.headers();
-            let key = headers.get(SEC_WEBSOCKET_KEY);
-            key.map(|k| derive_accept_key(k.as_bytes()))
-        };
-        let version = request.version();
+
         let kernel_sessions = self.kernel_sessions.clone();
         {
             // Validate the session ID before upgrading the connection
@@ -1060,57 +1054,36 @@ where
             }
         }
 
-        tokio::task::spawn(async move {
-            match hyper::upgrade::on(&mut request).await {
-                Ok(upgraded) => {
-                    log::debug!("Creating session for websocket connection");
+        // Find the kernel session with the given ID
+        let client_session = {
+            let sessions = kernel_sessions.read().unwrap();
+            let session = sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+                .expect("Session not found");
 
-                    // Find the kernel session with the given ID
-                    let client_session = {
-                        let sessions = kernel_sessions.read().unwrap();
-                        let session = sessions
-                            .iter()
-                            .find(|s| s.connection.session_id == session_id)
-                            .expect("Session not found");
+            let ws_zmq_tx = session.ws_zmq_tx.clone();
+            let ws_json_rx = session.ws_json_rx.clone();
+            let connection = session.connection.clone();
+            let state = session.state.clone();
+            ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
+        };
 
-                        let ws_zmq_tx = session.ws_zmq_tx.clone();
-                        let ws_json_rx = session.ws_json_rx.clone();
-                        let connection = session.connection.clone();
-                        let state = session.state.clone();
-                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
-                    };
+        // Add it to the list of client sessions
+        {
+            let mut client_sessions = client_sessions.write().unwrap();
+            client_sessions.push(client_session.clone());
+        }
 
-                    // Add it to the list of client sessions
-                    {
-                        let mut client_sessions = client_sessions.write().unwrap();
-                        client_sessions.push(client_session.clone());
-                    }
+        #[cfg(feature = "websockets")]
+        return channels_websocket_request(request, client_session).await;
 
-                    log::debug!(
-                        "Connection upgraded to websocket for session '{}'",
-                        session_id
-                    );
-
-                    let stream =
-                        WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
-                    client_session.handle_channel_ws(stream).await;
-                }
-                Err(e) => {
-                    log::error!("Failed to upgrade channel connection to websocket: {}", e);
-                }
-            }
-        });
-        let upgrade = HeaderValue::from_static("Upgrade");
-        let websocket = HeaderValue::from_static("websocket");
-        let mut response = Response::new(Body::default());
-        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-        *response.version_mut() = version;
-        response.headers_mut().append(CONNECTION, upgrade);
-        response.headers_mut().append(UPGRADE, websocket);
-        response
-            .headers_mut()
-            .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
-        Ok(response)
+        #[cfg(not(feature = "websockets"))]
+        {
+            let mut response = Response::new(Body::empty());
+            *response.status_mut() = StatusCode::NOT_IMPLEMENTED;
+            return Ok(response);
+        }
     }
 
     async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {

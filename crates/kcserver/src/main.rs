@@ -13,10 +13,16 @@ use std::fs::File;
 
 use clap::{command, Parser};
 
-mod client_session;
+#[cfg(feature = "websockets")]
+mod client_session_ws;
+
+#[cfg(unix)]
+mod client_session_unix;
+
 use log::LevelFilter;
 use rand::Rng;
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
+mod client_session;
 mod connection_file;
 mod error;
 mod execution_queue;
