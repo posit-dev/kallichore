@@ -18,6 +18,7 @@ use crate::kernel_connection::KernelConnection;
 use crate::kernel_state::KernelState;
 use event_listener::Event;
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ClientSession {
     /// Metadata about the connection to the Jupyter side of the kernel
     pub connection: KernelConnection,

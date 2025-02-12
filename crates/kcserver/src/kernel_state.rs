@@ -96,6 +96,7 @@ impl KernelState {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn set_connected(&mut self, connected: bool) {
         self.connected = connected;
         self.nudge_idle().await;
