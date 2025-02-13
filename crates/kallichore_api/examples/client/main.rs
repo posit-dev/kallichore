@@ -86,12 +86,7 @@ fn main() {
         XSpanIdString::default()
     );
 
-    let mut client: Box<dyn ApiNoContext<ClientContext>> = if matches.is_present("https") {
-        // Using Simple HTTPS
-        let client =
-            Box::new(Client::try_new_https(&base_url).expect("Failed to create HTTPS client"));
-        Box::new(client.with_context(context))
-    } else {
+    let mut client: Box<dyn ApiNoContext<ClientContext>> = {
         // Using HTTP
         let client =
             Box::new(Client::try_new_http(&base_url).expect("Failed to create HTTP client"));
