@@ -1,66 +1,72 @@
 name: "Build Kallichore Linux Release"
 
 on:
-    workflow_call:
-      inputs:
-        version:
-          required: false
-          description: "The Kallichore version"
-          default: ${{ github.sha }}
-          type: string
-    workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        description: "The Kallichore version"
+        default: ${{ github.sha }}
+        type: string
+  workflow_dispatch:
 
 jobs:
-    build_linux:
-        name: Build Linux
-        runs-on: ${{ matrix.arch == 'x64' && 'ubuntu-22.04' || 'ubuntu-22.04-arm64-4-core' }}
-        timeout-minutes: 60
+  build_linux:
+    name: Build Linux
+    runs-on: ${{ matrix.arch == 'x64' && 'ubuntu-22.04' || 'ubuntu-22.04-arm64-4-core' }}
+    timeout-minutes: 60
 
-        env:
-            DEBUG_FLAG: ${{ matrix.flavor == 'debug' && '-debug' || '' }}
-            TARGET_FLAG: ${{ matrix.flavor == 'release' && '--release' || '' }}
-            ARCH_FLAG: ${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
+    env:
+      DEBUG_FLAG: ${{ matrix.flavor == 'debug' && '-debug' || '' }}
+      TARGET_FLAG: ${{ matrix.flavor == 'release' && '--release' || '' }}
+      ARCH_FLAG: ${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
+      GLIBC_MAX_VERSION: "2.26"
 
-        strategy:
-            matrix:
-                arch: [x64, arm64]
-                flavor: [debug, release]
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+        flavor: [debug, release]
 
-        steps:
-            - name: Checkout sources
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
 
-            - name: Setup Build Environment
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y cargo
+      - name: Setup Rust Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cargo
 
-            - name: Setup Build Environment for arm64
-              if: matrix.arch == 'arm64'
-              run: |
-                  rustup target add aarch64-unknown-linux-gnu
+      - name: Setup Zig Build Environment
+        run: |
+          cargo install --locked cargo-zigbuild
+          sudo apt install python3-pip
+          pip3 install ziglang
 
-            - name: Compile Kallichore (${{ matrix.flavor }})
-              run: |
-                  cargo clean
-                  cargo build --target ${ARCH_FLAG}-unknown-linux-gnu ${TARGET_FLAG}
+      - name: Setup Build Environment for arm64
+        if: matrix.arch == 'arm64'
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
 
-            # Compress kernel to a zip file
-            - name: Create archive
-              run: |
-                  # Enter the build directory
-                  pushd target/${ARCH_FLAG}-unknown-linux-gnu/${{ matrix.flavor }}
+      - name: Compile Kallichore (${{ matrix.flavor }})
+        run: |
+          cargo clean
+          cargo zigbuild --target ${ARCH_FLAG}-unknown-linux-gnu.${GLIBC_MAX_VERSION} ${TARGET_FLAG}
 
-                  # Compress the kernel to an archive
-                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-${{ matrix.arch }}.zip"
-                  [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
-                  zip -Xry $ARCHIVE kcserver LICENSE
+      # Compress kernel to a zip file
+      - name: Create archive
+        run: |
+          # Enter the build directory
+          pushd target/${ARCH_FLAG}-unknown-linux-gnu/${{ matrix.flavor }}
 
-                  popd
+          # Compress the kernel to an archive
+          ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-${{ matrix.arch }}.zip"
+          [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
+          zip -Xry $ARCHIVE kcserver LICENSE
 
-            - name: Upload archive
-              uses: actions/upload-artifact@v4
-              with:
-                  name: kallichore-${{ matrix.flavor }}-linux-${{ matrix.arch }}-archive
-                  path: kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-${{ matrix.arch }}.zip
+          popd
 
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: kallichore-${{ matrix.flavor }}-linux-${{ matrix.arch }}-archive
+          path: kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-${{ matrix.arch }}.zip
