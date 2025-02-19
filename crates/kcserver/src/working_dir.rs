@@ -5,16 +5,25 @@
 //
 //
 
+// This file contains three platform-specific implementations of the function
+// `get_process_cwd`, which returns the current working directory of a process
+// given its PID.
+
 use std::path::PathBuf;
 
+/// Given a process ID, returns its current working directory.
+///
+/// The Linux implementation uses the `/proc` filesystem.
 #[cfg(target_os = "linux")]
-pub fn get_process_cwd(pid: u32) -> Result<PathBuf, Box<dyn Error>> {
-    // On Linux, we can read the /proc/{pid}/cwd symlink
+pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
     let cwd_link = format!("/proc/{}/cwd", pid);
     let path = std::fs::read_link(cwd_link)?;
     Ok(path)
 }
 
+/// Given a process ID, returns its current working directory.
+///
+/// The Windows implementation uses the Windows API.
 #[cfg(target_os = "windows")]
 pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
     use windows::core::PWSTR;
@@ -30,12 +39,20 @@ pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
         let mut buffer = [0u16; MAX_PATH as usize];
         let mut size = buffer.len() as u32;
 
-        let result = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut size);
+        let result = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        );
 
         let _ = CloseHandle(handle);
 
         if let Err(err) = result {
-            return Err(anyhow::anyhow!("QueryFullProcessImageNameW failed: {err} {:?}", GetLastError()));
+            return Err(anyhow::anyhow!(
+                "QueryFullProcessImageNameW failed: {err} {:?}",
+                GetLastError()
+            ));
         }
 
         // Convert the buffer to a PathBuf
@@ -44,6 +61,9 @@ pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
     }
 }
 
+/// Given a process ID, returns its current working directory.
+///
+/// The macOS implementation uses the `proc_pidinfo` system call.
 #[cfg(target_os = "macos")]
 pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
     use errno::errno;
