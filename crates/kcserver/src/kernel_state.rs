@@ -101,6 +101,9 @@ impl KernelState {
         self.nudge_idle().await;
     }
 
+    /// Polls the working directory to see if it's changed.
+    ///
+    /// If it has, updates state and sends a message to the client.
     pub async fn poll_working_dir(&mut self) {
         if self.process_id.is_none() {
             return;
@@ -188,5 +191,15 @@ impl KernelState {
 
         let status_message = WebsocketMessage::Kernel(KernelMessage::Status(update.clone()));
         self.ws_json_tx.send(status_message).await.unwrap();
+
+        // When the kernel becomes idle after executing code, poll the working
+        // directory to see if it's changed.
+        if status == models::Status::Idle {
+            if let Some(reason) = update.reason {
+                if reason == "execute_request" {
+                    self.poll_working_dir().await;
+                }
+            }
+        }
     }
 }
