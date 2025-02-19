@@ -16,11 +16,12 @@ pub fn get_process_cwd(pid: u32) -> Result<PathBuf, Box<dyn Error>> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn get_process_cwd(pid: u32) -> Result<PathBuf, Box<dyn Error>> {
+pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
+    use windows::core::PWSTR;
     use windows::Win32::Foundation::*;
-    use windows::Win32::System::ProcessStatus::*;
     use windows::Win32::System::Threading::*;
 
+    #[allow(unsafe_code)]
     unsafe {
         // Open the process with minimum required access rights
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)?;
@@ -29,12 +30,12 @@ pub fn get_process_cwd(pid: u32) -> Result<PathBuf, Box<dyn Error>> {
         let mut buffer = [0u16; MAX_PATH as usize];
         let mut size = buffer.len() as u32;
 
-        let success = QueryFullProcessImageNameW(handle, 0, &mut buffer, &mut size);
+        let result = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut size);
 
-        CloseHandle(handle);
+        let _ = CloseHandle(handle);
 
-        if !success.as_bool() {
-            return Err("Failed to get process information".into());
+        if let Err(err) = result {
+            return Err(anyhow::anyhow!("QueryFullProcessImageNameW failed: {err} {:?}", GetLastError()));
         }
 
         // Convert the buffer to a PathBuf
