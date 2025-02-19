@@ -29,6 +29,7 @@ mod server;
 mod startup_status;
 mod wire_message;
 mod wire_message_header;
+mod working_dir;
 mod zmq_ws_proxy;
 
 #[derive(Parser, Debug)]

@@ -27,7 +27,8 @@ use tokio::sync::RwLock;
 
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
-    kernel_state::KernelState, startup_status::StartupStatus, zmq_ws_proxy::ZmqWsProxy,
+    kernel_state::KernelState, startup_status::StartupStatus, working_dir::get_process_cwd,
+    zmq_ws_proxy::ZmqWsProxy,
 };
 
 /// A Jupyter kernel session.
@@ -565,6 +566,17 @@ impl KernelSession {
             None => 0,
         };
 
+        let working_directory = match state.process_id {
+            Some(pid) => match get_process_cwd(pid) {
+                Ok(path) => path.to_string_lossy().to_string(),
+                Err(e) => {
+                    log::warn!("Failed to get working directory for process {}: {}", pid, e);
+                    state.working_directory.clone()
+                }
+            },
+            None => state.working_directory.clone(),
+        };
+
         models::ActiveSession {
             session_id: self.connection.session_id.clone(),
             username: self.connection.username.clone(),
@@ -582,7 +594,7 @@ impl KernelSession {
             busy_seconds,
             continuation_prompt: state.continuation_prompt.clone(),
             connected: state.connected,
-            working_directory: state.working_directory.clone(),
+            working_directory,
             started: self.started.clone(),
             status: state.status,
             execution_queue: state.execution_queue.to_json(),

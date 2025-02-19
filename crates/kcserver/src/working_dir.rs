@@ -1,0 +1,76 @@
+//
+// working-dir.rs
+//
+// Copyright (C) 2025 Posit Software, PBC. All rights reserved.
+//
+//
+
+use std::path::PathBuf;
+
+#[cfg(target_os = "linux")]
+pub fn get_process_cwd(pid: u32) -> Result<PathBuf, Box<dyn Error>> {
+    // On Linux, we can read the /proc/{pid}/cwd symlink
+    let cwd_link = format!("/proc/{}/cwd", pid);
+    let path = std::fs::read_link(cwd_link)?;
+    Ok(path)
+}
+
+#[cfg(target_os = "windows")]
+pub fn get_process_cwd(pid: u32) -> Result<PathBuf, Box<dyn Error>> {
+    use windows::Win32::Foundation::*;
+    use windows::Win32::System::ProcessStatus::*;
+    use windows::Win32::System::Threading::*;
+
+    unsafe {
+        // Open the process with minimum required access rights
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)?;
+
+        // Get the process information
+        let mut buffer = [0u16; MAX_PATH as usize];
+        let mut size = buffer.len() as u32;
+
+        let success = QueryFullProcessImageNameW(handle, 0, &mut buffer, &mut size);
+
+        CloseHandle(handle);
+
+        if !success.as_bool() {
+            return Err("Failed to get process information".into());
+        }
+
+        // Convert the buffer to a PathBuf
+        let path_str = String::from_utf16_lossy(&buffer[..size as usize]);
+        Ok(PathBuf::from(path_str))
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
+    use errno::errno;
+    use libc::{proc_pidinfo, PROC_PIDVNODEPATHINFO};
+
+    const PROC_PIDVNODEPATHINFO_SIZE: usize = size_of::<libc::proc_vnodepathinfo>();
+
+    #[allow(unsafe_code)]
+    unsafe {
+        let mut vpi: libc::proc_vnodepathinfo = std::mem::zeroed();
+
+        #[allow(trivial_casts)]
+        let ret = proc_pidinfo(
+            pid as i32,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            &mut vpi as *mut _ as *mut libc::c_void,
+            PROC_PIDVNODEPATHINFO_SIZE as i32,
+        );
+
+        if ret <= 0 {
+            return Err(anyhow::anyhow!("proc_pidinfo failed: {}", errno()));
+        }
+
+        let cwd = std::ffi::CStr::from_ptr(vpi.pvi_cdir.vip_path.as_ptr() as *const i8)
+            .to_string_lossy()
+            .into_owned();
+
+        Ok(PathBuf::from(cwd))
+    }
+}
