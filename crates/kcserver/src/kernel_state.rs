@@ -12,7 +12,7 @@ use kcshared::{
     websocket_message::WebsocketMessage,
 };
 
-use crate::execution_queue::ExecutionQueue;
+use crate::{execution_queue::ExecutionQueue, working_dir::get_process_cwd};
 
 /// The mutable state of the kernel.
 ///
@@ -99,6 +99,39 @@ impl KernelState {
     pub async fn set_connected(&mut self, connected: bool) {
         self.connected = connected;
         self.nudge_idle().await;
+    }
+
+    pub async fn poll_working_dir(&mut self) {
+        if self.process_id.is_none() {
+            return;
+        }
+
+        let working_dir = match get_process_cwd(self.process_id.unwrap()) {
+            Ok(dir) => dir,
+            Err(err) => {
+                log::error!(
+                    "[session {}] Failed to get working directory: {}",
+                    self.session_id,
+                    err
+                );
+                return;
+            }
+        };
+
+        let working_dir = working_dir.to_string_lossy().to_string();
+
+        if working_dir != self.working_directory {
+            log::debug!(
+                "[session {}] Working directory changed: '{}' => '{}'",
+                self.session_id,
+                self.working_directory,
+                working_dir
+            );
+            let msg =
+                WebsocketMessage::Kernel(KernelMessage::WorkingDirChanged(working_dir.clone()));
+            self.ws_json_tx.send(msg).await.unwrap();
+            self.working_directory = working_dir;
+        }
     }
 
     /// Set the kernel's status.
