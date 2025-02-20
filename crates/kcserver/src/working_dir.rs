@@ -61,10 +61,19 @@ pub fn expand_path<P: AsRef<Path>>(path: P) -> Result<PathBuf, anyhow::Error> {
             PathBuf::from(home_dir).join(remainder)
         };
 
-        Ok(path.canonicalize()?)
+        if cfg!(unix) {
+            // On Unix-like systems, we can use canonicalize to resolve symlinks
+            Ok(path.canonicalize()?)
+        } else {
+            // No need on Windows (plus `canonicalize` adds some extended path garbage)
+            Ok(path.to_path_buf())
+        }
     } else {
-        // If path doesn't start with ~, just canonicalize it
-        Ok(path.canonicalize()?)
+        if cfg!(unix) {
+            Ok(path.canonicalize()?)
+        } else {
+            Ok(path.to_path_buf())
+        }
     }
 }
 
