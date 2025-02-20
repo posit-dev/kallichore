@@ -479,6 +479,23 @@ impl KernelSession {
     /// `Ok(())` if the kernel was restarted successfully, or an error if the
     /// kernel could not be restarted.
     pub async fn restart(&self, working_directory: Option<String>) -> Result<(), StartupError> {
+        // Expand the working directory if it was supplied
+        let working_directory = match working_directory {
+            Some(dir) => match expand_path(dir.clone()) {
+                Ok(dir) => Some(dir.to_string_lossy().to_string()),
+                Err(e) => {
+                    log::warn!(
+                        "[session {}] Requested working directory '{}' could not be expanded: {} (ignoring)",
+                        self.connection.session_id,
+                        dir,
+                        e
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
         // Validate the working directory if it was supplied.
         let working_directory = match working_directory {
             Some(dir) => {
@@ -507,23 +524,6 @@ impl KernelSession {
                     }
                 }
             }
-            None => None,
-        };
-
-        // Expand the working directory if it was supplied
-        let working_directory = match working_directory {
-            Some(dir) => match expand_path(dir.clone()) {
-                Ok(dir) => Some(dir.to_string_lossy().to_string()),
-                Err(e) => {
-                    log::warn!(
-                        "[session {}] Requested working directory '{}' could not be expanded: {} (ignoring)",
-                        self.connection.session_id,
-                        dir,
-                        e
-                    );
-                    None
-                }
-            },
             None => None,
         };
 
