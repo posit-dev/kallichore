@@ -235,6 +235,16 @@
             }
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/restartSession"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Restarted",
@@ -754,6 +764,16 @@
           "username",
           "working_directory"
         ]
+      },
+      "restartSession": {
+        "type": "object",
+        "properties": {
+          "working_directory": {
+            "type": "string",
+            "description": "The desired working directory for the session after restart, if different from the session's working directory at startup"
+          }
+        },
+        "required": []
       },
       "execution_queue": {
         "type": "object",

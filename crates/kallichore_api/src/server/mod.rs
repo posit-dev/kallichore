@@ -1004,6 +1004,9 @@ where
 
                 // RestartSession - POST /sessions/{session_id}/restart
                 hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => {
+                    // --- Start Kallichore ---
+                    let body = request.into_body();
+                    // --- End Kallichore ---
                     // Path parameters
                     let path: &str = uri.path();
                     let path_params =
@@ -1027,62 +1030,93 @@ where
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
-                    let result = api_impl.restart_session(param_session_id, &context).await;
-                    let mut response = Response::new(Body::empty());
-                    response.headers_mut().insert(
-                        HeaderName::from_static("x-span-id"),
-                        HeaderValue::from_str(
-                            (&context as &dyn Has<XSpanIdString>)
-                                .get()
-                                .0
-                                .clone()
-                                .as_str(),
-                        )
-                        .expect("Unable to create X-Span-ID header value"),
-                    );
-
+                    // Body parameters (note that non-required body parameters will ignore garbage
+                    // values, rather than causing a 400 response). Produce warning header and logs for
+                    // any unused fields.
+                    let result = body.into_raw().await;
                     match result {
-                        Ok(rsp) => match rsp {
-                            RestartSessionResponse::Restarted(body) => {
-                                *response.status_mut() = StatusCode::from_u16(200)
-                                    .expect("Unable to turn 200 into a StatusCode");
+                            Ok(body) => {
+                                let mut unused_elements = Vec::new();
+                                let param_restart_session: Option<models::RestartSession> = if !body.is_empty() {
+                                    let deserializer = &mut serde_json::Deserializer::from_slice(&body);
+                                    let handle_unknown_field = |path: serde_ignored::Path<'_>| {
+                                        warn!("Ignoring unknown field in body: {}", path);
+                                        unused_elements.push(path.to_string());
+                                    };
+                                    match serde_ignored::deserialize(deserializer, handle_unknown_field) {
+                                        Ok(param_restart_session) => param_restart_session,
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                let result = api_impl.restart_session(
+                                            param_session_id,
+                                            param_restart_session,
+                                        &context
+                                    ).await;
+                                let mut response = Response::new(Body::empty());
                                 response.headers_mut().insert(
+                                            HeaderName::from_static("x-span-id"),
+                                            HeaderValue::from_str((&context as &dyn Has<XSpanIdString>).get().0.clone().as_str())
+                                                .expect("Unable to create X-Span-ID header value"));
+
+                                        if !unused_elements.is_empty() {
+                                            response.headers_mut().insert(
+                                                HeaderName::from_static("warning"),
+                                                HeaderValue::from_str(format!("Ignoring unknown fields in body: {:?}", unused_elements).as_str())
+                                                    .expect("Unable to create Warning header value"));
+                                        }
+
+                                        match result {
+                                            Ok(rsp) => match rsp {
+                                                RestartSessionResponse::Restarted
+                                                    (body)
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(200).expect("Unable to turn 200 into a StatusCode");
+                                                    response.headers_mut().insert(
                                                         CONTENT_TYPE,
                                                         HeaderValue::from_str("application/json")
                                                             .expect("Unable to create Content-Type header for RESTART_SESSION_RESTARTED"));
-                                let body_content = serde_json::to_string(&body)
-                                    .expect("impossible to fail to serialize");
-                                *response.body_mut() = Body::from(body_content);
-                            }
-                            RestartSessionResponse::RestartFailed(body) => {
-                                *response.status_mut() = StatusCode::from_u16(500)
-                                    .expect("Unable to turn 500 into a StatusCode");
-                                response.headers_mut().insert(
+                                                    let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
+                                                    *response.body_mut() = Body::from(body_content);
+                                                },
+                                                RestartSessionResponse::RestartFailed
+                                                    (body)
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(500).expect("Unable to turn 500 into a StatusCode");
+                                                    response.headers_mut().insert(
                                                         CONTENT_TYPE,
                                                         HeaderValue::from_str("application/json")
                                                             .expect("Unable to create Content-Type header for RESTART_SESSION_RESTART_FAILED"));
-                                let body_content = serde_json::to_string(&body)
-                                    .expect("impossible to fail to serialize");
-                                *response.body_mut() = Body::from(body_content);
-                            }
-                            RestartSessionResponse::Unauthorized => {
-                                *response.status_mut() = StatusCode::from_u16(401)
-                                    .expect("Unable to turn 401 into a StatusCode");
-                            }
-                            RestartSessionResponse::SessionNotFound => {
-                                *response.status_mut() = StatusCode::from_u16(404)
-                                    .expect("Unable to turn 404 into a StatusCode");
-                            }
-                        },
-                        Err(_) => {
-                            // Application code returned an error. This should not happen, as the implementation should
-                            // return a valid response.
-                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
-                        }
-                    }
+                                                    let body_content = serde_json::to_string(&body).expect("impossible to fail to serialize");
+                                                    *response.body_mut() = Body::from(body_content);
+                                                },
+                                                RestartSessionResponse::Unauthorized
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(401).expect("Unable to turn 401 into a StatusCode");
+                                                },
+                                                RestartSessionResponse::SessionNotFound
+                                                => {
+                                                    *response.status_mut() = StatusCode::from_u16(404).expect("Unable to turn 404 into a StatusCode");
+                                                },
+                                            },
+                                            Err(_) => {
+                                                // Application code returned an error. This should not happen, as the implementation should
+                                                // return a valid response.
+                                                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                                                *response.body_mut() = Body::from("An internal error occurred");
+                                            },
+                                        }
 
-                    Ok(response)
+                                        Ok(response)
+                            },
+                            Err(e) => Ok(Response::builder()
+                                                .status(StatusCode::BAD_REQUEST)
+                                                .body(Body::from(format!("Couldn't read body parameter RestartSession: {}", e)))
+                                                .expect("Unable to create Bad Request response due to unable to read body parameter RestartSession")),
+                        }
                 }
 
                 // ServerStatus - GET /status

@@ -18,8 +18,8 @@ use futures::{future, stream, SinkExt, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
 use kallichore_api::{
-    DeleteSessionResponse, InterruptSessionResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse,
+    models::RestartSession, DeleteSessionResponse, InterruptSessionResponse, NewSessionResponse,
+    RestartSessionResponse, ServerStatusResponse,
 };
 
 use kcshared::{
@@ -634,7 +634,10 @@ fn main() {
                 }
             };
             log::info!("Restarting session '{}'", session_id.clone());
-            match rt.block_on(client.restart_session(session_id.clone())) {
+            let restart = RestartSession {
+                working_directory: None,
+            };
+            match rt.block_on(client.restart_session(session_id.clone(), Some(restart))) {
                 Ok(resp) => match resp {
                     RestartSessionResponse::Restarted(_) => {
                         println!("Session {} restarted", session_id);

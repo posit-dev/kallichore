@@ -243,7 +243,7 @@ No authorization required
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 
 # **restart-session**
-> serde_json::Value restart-session(session_id)
+> serde_json::Value restart-session(session_id, optional)
 Restart a session
 
 ### Required Parameters
@@ -251,6 +251,15 @@ Restart a session
 Name | Type | Description  | Notes
 ------------- | ------------- | ------------- | -------------
   **session_id** | **String**|  | 
+ **optional** | **map[string]interface{}** | optional parameters | nil if no parameters
+
+### Optional Parameters
+Optional parameters are passed through a map[string]interface{}.
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+ **session_id** | **String**|  | 
+ **restart_session** | [**RestartSession**](RestartSession.md)|  | 
 
 ### Return type
 
@@ -262,7 +271,7 @@ No authorization required
 
 ### HTTP request headers
 
- - **Content-Type**: Not defined
+ - **Content-Type**: application/json
  - **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)

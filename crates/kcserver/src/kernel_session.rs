@@ -479,8 +479,11 @@ impl KernelSession {
                 });
             }
 
-            // Sync the working directory so that we can restore it after restarting.
+            // On non-Windows, query the working directory so that we can restore it after
+            // restarting.
+            #[cfg(not(target_os = "windows"))]
             state.poll_working_dir().await;
+
             state.restarting = true;
         }
 

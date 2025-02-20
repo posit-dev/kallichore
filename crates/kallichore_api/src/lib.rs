@@ -256,6 +256,7 @@ pub trait Api<C: Send + Sync> {
     async fn restart_session(
         &self,
         session_id: String,
+        restart_session: Option<models::RestartSession>,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError>;
 
@@ -335,7 +336,6 @@ pub trait ApiNoContext<C: Send + Sync> {
         new_session: models::NewSession,
     ) -> Result<NewSessionResponse, ApiError>;
 
-
     // --- Start Kallichore ---
     /// Upgrade a websocket request for channel communication
     async fn channels_websocket_request(
@@ -344,9 +344,13 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<Response<Body>, ApiError>;
     // --- End Kallichore ---
+
     /// Restart a session
-    async fn restart_session(&self, session_id: String)
-        -> Result<RestartSessionResponse, ApiError>;
+    async fn restart_session(
+        &self,
+        session_id: String,
+        restart_session: Option<models::RestartSession>,
+    ) -> Result<RestartSessionResponse, ApiError>;
 
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError>;
@@ -459,9 +463,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn restart_session(
         &self,
         session_id: String,
+        restart_session: Option<models::RestartSession>,
     ) -> Result<RestartSessionResponse, ApiError> {
         let context = self.context().clone();
-        self.api().restart_session(session_id, &context).await
+        self.api()
+            .restart_session(session_id, restart_session, &context)
+            .await
     }
 
     /// Get server status and information

@@ -23,46 +23,6 @@ pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
 
 /// Given a process ID, returns its current working directory.
 ///
-/// The Windows implementation uses the Windows API.
-#[cfg(target_os = "windows")]
-pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::*;
-    use windows::Win32::System::Threading::*;
-
-    #[allow(unsafe_code)]
-    unsafe {
-        // Open the process with minimum required access rights
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)?;
-
-        // Get the process information
-        let mut buffer = [0u16; MAX_PATH as usize];
-        let mut size = buffer.len() as u32;
-
-        let result = QueryFullProcessImageNameW(
-            handle,
-            PROCESS_NAME_WIN32,
-            PWSTR(buffer.as_mut_ptr()),
-            &mut size,
-        );
-
-        let _ = CloseHandle(handle);
-
-        if let Err(err) = result {
-            return Err(anyhow::anyhow!(
-                "QueryFullProcessImageNameW failed: {err} {:?}",
-                GetLastError()
-            ));
-        }
-
-        // Convert the buffer to a PathBuf
-        let path_str = String::from_utf16_lossy(&buffer[..size as usize]);
-        Ok(PathBuf::from(path_str))
-    }
-}
-
-/// Given a process ID, returns its current working directory.
-///
 /// The macOS implementation uses the `proc_pidinfo` system call.
 #[cfg(target_os = "macos")]
 pub fn get_process_cwd(pid: u32) -> Result<PathBuf, anyhow::Error> {

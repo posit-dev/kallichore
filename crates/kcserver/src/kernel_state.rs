@@ -12,7 +12,10 @@ use kcshared::{
     websocket_message::WebsocketMessage,
 };
 
-use crate::{execution_queue::ExecutionQueue, working_dir::get_process_cwd};
+use crate::execution_queue::ExecutionQueue;
+
+#[cfg(not(target_os = "windows"))]
+use crate::working_dir::get_process_cwd;
 
 /// The mutable state of the kernel.
 ///
@@ -103,7 +106,9 @@ impl KernelState {
 
     /// Polls the working directory to see if it's changed.
     ///
-    /// If it has, updates state and sends a message to the client.
+    /// If it has, updates state and sends a message to the client. Only supported
+    /// on non-Windows platforms.
+    #[cfg(not(target_os = "windows"))]
     pub async fn poll_working_dir(&mut self) {
         if self.process_id.is_none() {
             return;

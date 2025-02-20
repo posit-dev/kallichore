@@ -29,8 +29,12 @@ mod server;
 mod startup_status;
 mod wire_message;
 mod wire_message_header;
-mod working_dir;
 mod zmq_ws_proxy;
+
+/// Unsurprisingly, Windows doesn't have a mechanism for getting the current working
+/// directory of another process.
+#[cfg(not(target_os = "windows"))]
+mod working_dir;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

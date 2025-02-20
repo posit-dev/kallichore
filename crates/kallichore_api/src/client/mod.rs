@@ -1228,6 +1228,7 @@ where
     async fn restart_session(
         &self,
         param_session_id: String,
+        param_restart_session: Option<models::RestartSession>,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
         let mut client_service = self.client_service.clone();
@@ -1261,6 +1262,25 @@ where
             Err(e) => return Err(ApiError(format!("Unable to create request: {}", e))),
         };
 
+        let body = param_restart_session
+            .map(|ref body| serde_json::to_string(body).expect("impossible to fail to serialize"));
+        if let Some(body) = body {
+            *request.body_mut() = Body::from(body);
+        }
+
+        let header = "application/json";
+        request.headers_mut().insert(
+            CONTENT_TYPE,
+            match HeaderValue::from_str(header) {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create header: {} - {}",
+                        header, e
+                    )))
+                }
+            },
+        );
         let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
         request.headers_mut().insert(
             HeaderName::from_static("x-span-id"),

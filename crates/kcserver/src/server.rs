@@ -881,6 +881,7 @@ where
     async fn restart_session(
         &self,
         session_id: String,
+        _restart_session: Option<models::RestartSession>,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
