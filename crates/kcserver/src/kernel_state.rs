@@ -199,6 +199,7 @@ impl KernelState {
 
         // When the kernel becomes idle after executing code, poll the working
         // directory to see if it's changed.
+        #[cfg(not(target_os = "windows"))]
         if status == models::Status::Idle {
             if let Some(reason) = update.reason {
                 if reason == "execute_request" {
