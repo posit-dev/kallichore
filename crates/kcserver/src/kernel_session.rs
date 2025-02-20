@@ -479,35 +479,35 @@ impl KernelSession {
     /// kernel could not be restarted.
     pub async fn restart(&self, working_directory: Option<String>) -> Result<(), StartupError> {
         // Validate the working directory if it was supplied.
-        if let Some(ref dir) = working_directory {
-            match fs::metadata(dir) {
-                Ok(metadata) => {
-                    if !metadata.is_dir() {
-                        let err = KSError::RestartFailed(anyhow::anyhow!(
-                            "Requested working directory '{}' is not a directory",
-                            dir
-                        ));
-                        return Err(StartupError {
-                            exit_code: None,
-                            output: None,
-                            error: err.to_json(None),
-                        });
+        let working_directory = match working_directory {
+            Some(dir) => {
+                // Test the working directory to see if it exists.
+                match fs::metadata(dir.clone()) {
+                    Ok(metadata) => {
+                        if !metadata.is_dir() {
+                            log::warn!(
+                                "[session {}] Requested working directory '{}' is not a directory; ignoring",
+                                self.connection.session_id,
+                                dir
+                            );
+                            None
+                        } else {
+                            Some(dir)
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[session {}] Requested working directory '{}' could not be read: {} (ignoring)",
+                            self.connection.session_id,
+                            dir,
+                            e
+                        );
+                        None
                     }
                 }
-                Err(e) => {
-                    let err = KSError::RestartFailed(anyhow::anyhow!(
-                        "Requested working directory '{}' could not be read: {}",
-                        dir,
-                        e
-                    ));
-                    return Err(StartupError {
-                        exit_code: None,
-                        output: None,
-                        error: err.to_json(None),
-                    });
-                }
             }
-        }
+            None => None,
+        };
 
         // Enter the restarting state.
         {
