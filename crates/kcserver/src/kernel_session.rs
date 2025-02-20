@@ -27,7 +27,8 @@ use tokio::sync::RwLock;
 
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
-    kernel_state::KernelState, startup_status::StartupStatus, zmq_ws_proxy::ZmqWsProxy,
+    kernel_state::KernelState, startup_status::StartupStatus, working_dir::expand_path,
+    zmq_ws_proxy::ZmqWsProxy,
 };
 
 /// A Jupyter kernel session.
@@ -506,6 +507,23 @@ impl KernelSession {
                     }
                 }
             }
+            None => None,
+        };
+
+        // Expand the working directory if it was supplied
+        let working_directory = match working_directory {
+            Some(dir) => match expand_path(dir.clone()) {
+                Ok(dir) => Some(dir.to_string_lossy().to_string()),
+                Err(e) => {
+                    log::warn!(
+                        "[session {}] Requested working directory '{}' could not be expanded: {} (ignoring)",
+                        self.connection.session_id,
+                        dir,
+                        e
+                    );
+                    None
+                }
+            },
             None => None,
         };
 

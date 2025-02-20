@@ -5,11 +5,68 @@
 //
 //
 
-// This file contains three platform-specific implementations of the function
+// This file contains two platform-specific implementations of the function
 // `get_process_cwd`, which returns the current working directory of a process
 // given its PID.
 
-use std::path::PathBuf;
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
+
+/// Expand a path
+pub fn expand_path<P: AsRef<Path>>(path: P) -> Result<PathBuf, anyhow::Error> {
+    let path = path.as_ref();
+    let path_str = path.to_string_lossy();
+
+    // Handle home directory expansion
+    if path_str.starts_with('~') {
+        let home_dir = if cfg!(windows) {
+            // On Windows, try USERPROFILE first, then HOME
+            env::var("USERPROFILE").or_else(|_| env::var("HOME"))
+        } else {
+            // On Unix-like systems, try HOME first, then fallback to pwd entry
+            env::var("HOME").or_else(|_| {
+                #[cfg(unix)]
+                {
+                    use std::ffi::CStr;
+                    use std::os::raw::c_char;
+                    extern "C" {
+                        fn getpwuid(uid: u32) -> *mut libc::passwd;
+                        fn getuid() -> u32;
+                    }
+
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        let passwd = getpwuid(getuid());
+                        if !passwd.is_null() {
+                            let dir = (*passwd).pw_dir as *const c_char;
+                            let home = CStr::from_ptr(dir).to_string_lossy().into_owned();
+                            return Ok(home);
+                        }
+                    }
+                }
+                Err(env::VarError::NotPresent)
+            })
+        }
+        .map_err(|_| anyhow::anyhow!("Can't read HOME from environment to expand {:?}", path))?;
+
+        // Replace ~ with home directory and handle ~/rest/of/path
+        let remainder = &path_str[1..];
+        let path = if remainder.is_empty() {
+            PathBuf::from(home_dir)
+        } else if remainder.starts_with('/') || remainder.starts_with('\\') {
+            PathBuf::from(home_dir).join(&remainder[1..])
+        } else {
+            PathBuf::from(home_dir).join(remainder)
+        };
+
+        Ok(path.canonicalize()?)
+    } else {
+        // If path doesn't start with ~, just canonicalize it
+        Ok(path.canonicalize()?)
+    }
+}
 
 /// Given a process ID, returns its current working directory.
 ///
