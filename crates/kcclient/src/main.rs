@@ -361,7 +361,7 @@ fn jupyter_dir() -> PathBuf {
 
 #[cfg(not(target_os = "macos"))]
 fn jupyter_dir() -> PathBuf {
-    let dir = directories::ProjectDirs::from("Jupyter", "", "").unwrap();
+    let dir = directories::ProjectDirs::from("", "", "jupyter").unwrap();
     dir.data_dir().to_path_buf()
 }
 
@@ -421,6 +421,8 @@ fn main() {
                 .join("kernels")
                 .join(kernel.clone())
                 .join("kernel.json");
+
+            log::debug!("Looking for kernel.json in {:?}", kernel_spec_json);
 
             // Parse the kernel spec from the JSON file using the serde json library
             let kernel_spec: kernel_spec::KernelSpec =
