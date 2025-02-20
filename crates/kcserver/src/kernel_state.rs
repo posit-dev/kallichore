@@ -14,6 +14,9 @@ use kcshared::{
 
 use crate::execution_queue::ExecutionQueue;
 
+#[cfg(not(target_os = "windows"))]
+use crate::working_dir::get_process_cwd;
+
 /// The mutable state of the kernel.
 ///
 /// Does not implement the Clone trait; only one instance of the kernel state
@@ -101,6 +104,44 @@ impl KernelState {
         self.nudge_idle().await;
     }
 
+    /// Polls the working directory to see if it's changed.
+    ///
+    /// If it has, updates state and sends a message to the client. Only supported
+    /// on non-Windows platforms.
+    #[cfg(not(target_os = "windows"))]
+    pub async fn poll_working_dir(&mut self) {
+        if self.process_id.is_none() {
+            return;
+        }
+
+        let working_dir = match get_process_cwd(self.process_id.unwrap()) {
+            Ok(dir) => dir,
+            Err(err) => {
+                log::error!(
+                    "[session {}] Failed to get working directory: {}",
+                    self.session_id,
+                    err
+                );
+                return;
+            }
+        };
+
+        let working_dir = working_dir.to_string_lossy().to_string();
+
+        if working_dir != self.working_directory {
+            log::debug!(
+                "[session {}] Working directory changed: '{}' => '{}'",
+                self.session_id,
+                self.working_directory,
+                working_dir
+            );
+            let msg =
+                WebsocketMessage::Kernel(KernelMessage::WorkingDirChanged(working_dir.clone()));
+            self.ws_json_tx.send(msg).await.unwrap();
+            self.working_directory = working_dir;
+        }
+    }
+
     /// Set the kernel's status.
     pub async fn set_status(&mut self, status: models::Status, reason: Option<String>) {
         log::debug!(
@@ -155,5 +196,16 @@ impl KernelState {
 
         let status_message = WebsocketMessage::Kernel(KernelMessage::Status(update.clone()));
         self.ws_json_tx.send(status_message).await.unwrap();
+
+        // When the kernel becomes idle after executing code, poll the working
+        // directory to see if it's changed.
+        #[cfg(not(target_os = "windows"))]
+        if status == models::Status::Idle {
+            if let Some(reason) = update.reason {
+                if reason == "execute_request" {
+                    self.poll_working_dir().await;
+                }
+            }
+        }
     }
 }

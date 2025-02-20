@@ -48,6 +48,9 @@ pub enum KernelMessage {
     /// to execute code, but the kernel is busy executing other code.
     ExecutionQueued(String),
 
+    /// The kernel's working directory has changed. The parameter is the new working directory.
+    WorkingDirChanged(String),
+
     /// The kernel has exited
     Exited(i32),
 }

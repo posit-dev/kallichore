@@ -30,6 +30,7 @@ mod startup_status;
 mod wire_message;
 mod wire_message_header;
 mod zmq_ws_proxy;
+mod working_dir;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

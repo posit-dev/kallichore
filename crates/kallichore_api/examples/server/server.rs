@@ -249,15 +249,18 @@ where
         Err(ApiError("Generic failure".into()))
     }
     // --- End Kallichore ---
+
     /// Restart a session
     async fn restart_session(
         &self,
         session_id: String,
+        restart_session: Option<models::RestartSession>,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
         info!(
-            "restart_session(\"{}\") - X-Span-ID: {:?}",
+            "restart_session(\"{}\", {:?}) - X-Span-ID: {:?}",
             session_id,
+            restart_session,
             context.get().0.clone()
         );
         Err(ApiError("Generic failure".into()))

@@ -1,7 +1,7 @@
 //
 // kernel_session.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -27,7 +27,8 @@ use tokio::sync::RwLock;
 
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
-    kernel_state::KernelState, startup_status::StartupStatus, zmq_ws_proxy::ZmqWsProxy,
+    kernel_state::KernelState, startup_status::StartupStatus, working_dir::expand_path,
+    zmq_ws_proxy::ZmqWsProxy,
 };
 
 /// A Jupyter kernel session.
@@ -129,8 +130,8 @@ impl KernelSession {
             });
         }
 
-        // Mark the kernel as starting
-        {
+        let working_directory = {
+            // Mark the kernel as starting
             let mut state = self.state.write().await;
             state
                 .set_status(
@@ -138,7 +139,9 @@ impl KernelSession {
                     Some(String::from("start API called")),
                 )
                 .await;
-        }
+            // Get the working directory
+            state.working_directory.clone()
+        };
 
         log::debug!(
             "Starting kernel for session {}: {:?}",
@@ -153,7 +156,6 @@ impl KernelSession {
         // If a working directory was specified, test the working directory to
         // see if it exists. If it doesn't, log a warning and don't set the
         // process's working directory.
-        let working_directory = self.model.working_directory.clone();
         if working_directory != "" {
             match fs::metadata(&working_directory) {
                 Ok(metadata) => {
@@ -464,7 +466,67 @@ impl KernelSession {
         self.ws_zmq_tx.send(msg).await
     }
 
-    pub async fn restart(&self) -> Result<(), StartupError> {
+    /// Restart the kernel.
+    ///
+    /// # Arguments
+    ///
+    /// * `working_directory` - The working directory to use after restart. Optional; if not
+    /// supplied, the working directory supplied when the kernel was started will be used (Windows)
+    /// or the kernel's current working directory will be used (non-Windows).
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the kernel was restarted successfully, or an error if the
+    /// kernel could not be restarted.
+    pub async fn restart(&self, working_directory: Option<String>) -> Result<(), StartupError> {
+        // Expand the working directory if it was supplied
+        let working_directory = match working_directory {
+            Some(dir) => match expand_path(dir.clone()) {
+                Ok(dir) => Some(dir.to_string_lossy().to_string()),
+                Err(e) => {
+                    log::warn!(
+                        "[session {}] Requested working directory '{}' could not be expanded: {} (ignoring)",
+                        self.connection.session_id,
+                        dir,
+                        e
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
+        // Validate the working directory if it was supplied.
+        let working_directory = match working_directory {
+            Some(dir) => {
+                // Test the working directory to see if it exists.
+                match fs::metadata(dir.clone()) {
+                    Ok(metadata) => {
+                        if !metadata.is_dir() {
+                            log::warn!(
+                                "[session {}] Requested working directory '{}' is not a directory; ignoring",
+                                self.connection.session_id,
+                                dir
+                            );
+                            None
+                        } else {
+                            Some(dir)
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[session {}] Requested working directory '{}' could not be read: {} (ignoring)",
+                            self.connection.session_id,
+                            dir,
+                            e
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
         // Enter the restarting state.
         {
             let mut state = self.state.write().await;
@@ -476,6 +538,39 @@ impl KernelSession {
                     output: None,
                     error: err.to_json(None),
                 });
+            }
+
+            // Set the working directory.
+            match working_directory {
+                Some(dir) => {
+                    log::debug!(
+                        "[session {}] Will restart in working directory '{}' (supplied by client)",
+                        self.connection.session_id,
+                        dir
+                    );
+                    state.working_directory = dir
+                }
+                None => {
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        state.poll_working_dir().await;
+                        log::debug!(
+                            "[session {}] Will restart in working directory '{}' (read from OS)",
+                            self.connection.session_id,
+                            state.working_directory
+                        );
+                    }
+
+                    #[cfg(target_os = "windows")]
+                    {
+                        state.working_directory = self.model.working_directory.clone();
+                        log::debug!(
+                            "[session {}] Will restart in working directory '{}' (original)",
+                            self.connection.session_id,
+                            state.working_directory
+                        );
+                    }
+                }
             }
             state.restarting = true;
         }

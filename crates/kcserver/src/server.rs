@@ -394,6 +394,7 @@ use crate::client_session::ClientSession;
 use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
+use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 
 impl<C> Server<C> {}
@@ -881,6 +882,7 @@ where
     async fn restart_session(
         &self,
         session_id: String,
+        restart_session: Option<models::RestartSession>,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
@@ -901,7 +903,20 @@ where
                 return Ok(RestartSessionResponse::SessionNotFound);
             }
         };
-        match session.restart().await {
+
+        // Extract the working directory from the restart session request if present.
+        let working_dir = match restart_session {
+            Some(restart_session) => match restart_session.working_directory {
+                Some(working_directory) => match working_directory.is_empty() {
+                    true => None,
+                    false => Some(working_directory),
+                },
+                None => None,
+            },
+            None => None,
+        };
+
+        match session.restart(working_dir).await {
             Ok(_) => Ok(RestartSessionResponse::Restarted(serde_json::Value::Null)),
             Err(e) => Ok(RestartSessionResponse::RestartFailed(e)),
         }
