@@ -170,7 +170,8 @@ fn main() {
         },
         */
         Some("RestartSession") => {
-            let result = rt.block_on(client.restart_session("session_id_example".to_string()));
+            let result =
+                rt.block_on(client.restart_session("session_id_example".to_string(), None));
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,
