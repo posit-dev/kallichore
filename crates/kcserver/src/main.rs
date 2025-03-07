@@ -29,8 +29,8 @@ mod server;
 mod startup_status;
 mod wire_message;
 mod wire_message_header;
-mod zmq_ws_proxy;
 mod working_dir;
+mod zmq_ws_proxy;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -204,11 +204,11 @@ async fn main() {
     };
 
     println!(
-        r#" 
-  ,            _   _           _                    
- /|   /       | | | | o       | |                   
-  |__/   __,  | | | |     __  | |     __   ,_    _  
-  | \   /  |  |/  |/  |  /    |/ \   /  \_/  |  |/  
+        r#"
+  ,            _   _           _
+ /|   /       | | | | o       | |
+  |__/   __,  | | | |     __  | |     __   ,_    _
+  | \   /  |  |/  |/  |  /    |/ \   /  \_/  |  |/
   |  \_/\_/|_/|__/|__/|_/\___/|   |_/\__/    |_/|__/
   A Jupyter Kernel supervisor. Version {}.
   Copyright (c) 2025, Posit Software PBC. All rights reserved.
