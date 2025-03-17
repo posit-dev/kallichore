@@ -1,13 +1,16 @@
 //
 // websocket_message.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
 use serde::{Deserialize, Serialize};
 
-use crate::{jupyter_message::JupyterMessage, kernel_message::KernelMessage};
+use crate::{
+    jupyter_message::JupyterMessage, 
+    kernel_message::KernelMessage,
+};
 
 /// A message sent over a WebSocket connection. This message can be either a
 /// Jupyter message (conforming roughly to the Jupyter kernel protocol) or a
@@ -17,7 +20,7 @@ use crate::{jupyter_message::JupyterMessage, kernel_message::KernelMessage};
 #[serde(tag = "kind")]
 pub enum WebsocketMessage {
     /// Kernel messages are messages about the kernel itself that are outside
-    /// the bounds of the Juptyer protocol, such as startup/shutdown messages
+    /// the bounds of the Jupyter protocol, such as startup/shutdown messages
     /// and interstitial status messages.
     #[serde(rename = "kernel")]
     Kernel(KernelMessage),

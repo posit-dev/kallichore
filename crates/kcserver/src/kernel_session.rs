@@ -920,6 +920,17 @@ impl KernelSession {
                             self.connection.session_id,
                             info
                         );
+                        
+                        // JEP 66 handshaking is done through the registration socket, not directly here.
+                        // The kernel would have connected to the registration socket before starting.
+                        // At this point, we're just confirming we have a successful connection
+                        // through the traditional Jupyter protocol sockets.
+                                                
+                        log::debug!(
+                            "[session {}] Successfully connected to kernel using traditional Jupyter protocol",
+                            self.connection.session_id
+                        );
+                        
                         status_tx
                             .send(StartupStatus::Connected(info))
                             .await

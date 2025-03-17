@@ -1,7 +1,7 @@
 //
 // wire_message.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -9,7 +9,10 @@
 pub const MSG_DELIM: &[u8] = b"<IDS|MSG>";
 
 use bytes::Bytes;
-use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
+use kcshared::{
+    handshake_protocol::HandshakeVersion,
+    jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
+};
 use zeromq::ZmqMessage;
 
 use crate::{kernel_connection::KernelConnection, wire_message_header::WireMessageHeader};
@@ -33,6 +36,7 @@ impl WireMessage {
     pub fn from_jupyter(
         msg: JupyterMessage,
         connection: KernelConnection,
+        handshake_version: Option<&HandshakeVersion>,
     ) -> Result<Self, anyhow::Error> {
         let mut parts: Vec<Vec<u8>> = Vec::new();
         let username = connection.username.clone();
@@ -40,7 +44,7 @@ impl WireMessage {
         let hmac_key = connection.hmac_key.clone();
 
         // Derive a wire message header from the Jupyter message header
-        let header = WireMessageHeader::new(msg.header, session.clone(), username.clone());
+        let header = WireMessageHeader::new(msg.header, session.clone(), username.clone(), handshake_version);
         parts.push(serde_json::to_vec(&header)?);
 
         // Add the parent header, if any
@@ -49,6 +53,7 @@ impl WireMessage {
                 msg.parent_header.unwrap(),
                 session.clone(),
                 username.clone(),
+                handshake_version,
             );
             parts.push(serde_json::to_vec(&parent_header)?);
         } else {
@@ -74,6 +79,14 @@ impl WireMessage {
             channel: msg.channel,
             parts,
         })
+    }
+    
+    /// Create a new wire message from a Jupyter message using the traditional Jupyter protocol.
+    pub fn from_jupyter_v5(
+        msg: JupyterMessage,
+        connection: KernelConnection,
+    ) -> Result<Self, anyhow::Error> {
+        Self::from_jupyter(msg, connection, None)
     }
 
     /// Convert the wire message to a Jupyter message.

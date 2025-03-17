@@ -1,7 +1,7 @@
 //
 // zmq_ws_proxy.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -10,6 +10,7 @@ use event_listener::Event;
 use futures::{stream, StreamExt};
 use kallichore_api::models;
 use kcshared::{
+    handshake_protocol::HandshakeVersion,
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_message::KernelMessage,
     websocket_message::WebsocketMessage,
@@ -237,7 +238,9 @@ impl ZmqWsProxy {
             "[session {}] Sending initial kernel_info_request message to kernel",
             self.connection.session_id
         );
-        let wire_message = WireMessage::from_jupyter(request, self.connection.clone())?;
+        
+        // We use v5 protocol initially since we don't know if the kernel supports handshaking
+        let wire_message = WireMessage::from_jupyter_v5(request, self.connection.clone())?;
         let zmq_message: ZmqMessage = wire_message.into();
         self.shell_socket
             .as_mut()
@@ -256,6 +259,22 @@ impl ZmqWsProxy {
         );
 
         Ok(reply.content)
+    }
+    
+    /// Tries to perform the Jupyter Handshaking Protocol with the kernel.
+    /// Returns the negotiated handshake version if successful, None otherwise.
+    pub async fn try_handshake(&mut self) -> Result<Option<HandshakeVersion>, anyhow::Error> {
+        log::debug!(
+            "[session {}] Traditional socket connection established; not using JEP 66 handshaking",
+            self.connection.session_id
+        );
+        
+        // JEP 66 uses the registration socket approach, not direct messaging between
+        // the supervisor and kernel over the traditional Jupyter sockets.
+        // This function therefore always returns None, but is kept for future expansion
+        // of the handshaking protocol.
+        
+        Ok(None)
     }
 
     async fn wait_for_shell_reply(
@@ -470,9 +489,35 @@ impl ZmqWsProxy {
                 // Do nothing for other message types
             }
         }
-        // Convert the message to a wire message
+        
+        // Get the current handshake version from the state
+        // If JEP 66 handshaking was used, we'll have a version stored in the state
+        // Otherwise, we'll fall back to traditional v5 protocol
+        let handshake_version = {
+            let state = self.state.read().await;
+            state.handshake_version.clone()
+        };
+        
+        // Convert the message to a wire message using the appropriate protocol version
         let channel = msg.channel.clone();
-        let wire_message = WireMessage::from_jupyter(msg, self.connection.clone())?;
+        let wire_message = if let Some(ref version) = handshake_version {
+            // If we're using JEP 66 handshaking protocol
+            log::trace!(
+                "[session {}] Using JEP 66 handshaking protocol v{}.{} for message",
+                self.connection.session_id,
+                version.major,
+                version.minor
+            );
+            WireMessage::from_jupyter(msg, self.connection.clone(), Some(version))?
+        } else {
+            // Fall back to traditional v5 protocol
+            log::trace!(
+                "[session {}] Using traditional Jupyter protocol v5 for message",
+                self.connection.session_id
+            );
+            WireMessage::from_jupyter_v5(msg, self.connection.clone())?
+        };
+        
         let zmq_message: ZmqMessage = wire_message.into();
         match channel {
             JupyterChannel::Shell => {
@@ -579,9 +624,25 @@ impl ZmqWsProxy {
                         let mut state = self.state.write().await;
                         match state.execution_queue.next_request() {
                             Some(request) => {
-                                // Send the next request to the kernel
-                                let message =
-                                    WireMessage::from_jupyter(request, self.connection.clone())?;
+                                // Send the next request to the kernel with the appropriate protocol version
+                                let handshake_version = state.handshake_version.clone();
+                                let message = if let Some(ref version) = handshake_version {
+                                    // If we're using JEP 66 handshaking protocol
+                                    log::trace!(
+                                        "[session {}] Using JEP 66 handshaking protocol v{}.{} for queued message",
+                                        self.session_id,
+                                        version.major,
+                                        version.minor
+                                    );
+                                    WireMessage::from_jupyter(request, self.connection.clone(), Some(version))?
+                                } else {
+                                    // Fall back to traditional v5 protocol
+                                    log::trace!(
+                                        "[session {}] Using traditional Jupyter protocol v5 for queued message",
+                                        self.session_id
+                                    );
+                                    WireMessage::from_jupyter_v5(request, self.connection.clone())?
+                                };
                                 self.shell_socket
                                     .as_mut()
                                     .unwrap()

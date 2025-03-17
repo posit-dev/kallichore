@@ -25,6 +25,7 @@ mod jupyter_messages;
 mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
+mod registration_socket;
 mod server;
 mod startup_status;
 mod wire_message;

@@ -34,7 +34,7 @@ use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
@@ -76,6 +76,9 @@ pub struct Server<C> {
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
     idle_nudge_tx: Sender<()>,
     reserved_ports: Arc<RwLock<Vec<i32>>>,
+    /// Registration socket for JEP 66 handshaking
+    #[allow(dead_code)]
+    registration_socket: Arc<RwLock<Option<RegistrationSocket>>>,
 }
 
 impl<C> Server<C> {
@@ -84,8 +87,31 @@ impl<C> Server<C> {
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
 
         // Start the idle poll task
-        let (idle_nudge_tx, idle_nudge_rx) = tokio::sync::mpsc::channel(256);
+        let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
         Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
+        
+        // Create registration socket for JEP 66 handshaking
+        let registration_socket = Arc::new(RwLock::new(None));
+        
+        // Start the registration socket in a separate async task
+        let reg_socket_arc = registration_socket.clone();
+        tokio::spawn(async move {
+            // Create the registration socket with the default port
+            let mut socket = RegistrationSocket::new(None);
+            
+            // Start the socket
+            match socket.start().await {
+                Ok(()) => {
+                    // Store the socket in the arc after successful start
+                    let mut reg_socket = reg_socket_arc.write().unwrap();
+                    *reg_socket = Some(socket);
+                },
+                Err(e) => {
+                    // Log the error but continue without the handshaking protocol
+                    log::warn!("Failed to start JEP 66 registration socket: {}. Handshaking protocol will not be available.", e);
+                }
+            }
+        });
 
         Server {
             token,
@@ -95,6 +121,7 @@ impl<C> Server<C> {
             client_sessions: Arc::new(RwLock::new(vec![])),
             reserved_ports: Arc::new(RwLock::new(vec![])),
             idle_nudge_tx,
+            registration_socket,
         }
     }
 
@@ -115,7 +142,7 @@ impl<C> Server<C> {
     ///    inactivity.
     fn idle_poll_task(
         all_sessions: Arc<RwLock<Vec<KernelSession>>>,
-        mut idle_nudge_rx: tokio::sync::mpsc::Receiver<()>,
+        mut idle_nudge_rx: mpsc::Receiver<()>,
         idle_shutdown_hours: Option<u16>,
     ) {
         tokio::spawn(async move {
@@ -394,8 +421,10 @@ use crate::client_session::ClientSession;
 use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
+use crate::registration_socket::{HandshakeInitRequest, RegistrationSocket};
 use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
+use kcshared::handshake_protocol::{HandshakeStatus, HandshakeVersion};
 
 impl<C> Server<C> {}
 
@@ -503,6 +532,102 @@ where
                 return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
             }
         };
+        
+        // Check if we have a registration socket running (for JEP 66 handshaking)
+        let handshake_sender = {
+            // Scope the lock so it's dropped before any awaits
+            let reg_socket = self.registration_socket.read().unwrap();
+            if let Some(ref socket) = *reg_socket {
+                Some(socket.get_handshake_sender())
+            } else {
+                None
+            }
+        };
+        
+        if let Some(sender) = handshake_sender {
+            // We have a registration socket, which means we can attempt to use the handshaking protocol
+            log::debug!(
+                "[session {}] Attempting to use JEP 66 handshaking protocol for kernel connection",
+                new_session_id
+            );
+            
+            // Create a channel for the handshake reply
+            let (reply_tx, mut reply_rx) = mpsc::channel(1);
+            
+            // Send a handshake request to the kernel
+            if let Err(e) = sender.send(
+                HandshakeInitRequest {
+                    connection_info: connection_file.info.clone(),
+                    reply_tx,
+                }
+            ).await {
+                log::warn!(
+                    "[session {}] Failed to send handshake request to kernel: {}",
+                    new_session_id,
+                    e
+                );
+                
+                // Continue with traditional connection method - JEP 66 is optional
+            } else {
+                // Wait for a reply with timeout
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_secs(5),
+                    reply_rx.recv()
+                ).await {
+                    Ok(Some(Some(reply))) => {
+                        // Check the status of the reply
+                        match reply.status {
+                            HandshakeStatus::Ok => {
+                                log::info!(
+                                    "[session {}] Successfully negotiated JEP 66 handshaking protocol with kernel",
+                                    new_session_id
+                                );
+                                
+                                // Store the capabilities for later use - will be done in the future
+                                // We'll store these in the kernel state when we create the session
+                                let _capabilities = reply.capabilities;
+                                
+                                // Continue with normal session creation, but note that we're using
+                                // JEP 66 protocol
+                            },
+                            HandshakeStatus::Error => {
+                                log::warn!(
+                                    "[session {}] Kernel rejected handshake request: {}",
+                                    new_session_id,
+                                    reply.error.unwrap_or_else(|| String::from("Unknown error"))
+                                );
+                                
+                                // Continue with traditional connection method
+                            }
+                        }
+                    },
+                    Ok(Some(None)) => {
+                        log::warn!(
+                            "[session {}] Handshake reply from kernel was None",
+                            new_session_id
+                        );
+                        
+                        // Continue with traditional connection method
+                    },
+                    Ok(None) => {
+                        log::warn!(
+                            "[session {}] No handshake reply received from registration socket",
+                            new_session_id
+                        );
+                        
+                        // Continue with traditional connection method
+                    },
+                    Err(_) => {
+                        log::warn!(
+                            "[session {}] Timeout waiting for handshake reply from kernel",
+                            new_session_id
+                        );
+                        
+                        // Continue with traditional connection method
+                    }
+                }
+            }
+        }
 
         let temp_dir = env::temp_dir();
         let mut connection_file_name = std::ffi::OsString::from("connection_");
