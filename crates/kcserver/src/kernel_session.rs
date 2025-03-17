@@ -271,6 +271,30 @@ impl KernelSession {
             kernel.run_child(child, startup_child_tx).await;
         });
 
+        // First, check if we expect JEP 66 handshaking (by checking for the presence of registration_port in argv)
+        let jep66_enabled = self.argv.iter().any(|arg| arg.contains("registration_port"));
+        
+        if jep66_enabled {
+            log::info!("[session {}] Kernel launched with registration_port - waiting for JEP 66 handshake", self.connection.session_id);
+            
+            // Get the connection timeout from the model, defaulting to 30 seconds
+            let connection_timeout = match self.model.connection_timeout {
+                Some(timeout) => timeout as u64,
+                None => 30,
+            };
+            
+            // Wait for the handshake to complete
+            match self.wait_for_handshake(connection_timeout).await {
+                Ok(()) => {
+                    log::info!("[session {}] JEP 66 handshake completed successfully", self.connection.session_id);
+                },
+                Err(e) => {
+                    log::warn!("[session {}] JEP 66 handshake failed: {}", self.connection.session_id, e);
+                    log::info!("[session {}] Continuing with traditional connection method", self.connection.session_id);
+                }
+            }
+        }
+        
         // Wait for either the session to connect to its sockets or for
         // something awful to happen
         log::trace!(
@@ -855,6 +879,57 @@ impl KernelSession {
             }
         };
         result
+    }
+    
+    /**
+     * Wait for a handshake to be completed. This is used when starting a kernel that supports
+     * JEP 66 handshaking.
+     */
+    pub async fn wait_for_handshake(&self, timeout_secs: u64) -> Result<(), KSError> {
+        // Create a channel to listen for the handshake completed event
+        let (handshake_tx, handshake_rx) = async_channel::bounded::<()>(1);
+        
+        // Listen for events from the WebSocket
+        let session_id = self.connection.session_id.clone();
+        let ws_json_rx = self.ws_json_rx.clone();
+        
+        // Spawn a task to listen for the handshake completed event
+        tokio::spawn(async move {
+            let rx = ws_json_rx.clone();
+            while let Ok(msg) = rx.recv().await {
+                if let WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(id)) = msg {
+                    if id == session_id {
+                        // We found the handshake completed event for this session
+                        if let Err(e) = handshake_tx.send(()).await {
+                            log::warn!("[session {}] Failed to send handshake completed notification: {}", session_id, e);
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+        
+        // Wait for the handshake to complete or for a timeout
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            handshake_rx.recv(),
+        ).await {
+            Ok(Ok(())) => {
+                // Handshake completed successfully
+                log::info!("[session {}] Handshake completed successfully", self.connection.session_id);
+                Ok(())
+            },
+            Ok(Err(e)) => {
+                // Error receiving from channel
+                log::error!("[session {}] Error waiting for handshake: {}", self.connection.session_id, e);
+                Err(KSError::HandshakeFailed(self.connection.session_id.clone(), anyhow::anyhow!("Channel error: {}", e)))
+            },
+            Err(_) => {
+                // Timeout waiting for handshake
+                log::error!("[session {}] Timeout waiting for handshake", self.connection.session_id);
+                Err(KSError::HandshakeFailed(self.connection.session_id.clone(), anyhow::anyhow!("Timeout waiting for handshake")))
+            }
+        }
     }
 
     pub async fn start_zmq_proxy(

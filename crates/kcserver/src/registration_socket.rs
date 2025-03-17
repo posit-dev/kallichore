@@ -8,27 +8,30 @@
 use anyhow::Result;
 use kcshared::handshake_protocol::{
     HandshakeRequest, HandshakeReply, HandshakeStatus, HandshakeVersion,
-    DEFAULT_REGISTRATION_PORT, JEP66_PROTOCOL_VERSION,
+    DEFAULT_REGISTRATION_PORT,
 };
-use kallichore_api::models::ConnectionInfo;
 use log::{debug, info, warn};
 use std::{
     collections::HashMap,
     sync::Arc,
 };
 use tokio::{
-    sync::{mpsc, RwLock},
+    sync::{broadcast, RwLock},
 };
 use zeromq::{RepSocket, Socket, SocketRecv, SocketSend};
 
-/// Message sent when we need to establish a handshake with a kernel
+/// Return value from a handshake negotiation
 #[derive(Debug, Clone)]
-pub struct HandshakeInitRequest {
-    /// The connection info for the ZeroMQ sockets
-    pub connection_info: ConnectionInfo,
+pub struct HandshakeResult {
+    /// The received handshake request from the kernel
+    pub request: HandshakeRequest,
     
-    /// The channel to send the handshake reply to
-    pub reply_tx: mpsc::Sender<Option<HandshakeReply>>,
+    /// The status of the handshake
+    pub status: HandshakeStatus,
+    
+    /// Any capabilities the kernel requested
+    #[allow(dead_code)]
+    pub capabilities: HashMap<String, serde_json::Value>,
 }
 
 /// Manages a registration socket for JEP 66 handshaking protocol
@@ -39,8 +42,8 @@ pub struct RegistrationSocket {
     /// The ZeroMQ Reply socket for the registration socket
     socket: Option<RepSocket>,
     
-    /// Channel for sending handshake requests
-    handshake_tx: mpsc::Sender<HandshakeInitRequest>,
+    /// Channel for broadcasting handshake results
+    result_tx: broadcast::Sender<HandshakeResult>,
     
     /// Flag indicating if the socket is running
     running: Arc<RwLock<bool>>,
@@ -49,12 +52,12 @@ pub struct RegistrationSocket {
 impl RegistrationSocket {
     /// Create a new registration socket
     pub fn new(port: Option<u16>) -> Self {
-        let (handshake_tx, _) = mpsc::channel(32);
+        let (result_tx, _) = broadcast::channel(32);
         
         Self {
             port: port.unwrap_or(DEFAULT_REGISTRATION_PORT),
             socket: None,
-            handshake_tx,
+            result_tx,
             running: Arc::new(RwLock::new(false)),
         }
     }
@@ -72,23 +75,24 @@ impl RegistrationSocket {
         // Set the running flag
         *self.running.write().await = true;
         
-        // Create a channel for processing handshake requests
-        let (process_tx, mut process_rx) = mpsc::channel::<HandshakeInitRequest>(32);
+        // Create a new broadcast channel for receiving handshake results
+        let (result_tx, _) = broadcast::channel(32);
         
-        // Update our handshake_tx to the processor channel
-        self.handshake_tx = process_tx.clone();
+        // Update our broadcast sender
+        self.result_tx = result_tx.clone();
         
-        // Get a clone of the socket and running flag for the message handling task
-        let mut socket_clone = self.socket.as_ref().unwrap().clone();
+        // Take ownership of the socket to move into the task
+        let socket = self.socket.take().unwrap();
         let running = self.running.clone();
         
         info!("Started JEP 66 registration REP socket on port {}", self.port);
         
-        // Spawn a task to handle incoming registration requests
+        // Spawn a task to handle incoming registration requests from kernels
         tokio::spawn(async move {
+            let mut socket = socket;
             while *running.read().await {
                 // Wait for a request from a kernel
-                match socket_clone.recv().await {
+                match socket.recv().await {
                     Ok(request_data) => {
                         // Convert ZmqMessage to bytes
                         let bytes_vec = request_data.into_vec();
@@ -98,13 +102,25 @@ impl RegistrationSocket {
                         match serde_json::from_slice::<HandshakeRequest>(&data) {
                             Ok(request) => {
                                 debug!(
-                                    "Received handshake request with protocol version {}",
+                                    "Received handshake request from kernel with protocol version {}",
                                     request.protocol_version
                                 );
                                 
                                 // Check if the request is from a kernel that supports JEP 66
                                 if HandshakeVersion::supports_handshaking(&request.protocol_version) {
-                                    // Create a successful reply
+                                    // Create the handshake result for internal use
+                                    let result = HandshakeResult {
+                                        request: request.clone(),
+                                        status: HandshakeStatus::Ok,
+                                        capabilities: request.capabilities.clone(),
+                                    };
+                                    
+                                    // Send the result internally for processing using broadcast
+                                    if let Err(e) = result_tx.send(result) {
+                                        warn!("Failed to send handshake result internally: {}", e);
+                                    }
+                                    
+                                    // Create a successful reply to send back to the kernel
                                     let reply = HandshakeReply {
                                         status: HandshakeStatus::Ok,
                                         error: None,
@@ -115,14 +131,26 @@ impl RegistrationSocket {
                                     let reply_data = serde_json::to_vec(&reply)
                                         .expect("Failed to serialize handshake reply");
                                     
-                                    // Send the reply
-                                    if let Err(e) = socket_clone.send(reply_data.into()).await {
-                                        warn!("Failed to send handshake reply: {}", e);
+                                    // Send the reply to the kernel
+                                    if let Err(e) = socket.send(reply_data.into()).await {
+                                        warn!("Failed to send handshake reply to kernel: {}", e);
                                     } else {
                                         info!("Sent successful handshake reply to kernel");
                                     }
                                 } else {
-                                    // Create an error reply
+                                    // Create the handshake result for internal use
+                                    let result = HandshakeResult {
+                                        request: request.clone(),
+                                        status: HandshakeStatus::Error,
+                                        capabilities: request.capabilities.clone(),
+                                    };
+                                    
+                                    // Send the result internally for processing using broadcast
+                                    if let Err(e) = result_tx.send(result) {
+                                        warn!("Failed to send handshake result internally: {}", e);
+                                    }
+                                    
+                                    // Create an error reply to send back to the kernel
                                     let reply = HandshakeReply {
                                         status: HandshakeStatus::Error,
                                         error: Some(format!(
@@ -136,9 +164,9 @@ impl RegistrationSocket {
                                     let reply_data = serde_json::to_vec(&reply)
                                         .expect("Failed to serialize handshake reply");
                                     
-                                    // Send the reply
-                                    if let Err(e) = socket_clone.send(reply_data.into()).await {
-                                        warn!("Failed to send handshake reply: {}", e);
+                                    // Send the reply to the kernel
+                                    if let Err(e) = socket.send(reply_data.into()).await {
+                                        warn!("Failed to send handshake reply to kernel: {}", e);
                                     } else {
                                         warn!(
                                             "Sent error handshake reply to kernel with unsupported protocol version {}",
@@ -150,7 +178,7 @@ impl RegistrationSocket {
                             Err(e) => {
                                 warn!("Failed to deserialize handshake request: {}", e);
                                 
-                                // Send an error reply
+                                // Send an error reply to the kernel
                                 let reply = HandshakeReply {
                                     status: HandshakeStatus::Error,
                                     error: Some(format!("Failed to parse handshake request: {}", e)),
@@ -161,24 +189,18 @@ impl RegistrationSocket {
                                 let reply_data = serde_json::to_vec(&reply)
                                     .expect("Failed to serialize handshake reply");
                                 
-                                // Send the reply
-                                if let Err(e) = socket_clone.send(reply_data.into()).await {
-                                    warn!("Failed to send handshake reply: {}", e);
+                                // Send the reply to the kernel
+                                if let Err(e) = socket.send(reply_data.into()).await {
+                                    warn!("Failed to send handshake reply to kernel: {}", e);
                                 }
                             }
                         }
                     },
                     Err(e) => {
-                        warn!("Error receiving handshake request: {}", e);
+                        warn!("Error receiving handshake request from kernel: {}", e);
                     }
                 }
             }
-        });
-        
-        // Spawn a task to handle outgoing handshake requests
-        let running = self.running.clone();
-        tokio::spawn(async move {
-            Self::process_handshake_requests(&mut process_rx, running).await;
         });
         
         Ok(())
@@ -193,124 +215,14 @@ impl RegistrationSocket {
         }
     }
     
-    /// Process handshake requests from the server to kernels
-    async fn process_handshake_requests(
-        rx: &mut mpsc::Receiver<HandshakeInitRequest>,
-        running: Arc<RwLock<bool>>,
-    ) {
-        while *running.read().await {
-            if let Some(request) = rx.recv().await {
-                // Create a ZeroMQ REQ socket to connect to the kernel's registration port
-                let mut req_socket = zeromq::ReqSocket::new();
-                
-                // Extract the connection info
-                let conn_info = request.connection_info;
-                
-                // Build the connection address
-                let address = format!("tcp://{}:{}", conn_info.ip, DEFAULT_REGISTRATION_PORT);
-                
-                // Connect to the kernel's registration socket
-                match req_socket.connect(&address).await {
-                    Ok(()) => {
-                        debug!("Connected to kernel registration socket at {}", address);
-                        
-                        // Create the handshake request
-                        let handshake_request = HandshakeRequest {
-                            shell_port: conn_info.shell_port as u16,
-                            iopub_port: conn_info.iopub_port as u16,
-                            stdin_port: conn_info.stdin_port as u16,
-                            control_port: conn_info.control_port as u16,
-                            hb_port: conn_info.hb_port as u16,
-                            protocol_version: JEP66_PROTOCOL_VERSION.to_string(),
-                            capabilities: HashMap::new(),
-                        };
-                        
-                        // Serialize the request
-                        let request_data = match serde_json::to_vec(&handshake_request) {
-                            Ok(data) => data,
-                            Err(e) => {
-                                warn!("Failed to serialize handshake request: {}", e);
-                                if let Err(e) = request.reply_tx.send(None).await {
-                                    warn!("Failed to send handshake reply: {}", e);
-                                }
-                                continue;
-                            }
-                        };
-                        
-                        // Send the request
-                        if let Err(e) = req_socket.send(request_data.into()).await {
-                            warn!("Failed to send handshake request: {}", e);
-                            if let Err(e) = request.reply_tx.send(None).await {
-                                warn!("Failed to send handshake reply: {}", e);
-                            }
-                            continue;
-                        }
-                        
-                        // Wait for a reply with a timeout
-                        match tokio::time::timeout(
-                            tokio::time::Duration::from_secs(5),
-                            req_socket.recv(),
-                        ).await {
-                            Ok(Ok(reply_data)) => {
-                                // Convert ZmqMessage to bytes
-                                let bytes_vec = reply_data.into_vec();
-                                let data: Vec<u8> = bytes_vec.iter().flat_map(|b| b.to_vec()).collect();
-                                
-                                // Try to deserialize the reply
-                                match serde_json::from_slice::<HandshakeReply>(&data) {
-                                    Ok(reply) => {
-                                        // Send the reply back to the caller
-                                        if let Err(e) = request.reply_tx.send(Some(reply.clone())).await {
-                                            warn!("Failed to send handshake reply: {}", e);
-                                        } else {
-                                            match reply.status {
-                                                HandshakeStatus::Ok => {
-                                                    info!("Received successful handshake reply from kernel");
-                                                },
-                                                HandshakeStatus::Error => {
-                                                    warn!(
-                                                        "Received error handshake reply from kernel: {}",
-                                                        reply.error.unwrap_or_else(|| "Unknown error".to_string())
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    },
-                                    Err(e) => {
-                                        warn!("Failed to deserialize handshake reply: {}", e);
-                                        if let Err(e) = request.reply_tx.send(None).await {
-                                            warn!("Failed to send handshake reply: {}", e);
-                                        }
-                                    }
-                                }
-                            },
-                            Ok(Err(e)) => {
-                                warn!("Error receiving handshake reply: {}", e);
-                                if let Err(e) = request.reply_tx.send(None).await {
-                                    warn!("Failed to send handshake reply: {}", e);
-                                }
-                            },
-                            Err(_) => {
-                                warn!("Timeout waiting for handshake reply from kernel");
-                                if let Err(e) = request.reply_tx.send(None).await {
-                                    warn!("Failed to send handshake reply: {}", e);
-                                }
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        warn!("Failed to connect to kernel registration socket: {}", e);
-                        if let Err(e) = request.reply_tx.send(None).await {
-                            warn!("Failed to send handshake reply: {}", e);
-                        }
-                    }
-                }
-            }
-        }
+    /// Get the sender for handshake results
+    pub fn get_result_sender(&self) -> broadcast::Sender<HandshakeResult> {
+        self.result_tx.clone()
     }
     
-    /// Get the sender for handshake requests
-    pub fn get_handshake_sender(&self) -> mpsc::Sender<HandshakeInitRequest> {
-        self.handshake_tx.clone()
+    /// Get a receiver for handshake results
+    pub fn get_result_receiver(&self) -> broadcast::Receiver<HandshakeResult> {
+        // Create a new receiver from our broadcast channel
+        self.result_tx.subscribe()
     }
 }

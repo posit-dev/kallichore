@@ -95,6 +95,7 @@ impl<C> Server<C> {
         
         // Start the registration socket in a separate async task
         let reg_socket_arc = registration_socket.clone();
+        let kernel_sessions_clone = kernel_sessions.clone();
         tokio::spawn(async move {
             // Create the registration socket with the default port
             let mut socket = RegistrationSocket::new(None);
@@ -105,6 +106,19 @@ impl<C> Server<C> {
                     // Store the socket in the arc after successful start
                     let mut reg_socket = reg_socket_arc.write().unwrap();
                     *reg_socket = Some(socket);
+                    
+                    log::info!("JEP 66 handshaking protocol is available - kernels can connect to the registration socket");
+                    
+                    // Get a receiver for handshake results
+                    if let Some(ref socket) = *reg_socket {
+                        let receiver = socket.get_result_receiver();
+                        
+                        // Spawn a task to handle handshake results
+                        let kernel_sessions = kernel_sessions_clone.clone();
+                        tokio::spawn(async move {
+                            Self::process_handshake_results(receiver, kernel_sessions).await;
+                        });
+                    }
                 },
                 Err(e) => {
                     // Log the error but continue without the handshaking protocol
@@ -421,12 +435,132 @@ use crate::client_session::ClientSession;
 use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
-use crate::registration_socket::{HandshakeInitRequest, RegistrationSocket};
+use crate::registration_socket::RegistrationSocket;
 use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
-use kcshared::handshake_protocol::{HandshakeStatus, HandshakeVersion};
+use kcshared::{
+    handshake_protocol::{HandshakeStatus, HandshakeVersion},
+    kernel_message::KernelMessage,
+    websocket_message::WebsocketMessage,
+};
+use crate::registration_socket::HandshakeResult;
+use tokio::sync::broadcast;
 
-impl<C> Server<C> {}
+impl<C> Server<C> {
+    /// Process handshake results received from kernels
+    async fn process_handshake_results(
+        mut receiver: broadcast::Receiver<HandshakeResult>,
+        kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
+    ) {
+        while let Ok(result) = receiver.recv().await {
+            match result.status {
+                HandshakeStatus::Ok => {
+                    log::info!(
+                        "Received handshake request from kernel with ports: shell={}, iopub={}, stdin={}, control={}, hb={}", 
+                        result.request.shell_port,
+                        result.request.iopub_port,
+                        result.request.stdin_port,
+                        result.request.control_port,
+                        result.request.hb_port
+                    );
+                    
+                    // Process the handshake in a separate function to avoid deadlocks
+                    Self::process_single_handshake(result, kernel_sessions.clone()).await;
+                },
+                HandshakeStatus::Error => {
+                    log::warn!("Received invalid handshake request from kernel");
+                }
+            }
+        }
+    }
+    
+    /// Process a single handshake result
+    async fn process_single_handshake(
+        result: HandshakeResult,
+        kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
+    ) {
+        // First, find a session in Starting state by getting the session IDs
+        let sessions_to_check = {
+            let sessions = kernel_sessions.read().unwrap();
+            sessions.iter().map(|s| s.connection.session_id.clone()).collect::<Vec<_>>()
+        };
+            
+        // Now check each session individually
+        for session_id in sessions_to_check {
+            // Find this session again
+            let session_opt = {
+                let sessions = kernel_sessions.read().unwrap();
+                sessions.iter().find(|s| s.connection.session_id == session_id).cloned()
+            };
+            
+            if let Some(session) = session_opt {
+                // Check if it's in Starting state
+                let is_starting = {
+                    let state = session.state.read().await;
+                    state.status == models::Status::Starting
+                };
+                
+                if is_starting {
+                    // Parse the handshake version
+                    let version = if HandshakeVersion::supports_handshaking(&result.request.protocol_version) {
+                        // Parse the version from the string (e.g., "5.5")
+                        if let Some((major, minor)) = result.request.protocol_version.split_once('.') {
+                            if let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) {
+                                Some(HandshakeVersion { major, minor })
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    
+                    // Update the session in the sessions list
+                    {
+                        let mut sessions = kernel_sessions.write().unwrap();
+                        
+                        if let Some(session) = sessions.iter_mut().find(|s| s.connection.session_id == session_id) {
+                            // Update the connection file with the ports from the handshake
+                            session.connection_file.info.shell_port = result.request.shell_port as i32;
+                            session.connection_file.info.iopub_port = result.request.iopub_port as i32;
+                            session.connection_file.info.stdin_port = result.request.stdin_port as i32;
+                            session.connection_file.info.control_port = result.request.control_port as i32;
+                            session.connection_file.info.hb_port = result.request.hb_port as i32;
+                        }
+                    }
+                    
+                    // Update the kernel state with handshake information
+                    {
+                        let mut state = session.state.write().await;
+                        state.handshake_version = version;
+                        state.kernel_capabilities = result.request.capabilities.clone();
+                    }
+                    
+                    log::info!(
+                        "[session {}] Updated session with ports from handshake: shell={}, iopub={}, stdin={}, control={}, hb={}",
+                        session_id,
+                        result.request.shell_port,
+                        result.request.iopub_port,
+                        result.request.stdin_port,
+                        result.request.control_port,
+                        result.request.hb_port
+                    );
+                    
+                    // Send an event via the session's websocket channel
+                    let msg = WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(session_id.clone()));
+                    if let Err(e) = session.ws_json_tx.send(msg).await {
+                        log::warn!("[session {}] Failed to send handshake completed message: {}", session_id, e);
+                    }
+                    
+                    // Only update one session per handshake
+                    break;
+                }
+            }
+        }
+    }
+}
 
 #[async_trait]
 impl<C> Api<C> for Server<C>
@@ -533,101 +667,13 @@ where
             }
         };
         
-        // Check if we have a registration socket running (for JEP 66 handshaking)
-        let handshake_sender = {
-            // Scope the lock so it's dropped before any awaits
-            let reg_socket = self.registration_socket.read().unwrap();
-            if let Some(ref socket) = *reg_socket {
-                Some(socket.get_handshake_sender())
-            } else {
-                None
-            }
-        };
-        
-        if let Some(sender) = handshake_sender {
-            // We have a registration socket, which means we can attempt to use the handshaking protocol
-            log::debug!(
-                "[session {}] Attempting to use JEP 66 handshaking protocol for kernel connection",
-                new_session_id
-            );
-            
-            // Create a channel for the handshake reply
-            let (reply_tx, mut reply_rx) = mpsc::channel(1);
-            
-            // Send a handshake request to the kernel
-            if let Err(e) = sender.send(
-                HandshakeInitRequest {
-                    connection_info: connection_file.info.clone(),
-                    reply_tx,
-                }
-            ).await {
-                log::warn!(
-                    "[session {}] Failed to send handshake request to kernel: {}",
-                    new_session_id,
-                    e
-                );
-                
-                // Continue with traditional connection method - JEP 66 is optional
-            } else {
-                // Wait for a reply with timeout
-                match tokio::time::timeout(
-                    tokio::time::Duration::from_secs(5),
-                    reply_rx.recv()
-                ).await {
-                    Ok(Some(Some(reply))) => {
-                        // Check the status of the reply
-                        match reply.status {
-                            HandshakeStatus::Ok => {
-                                log::info!(
-                                    "[session {}] Successfully negotiated JEP 66 handshaking protocol with kernel",
-                                    new_session_id
-                                );
-                                
-                                // Store the capabilities for later use - will be done in the future
-                                // We'll store these in the kernel state when we create the session
-                                let _capabilities = reply.capabilities;
-                                
-                                // Continue with normal session creation, but note that we're using
-                                // JEP 66 protocol
-                            },
-                            HandshakeStatus::Error => {
-                                log::warn!(
-                                    "[session {}] Kernel rejected handshake request: {}",
-                                    new_session_id,
-                                    reply.error.unwrap_or_else(|| String::from("Unknown error"))
-                                );
-                                
-                                // Continue with traditional connection method
-                            }
-                        }
-                    },
-                    Ok(Some(None)) => {
-                        log::warn!(
-                            "[session {}] Handshake reply from kernel was None",
-                            new_session_id
-                        );
-                        
-                        // Continue with traditional connection method
-                    },
-                    Ok(None) => {
-                        log::warn!(
-                            "[session {}] No handshake reply received from registration socket",
-                            new_session_id
-                        );
-                        
-                        // Continue with traditional connection method
-                    },
-                    Err(_) => {
-                        log::warn!(
-                            "[session {}] Timeout waiting for handshake reply from kernel",
-                            new_session_id
-                        );
-                        
-                        // Continue with traditional connection method
-                    }
-                }
-            }
-        }
+        // With the corrected JEP 66 protocol, we don't initiate a connection here.
+        // The kernel will connect to our registration socket when it starts up,
+        // and we'll get the connection info from the kernel's handshake request.
+        log::debug!(
+            "[session {}] Using JEP 66 protocol - kernel will connect to registration socket if it supports handshaking",
+            new_session_id
+        );
 
         let temp_dir = env::temp_dir();
         let mut connection_file_name = std::ffi::OsString::from("connection_");

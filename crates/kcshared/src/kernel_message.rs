@@ -53,4 +53,7 @@ pub enum KernelMessage {
 
     /// The kernel has exited
     Exited(i32),
+    
+    /// The kernel has completed the JEP 66 handshake. The parameter is the session ID.
+    HandshakeCompleted(String),
 }

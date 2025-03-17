@@ -33,6 +33,7 @@ pub enum KSError {
     ExitedBeforeConnection,
     NoKernelInfo(anyhow::Error),
     StartFailed(anyhow::Error),
+    HandshakeFailed(String, anyhow::Error),
 }
 
 impl fmt::Display for KSError {
@@ -103,6 +104,9 @@ impl fmt::Display for KSError {
             }
             KSError::StartFailed(e) => {
                 write!(f, "Failed to start kernel: {}", e)
+            }
+            KSError::HandshakeFailed(session_id, e) => {
+                write!(f, "JEP 66 handshake failed for session {}: {}", session_id, e)
             }
         }
     }
