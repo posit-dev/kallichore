@@ -93,12 +93,16 @@ impl<C> Server<C> {
         // Create registration socket for JEP 66 handshaking
         let registration_socket = Arc::new(RwLock::new(None));
 
+        // Pick a free port for the registration socket
+        let port = portpicker::pick_unused_port()
+            .expect("Could not find a free port for the registration socket");
+
         // Start the registration socket in a separate async task
         let reg_socket_arc = registration_socket.clone();
         let kernel_sessions_clone = kernel_sessions.clone();
         tokio::spawn(async move {
             // Create the registration socket with the default port
-            let mut socket = RegistrationSocket::new(None);
+            let mut socket = RegistrationSocket::new(port);
 
             // Start the socket
             match socket.start().await {
@@ -426,9 +430,9 @@ impl<C> Server<C> {
     }
 }
 
+use kallichore_api::models::ConnectionInfo;
 use kallichore_api::server::MakeService;
 use kallichore_api::{Api, ListSessionsResponse};
-use kallichore_api::models::ConnectionInfo;
 use std::error::Error;
 use swagger::ApiError;
 
@@ -697,19 +701,19 @@ where
         // Determine if the kernel supports JEP 66 handshaking based on the protocol version
         let protocol_version = session.protocol_version.as_deref().unwrap_or("5.3");
         let supports_handshaking = ConnectionFile::requires_handshaking(protocol_version);
-        
+
         // The optional connection file and optional registration file
         let mut connection_file_opt = None;
         let mut registration_file_opt = None;
-        
+
         if supports_handshaking {
             // For JEP 66 handshaking, create a registration file first
             // The actual ports for the connection will be determined by the kernel during handshaking
-            
+
             // Generate a key for the registration file
             let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
             let key = hex::encode(key_bytes);
-            
+
             // Generate the registration file with a free port
             let registration_file = match RegistrationFile::generate(
                 String::from("127.0.0.1"),
@@ -726,23 +730,23 @@ where
                     return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
                 }
             };
-            
+
             // Store the registration port for later use
             let registration_port = registration_file.registration_port;
-            
+
             // Store the registration file for writing later
             registration_file_opt = Some(registration_file);
-            
+
             log::debug!(
                 "[session {}] Using JEP 66 handshaking (protocol version {}) - registration port: {}",
                 new_session_id,
                 protocol_version,
                 registration_port
             );
-            
+
             // No connection file is created initially for JEP 66
             // The connection details will be provided by the kernel during handshaking
-            
+
             // We'll wait for the handshake to provide connection info
         } else {
             // Create a standard connection file for the session with pre-assigned ports
@@ -760,10 +764,10 @@ where
                     return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
                 }
             };
-            
+
             // Store the connection file
             connection_file_opt = Some(conn_file);
-            
+
             log::debug!(
                 "[session {}] Using traditional Jupyter protocol (version {}) - pre-assigning ports",
                 new_session_id,
@@ -779,7 +783,7 @@ where
 
         // Combine the temporary directory with the file name to get the full path
         let connection_path: PathBuf = temp_dir.join(connection_file_name);
-        
+
         // Write either a standard connection file or a registration file
         if supports_handshaking {
             // For JEP 66 handshaking, use the registration file we created earlier
@@ -797,7 +801,7 @@ where
                     error.log();
                     return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
                 }
-                
+
                 log::debug!(
                     "Created registration file for session {} at {:?} (port: {})",
                     new_session_id.clone(),
@@ -806,7 +810,10 @@ where
                 );
             } else {
                 // This shouldn't happen - we should always have a registration file at this point
-                log::error!("[session {}] Missing registration file for JEP 66 handshaking", new_session_id);
+                log::error!(
+                    "[session {}] Missing registration file for JEP 66 handshaking",
+                    new_session_id
+                );
             }
         } else {
             // For traditional protocol, write the connection file
@@ -823,7 +830,7 @@ where
                     error.log();
                     return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
                 }
-                
+
                 log::debug!(
                     "Created connection file for session {} at {:?}",
                     new_session_id.clone(),
@@ -831,7 +838,10 @@ where
                 );
             } else {
                 // This shouldn't happen - we should always have a connection file at this point
-                log::error!("[session {}] Missing connection file for traditional protocol", new_session_id);
+                log::error!(
+                    "[session {}] Missing connection file for traditional protocol",
+                    new_session_id
+                );
             }
         }
 
@@ -897,7 +907,7 @@ where
             // For traditional protocol, use the connection file we created
             connection_file_opt.clone().unwrap()
         };
-        
+
         let kernel_session = match KernelSession::new(
             session,
             Some(session_connection_file),
@@ -1060,9 +1070,9 @@ where
         // Return the connection info
         // Ensure we have connection info available
         match &kernel_session.connection_file {
-            Some(conn_file) => {
-                Ok(ConnectionInfoResponse::ConnectionInfo(conn_file.info.clone()))
-            },
+            Some(conn_file) => Ok(ConnectionInfoResponse::ConnectionInfo(
+                conn_file.info.clone(),
+            )),
             None => {
                 let error = KSError::NoConnectionInfo(session_id.clone());
                 error.log();

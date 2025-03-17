@@ -21,16 +21,13 @@ pub struct HandshakeVersion {
 /// Protocol version indicating support for JEP 66 handshaking
 pub const JEP66_PROTOCOL_VERSION: &str = "5.5";
 
-/// Registration socket default port
-pub const DEFAULT_REGISTRATION_PORT: u16 = 8888;
-
 /// Status returned in the handshake reply
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum HandshakeStatus {
     /// The handshake was successful
     #[serde(rename = "ok")]
     Ok,
-    
+
     /// The handshake failed
     #[serde(rename = "error")]
     Error,
@@ -40,24 +37,24 @@ pub enum HandshakeStatus {
 /// during the handshake process
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeRequest {
-    /// The port for the shell channel 
+    /// The port for the shell channel
     pub shell_port: u16,
-    
+
     /// The port for the IOPub channel
     pub iopub_port: u16,
-    
+
     /// The port for the stdin channel
     pub stdin_port: u16,
-    
+
     /// The port for the control channel
     pub control_port: u16,
-    
+
     /// The port for the heartbeat channel
     pub hb_port: u16,
-    
+
     /// The protocol version supported by the supervisor
     pub protocol_version: String,
-    
+
     /// Additional capabilities supported by the supervisor
     #[serde(default)]
     pub capabilities: HashMap<String, serde_json::Value>,
@@ -68,11 +65,11 @@ pub struct HandshakeRequest {
 pub struct HandshakeReply {
     /// Status of the handshake (ok or error)
     pub status: HandshakeStatus,
-    
+
     /// Optional error message if status is Error
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    
+
     /// Additional capabilities supported by the kernel
     #[serde(default)]
     pub capabilities: HashMap<String, serde_json::Value>,
@@ -83,16 +80,16 @@ pub struct HandshakeReply {
 pub struct RegistrationInfo {
     /// The transport protocol (e.g. "tcp")
     pub transport: String,
-    
+
     /// The signature scheme (e.g. "hmac-sha256")
     pub signature_scheme: String,
-    
+
     /// The IP address
     pub ip: String,
-    
+
     /// The key used for message signing
     pub key: String,
-    
+
     /// The registration port
     pub registration_port: u16,
 }

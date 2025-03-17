@@ -76,11 +76,8 @@ impl ZmqWsProxy {
         let session_id = connection.session_id.clone();
         // Extract the heartbeat address if we have a connection file
         let hb_address = match &connection_file {
-            Some(conn_file) => format!(
-                "tcp://{}:{}",
-                conn_file.info.ip, conn_file.info.hb_port
-            ),
-            None => String::from("tcp://127.0.0.1:0") // Placeholder, not used until we have a real connection
+            Some(conn_file) => format!("tcp://{}:{}", conn_file.info.ip, conn_file.info.hb_port),
+            None => String::from("tcp://127.0.0.1:0"), // Placeholder, not used until we have a real connection
         };
         let disconnected_event = Arc::new(Event::new());
 
@@ -134,9 +131,9 @@ impl ZmqWsProxy {
             anyhow::bail!("Cannot connect; connection file not available yet.");
         }
         let connection_file = self.connection_file.as_ref().unwrap();
-            
+
         log::trace!(
-            "[session {}] Connecting to sockets on ip ${} (shell = {}, iopub = {}, control = {}, stdin = {})",
+            "[session {}] Connecting to sockets on ip {} (shell = {}, iopub = {}, control = {}, stdin = {})",
             self.connection.session_id,
             connection_file.info.ip,
             connection_file.info.shell_port,
@@ -248,7 +245,7 @@ impl ZmqWsProxy {
             "[session {}] Sending initial kernel_info_request message to kernel",
             self.connection.session_id
         );
-        
+
         // We use v5 protocol initially since we don't know if the kernel supports handshaking
         let wire_message = WireMessage::from_jupyter_v5(request, self.connection.clone())?;
         let zmq_message: ZmqMessage = wire_message.into();
@@ -270,7 +267,7 @@ impl ZmqWsProxy {
 
         Ok(reply.content)
     }
-    
+
     /// Tries to perform the Jupyter Handshaking Protocol with the kernel.
     /// Returns the negotiated handshake version if successful, None otherwise.
     pub async fn try_handshake(&mut self) -> Result<Option<HandshakeVersion>, anyhow::Error> {
@@ -278,12 +275,12 @@ impl ZmqWsProxy {
             "[session {}] Traditional socket connection established; not using JEP 66 handshaking",
             self.connection.session_id
         );
-        
+
         // JEP 66 uses the registration socket approach, not direct messaging between
         // the supervisor and kernel over the traditional Jupyter sockets.
         // This function therefore always returns None, but is kept for future expansion
         // of the handshaking protocol.
-        
+
         Ok(None)
     }
 
@@ -499,7 +496,7 @@ impl ZmqWsProxy {
                 // Do nothing for other message types
             }
         }
-        
+
         // Get the current handshake version from the state
         // If JEP 66 handshaking was used, we'll have a version stored in the state
         // Otherwise, we'll fall back to traditional v5 protocol
@@ -507,7 +504,7 @@ impl ZmqWsProxy {
             let state = self.state.read().await;
             state.handshake_version.clone()
         };
-        
+
         // Convert the message to a wire message using the appropriate protocol version
         let channel = msg.channel.clone();
         let wire_message = if let Some(ref version) = handshake_version {
@@ -527,7 +524,7 @@ impl ZmqWsProxy {
             );
             WireMessage::from_jupyter_v5(msg, self.connection.clone())?
         };
-        
+
         let zmq_message: ZmqMessage = wire_message.into();
         match channel {
             JupyterChannel::Shell => {
@@ -644,7 +641,11 @@ impl ZmqWsProxy {
                                         version.major,
                                         version.minor
                                     );
-                                    WireMessage::from_jupyter(request, self.connection.clone(), Some(version))?
+                                    WireMessage::from_jupyter(
+                                        request,
+                                        self.connection.clone(),
+                                        Some(version),
+                                    )?
                                 } else {
                                     // Fall back to traditional v5 protocol
                                     log::trace!(
