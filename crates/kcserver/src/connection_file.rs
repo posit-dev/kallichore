@@ -1,7 +1,7 @@
 //
 // connection_file.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -13,14 +13,35 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use kallichore_api::models::ConnectionInfo;
-use serde::Deserialize;
-use serde::Serialize;
+use kcshared::handshake_protocol::HandshakeVersion;
+use serde::{Deserialize, Serialize};
 
 /// The contents of the Connection File as listed in the Jupyter specfication;
 /// directly parsed from JSON.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ConnectionFile {
     pub info: ConnectionInfo,
+}
+
+/// The contents of the Registration File as specified in JEP 66.
+/// Used for kernel handshaking protocol.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RegistrationFile {
+    /// The transport type to use for ZeroMQ; generally "tcp"
+    pub transport: String,
+
+    /// The signature scheme to use for messages; generally "hmac-sha256"
+    pub signature_scheme: String,
+
+    /// The IP address to bind to
+    pub ip: String,
+
+    /// The HMAC-256 signing key, or an empty string for an unauthenticated
+    /// connection
+    pub key: String,
+
+    /// ZeroMQ port: Registration messages (handshake)
+    pub registration_port: u16,
 }
 
 impl ConnectionFile {
@@ -160,5 +181,59 @@ impl ConnectionFile {
     #[allow(dead_code)]
     pub fn endpoint(&self, port: u16) -> String {
         format!("{}://{}:{}", self.info.transport, self.info.ip, port)
+    }
+
+    /// Checks whether a protocol version requires JEP 66 handshaking
+    /// i.e., if it's version 5.5 or higher
+    pub fn requires_handshaking(protocol_version: &str) -> bool {
+        HandshakeVersion::supports_handshaking(protocol_version)
+    }
+}
+
+impl RegistrationFile {
+    /// Create a RegistrationFile from the parts needed to connect
+    pub fn new(ip: String, port: u16, key: String) -> Self {
+        Self {
+            transport: "tcp".to_string(),
+            signature_scheme: "hmac-sha256".to_string(),
+            ip,
+            key,
+            registration_port: port,
+        }
+    }
+
+    /// Generate a new RegistrationFile by picking free ports
+    pub fn generate(
+        ip: String,
+        key: String,
+        reserved_ports: Arc<RwLock<Vec<i32>>>,
+    ) -> Result<Self, anyhow::Error> {
+        // Find a free port for the registration socket
+        let registration_port =
+            ConnectionFile::find_port(String::from("registration"), reserved_ports.clone())?;
+
+        Ok(Self {
+            transport: "tcp".to_string(),
+            signature_scheme: "hmac-sha256".to_string(),
+            ip,
+            key,
+            registration_port: registration_port,
+        })
+    }
+
+    /// Write the registration file to disk
+    pub fn to_file<P: AsRef<Path>>(&self, file_path: P) -> Result<(), Box<dyn Error>> {
+        let file = File::create(file_path)?;
+        serde_json::to_writer_pretty(file, &self)?;
+        Ok(())
+    }
+
+    /// Given a registration port, return a URI-like string that can be used to connect
+    /// Example: "tcp://127.0.0.1:8888"
+    pub fn endpoint(&self) -> String {
+        format!(
+            "{}://{}:{}",
+            self.transport, self.ip, self.registration_port
+        )
     }
 }

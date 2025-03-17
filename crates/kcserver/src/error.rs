@@ -34,6 +34,7 @@ pub enum KSError {
     NoKernelInfo(anyhow::Error),
     StartFailed(anyhow::Error),
     HandshakeFailed(String, anyhow::Error),
+    NoConnectionInfo(String),
 }
 
 impl fmt::Display for KSError {
@@ -107,6 +108,9 @@ impl fmt::Display for KSError {
             }
             KSError::HandshakeFailed(session_id, e) => {
                 write!(f, "JEP 66 handshake failed for session {}: {}", session_id, e)
+            }
+            KSError::NoConnectionInfo(session_id) => {
+                write!(f, "Connection information is not available for session {}", session_id)
             }
         }
     }

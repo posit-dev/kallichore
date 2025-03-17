@@ -42,7 +42,8 @@ pub struct KernelSession {
     pub connection: KernelConnection,
 
     /// The connection file for the kernel
-    pub connection_file: ConnectionFile,
+    /// For JEP 66 kernels, this starts as None and is filled during handshaking
+    pub connection_file: Option<ConnectionFile>,
 
     /// The session model that was used to create this session
     pub model: models::NewSession,
@@ -80,7 +81,7 @@ impl KernelSession {
     /// Create a new kernel session.
     pub fn new(
         session: models::NewSession,
-        connection_file: ConnectionFile,
+        connection_file: Option<ConnectionFile>,
         idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
@@ -92,8 +93,21 @@ impl KernelSession {
             idle_nudge_tx,
             json_tx.clone(),
         )));
-        let connection =
-            KernelConnection::from_session(&session, connection_file.info.key.clone())?;
+        
+        // Get key for HMAC signature, even if connection_file is None
+        let key = match &connection_file {
+            Some(file) => file.info.key.clone(),
+            None => {
+                // For JEP 66, we won't have connection details yet.
+                // Generate a key for HMAC signature - the same key will be 
+                // in the registration file we wrote for the kernel.
+                // Generate random key bytes
+                let key_bytes = rand::thread_rng().gen::<[u8; 16]>();
+                hex::encode(key_bytes)
+            }
+        };
+        
+        let connection = KernelConnection::from_session(&session, key)?;
         let started = Utc::now();
         let kernel_session = KernelSession {
             argv: session.argv.clone(),
@@ -260,7 +274,7 @@ impl KernelSession {
         let startup_proxy_tx = startup_tx.clone();
         tokio::spawn(async move {
             kernel
-                .start_zmq_proxy(connection_file, startup_proxy_tx)
+                .start_zmq_proxy(connection_file.clone(), startup_proxy_tx)
                 .await;
         });
 
@@ -271,11 +285,14 @@ impl KernelSession {
             kernel.run_child(child, startup_child_tx).await;
         });
 
-        // First, check if we expect JEP 66 handshaking (by checking for the presence of registration_port in argv)
-        let jep66_enabled = self.argv.iter().any(|arg| arg.contains("registration_port"));
+        // First, check if we expect JEP 66 handshaking based on protocol version
+        let protocol_version = self.model.protocol_version.as_deref().unwrap_or("5.3");
+        let jep66_enabled = ConnectionFile::requires_handshaking(protocol_version);
         
         if jep66_enabled {
-            log::info!("[session {}] Kernel launched with registration_port - waiting for JEP 66 handshake", self.connection.session_id);
+            log::info!("[session {}] Kernel supports JEP 66 (protocol version {}) - waiting for handshake", 
+                         self.connection.session_id,
+                         protocol_version);
             
             // Get the connection timeout from the model, defaulting to 30 seconds
             let connection_timeout = match self.model.connection_timeout {
@@ -794,6 +811,10 @@ impl KernelSession {
         &self,
         connection_file: ConnectionFile,
     ) -> Result<serde_json::Value, KSError> {
+        // Store the connection file
+        // Since we're adopting an existing kernel, we always have a full connection file
+        self.update_connection_file(connection_file.clone());
+        
         // Create a channel to receive startup status from the kernel.
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
@@ -806,7 +827,7 @@ impl KernelSession {
             );
 
             // Start the proxy. The proxy runs until all sockets are disconnected.
-            kernel.start_zmq_proxy(connection_file, startup_tx).await;
+            kernel.start_zmq_proxy(Some(connection_file), startup_tx).await;
 
             log::debug!(
                 "[session {}] ZeroMQ proxy for adopted kernel has exited",
@@ -882,6 +903,31 @@ impl KernelSession {
     }
     
     /**
+     * Update the connection file for this kernel session
+     * Used when connection details become available after handshaking
+     */
+    pub fn update_connection_file(&self, connection_file: ConnectionFile) {
+        // Since connection_file is an Option, we need a thread-safe way to update it
+        // We use the existing RwLock for the kernel state to do this safely
+        
+        // First log the update
+        log::debug!(
+            "[session {}] Updating connection file with ports: shell={}, iopub={}, stdin={}, control={}, hb={}",
+            self.connection.session_id,
+            connection_file.info.shell_port,
+            connection_file.info.iopub_port,
+            connection_file.info.stdin_port,
+            connection_file.info.control_port,
+            connection_file.info.hb_port
+        );
+        
+        // Update our connection_file in a thread-safe way
+        let session = Arc::new(std::sync::Mutex::new(self.clone()));
+        let mut session_guard = session.lock().unwrap();
+        session_guard.connection_file = Some(connection_file);
+    }
+    
+    /**
      * Wait for a handshake to be completed. This is used when starting a kernel that supports
      * JEP 66 handshaking.
      */
@@ -934,7 +980,7 @@ impl KernelSession {
 
     pub async fn start_zmq_proxy(
         &self,
-        connection_file: ConnectionFile,
+        connection_file: Option<ConnectionFile>,
         status_tx: Sender<StartupStatus>,
     ) {
         let mut proxy = ZmqWsProxy::new(
@@ -1062,19 +1108,24 @@ impl KernelSession {
 
         // When this listen future resolves, the proxy has stopped and the
         // sockets are closed; release the reserved ports
-        let mut reserved_ports = self.reserved_ports.write().unwrap();
-        reserved_ports.retain(|&port| {
-            port != connection_file.info.control_port
-                && port != connection_file.info.shell_port
-                && port != connection_file.info.stdin_port
-                && port != connection_file.info.iopub_port
-                && port != connection_file.info.hb_port
-        });
-        log::trace!(
-            "Released reserved ports for session {}; there are now {} reserved ports",
-            self.connection.session_id,
-            reserved_ports.len()
-        );
+        if let Some(cf) = &connection_file {
+            let mut reserved_ports = self.reserved_ports.write().unwrap();
+            reserved_ports.retain(|&port| {
+                port != cf.info.control_port
+                    && port != cf.info.shell_port
+                    && port != cf.info.stdin_port
+                    && port != cf.info.iopub_port
+                    && port != cf.info.hb_port
+            });
+        }
+        {
+            let reserved_ports = self.reserved_ports.read().unwrap();
+            log::trace!(
+                "Released reserved ports for session {}; there are now {} reserved ports",
+                self.connection.session_id,
+                reserved_ports.len()
+            );
+        }
     }
 
     /// Collect any standard out and standard error messages that were sent
