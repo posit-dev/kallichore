@@ -12,6 +12,7 @@
 use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use hyper::client::connect;
 use hyper::header::{HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
 use hyper::server::conn::Http;
 use hyper::service::Service;
@@ -535,7 +536,10 @@ impl<C> Server<C> {
             hb_port: result.request.hb_port as i32,
             transport: "tcp".to_string(),
             signature_scheme: "hmac-sha256".to_string(),
-            key: String::new(),
+            key: match session.connection.key {
+                Some(ref key) => key.clone(),
+                None => "".to_string(),
+            },
             ip: "127.0.0.1".to_string(),
         };
 
@@ -561,13 +565,14 @@ impl<C> Server<C> {
         }
 
         log::info!(
-            "[session {}] Updated session with ports from handshake: shell={}, iopub={}, stdin={}, control={}, hb={}",
+            "[session {}] Updated session with ports from handshake: shell={}, iopub={}, stdin={}, control={}, hb={}, key={}",
             session_id,
             result.request.shell_port,
             result.request.iopub_port,
             result.request.stdin_port,
             result.request.control_port,
-            result.request.hb_port
+            result.request.hb_port,
+            info.key
         );
 
         // Send an event via the session's websocket channel
@@ -680,6 +685,7 @@ where
         // The optional connection file and optional registration file
         let mut connection_file_opt = None;
         let mut registration_file_opt = None;
+        let mut key: String = String::new();
 
         if supports_handshaking {
             // For JEP 66 handshaking, create a registration file first
@@ -687,7 +693,7 @@ where
 
             // Generate a key for the registration file
             let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
-            let key = hex::encode(key_bytes);
+            key = hex::encode(key_bytes);
 
             // Generate the registration file from our registration_socket's port
             let port = match self.registration_socket.read().unwrap().as_ref() {
@@ -711,10 +717,11 @@ where
             registration_file_opt = Some(registration_file);
 
             log::debug!(
-                "[session {}] Using JEP 66 handshaking (protocol version {}) - registration port: {}",
+                "[session {}] Using JEP 66 handshaking (protocol version {}) - registration port: {}, key: {}",
                 new_session_id,
                 protocol_version,
-                registration_port
+                registration_port,
+                key.clone()
             );
 
             // No connection file is created initially for JEP 66
@@ -726,6 +733,7 @@ where
             let conn_file = match ConnectionFile::generate(
                 String::from("127.0.0.1"),
                 self.reserved_ports.clone(),
+                key.clone(),
             ) {
                 Ok(conn_file) => conn_file,
                 Err(e) => {
@@ -831,7 +839,8 @@ where
             log_path
         );
 
-        // Loop through the arguments; if any is the special string "{connection_file}", replace it with the session id
+        // Loop through the arguments; if any is the special string "{connection_file}",
+        // replace it with the connection file
         let args: Vec<String> = args
             .iter()
             .map(|arg| {
@@ -861,29 +870,11 @@ where
         };
 
         let sessions = self.kernel_sessions.clone();
-        // Create the appropriate connection file for the KernelSession
-        let session_connection_file = if supports_handshaking {
-            // For JEP 66, we need to create a ConnectionFile with empty ports
-            let dummy_info = ConnectionInfo {
-                control_port: 0,
-                shell_port: 0,
-                stdin_port: 0,
-                iopub_port: 0,
-                hb_port: 0,
-                transport: "tcp".to_string(),
-                signature_scheme: "hmac-sha256".to_string(),
-                key: registration_file_opt.as_ref().unwrap().key.clone(),
-                ip: "127.0.0.1".to_string(),
-            };
-            ConnectionFile::from_info(dummy_info)
-        } else {
-            // For traditional protocol, use the connection file we created
-            connection_file_opt.clone().unwrap()
-        };
 
         let kernel_session = match KernelSession::new(
             session,
-            Some(session_connection_file),
+            key,
+            connection_file_opt,
             self.idle_nudge_tx.clone(),
             self.reserved_ports.clone(),
         )

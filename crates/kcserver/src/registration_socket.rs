@@ -172,6 +172,7 @@ impl RegistrationSocket {
                 KernelConnection {
                     session_id: String::new(),
                     username: String::new(),
+                    key: None,
                     hmac_key: None,
                 }
             } else {

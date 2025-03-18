@@ -145,15 +145,12 @@ impl ConnectionFile {
     /// * `reserved_ports` - A list of ports that should not be used. These are
     /// generally ports that are already in use by other running kernels, or
     /// have been reserved for use by another kernel that's also starting up.
+    /// * `key` - The HMAC-256 signing key to use for messages
     pub fn generate(
         ip: String,
         reserved_ports: Arc<RwLock<Vec<i32>>>,
+        key: String,
     ) -> Result<Self, anyhow::Error> {
-        use rand::Rng;
-
-        let key_bytes = rand::thread_rng().gen::<[u8; 16]>();
-        let key = hex::encode(key_bytes);
-
         let control_port =
             ConnectionFile::find_port(String::from("control"), reserved_ports.clone())?;
         let shell_port = ConnectionFile::find_port(String::from("shell"), reserved_ports.clone())?;

@@ -44,6 +44,9 @@ pub struct KernelSession {
     /// The session model that was used to create this session
     pub model: models::NewSession,
 
+    /// The signing key used for messages in this session
+    pub key: String,
+
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
     pub argv: Vec<String>,
@@ -77,6 +80,7 @@ impl KernelSession {
     /// Create a new kernel session.
     pub async fn new(
         session: models::NewSession,
+        key: String,
         connection_file: Option<ConnectionFile>,
         idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
@@ -90,12 +94,12 @@ impl KernelSession {
             json_tx.clone(),
         )));
 
-        if let Some(file) = connection_file {
+        if let Some(ref file) = connection_file {
             let mut state = kernel_state.write().await;
-            state.connection_file = Some(file);
+            state.connection_file = Some(file.clone());
         }
 
-        let connection = KernelConnection::from_session(&session, "key_placeholder".to_string())?;
+        let connection = KernelConnection::from_session(&session, key.clone())?;
         let started = Utc::now();
         let kernel_session = KernelSession {
             argv: session.argv.clone(),
@@ -109,6 +113,7 @@ impl KernelSession {
             started,
             exit_event: Arc::new(Event::new()),
             reserved_ports,
+            key,
         };
         Ok(kernel_session)
     }
@@ -306,6 +311,7 @@ impl KernelSession {
                         if let Ok(new_connection_file) = ConnectionFile::generate(
                             connection_file.info.ip.clone(), // Use IP from the existing connection file
                             self.reserved_ports.clone(),
+                            self.key.clone(),
                         ) {
                             self.update_connection_file(new_connection_file).await;
                         } else {
@@ -328,6 +334,7 @@ impl KernelSession {
                         if let Ok(new_connection_file) = ConnectionFile::generate(
                             "127.0.0.1".to_string(), // Use 127.0.0.1 as the default IP
                             self.reserved_ports.clone(),
+                            self.key.clone(),
                         ) {
                             self.update_connection_file(new_connection_file).await;
                         } else {
