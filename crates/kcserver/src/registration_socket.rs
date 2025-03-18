@@ -21,6 +21,11 @@ use crate::{
 use futures::StreamExt;
 use kcshared::jupyter_message::JupyterChannel;
 
+// Global registry to track sessions waiting for handshakes
+lazy_static::lazy_static! {
+    static ref HANDSHAKE_REGISTRY: Arc<RwLock<HashMap<String, KernelConnection>>> = Arc::new(RwLock::new(HashMap::new()));
+}
+
 /// Return value from a handshake negotiation
 #[derive(Debug, Clone)]
 pub struct HandshakeResult {
@@ -29,6 +34,24 @@ pub struct HandshakeResult {
 
     /// The status of the handshake
     pub status: HandshakeStatus,
+}
+
+/// Registers a kernel session that is waiting for a handshake
+pub async fn register_session_for_handshake(connection: KernelConnection) {
+    let session_id = connection.session_id.clone();
+    let mut registry = HANDSHAKE_REGISTRY.write().await;
+    registry.insert(session_id.clone(), connection);
+    info!("Registered session {} for handshake", session_id);
+}
+
+/// Removes a kernel session from the handshake registry
+pub async fn unregister_session_for_handshake(session_id: &str) {
+    let mut registry = HANDSHAKE_REGISTRY.write().await;
+    registry.remove(session_id);
+    info!(
+        "Unregistered session {} from handshake registry",
+        session_id
+    );
 }
 
 /// Manages a registration socket for JEP 66 handshaking protocol
@@ -136,10 +159,25 @@ impl RegistrationSocket {
             buffers: vec![],
         };
 
-        let connection: KernelConnection = KernelConnection {
-            session_id: "registration".to_string(),
-            username: "".to_string(),
-            hmac_key: None,
+        // Get the first waiting session from registry
+        // In a more complex implementation, we might use session-specific information
+        // from the request to match to the correct session
+        let connection = {
+            let registry = HANDSHAKE_REGISTRY.read().await;
+            // Use the first session in the registry as they're all waiting for handshakes
+            // This is a simplification - ideally we would match the handshake to the specific session
+            if registry.is_empty() {
+                warn!("No sessions registered for handshake, creating an empty connection");
+                // Fallback to an empty connection if no sessions are registered
+                KernelConnection {
+                    session_id: String::new(),
+                    username: String::new(),
+                    hmac_key: None,
+                }
+            } else {
+                // Clone the first connection we find
+                registry.values().next().unwrap().clone()
+            }
         };
 
         // Convert to a wire message for sending

@@ -966,6 +966,9 @@ impl KernelSession {
      * JEP 66 handshaking.
      */
     pub async fn wait_for_handshake(&self, timeout_secs: u64) -> Result<ConnectionFile, KSError> {
+        // Register this session in the handshake registry so the registration socket can find it
+        crate::registration_socket::register_session_for_handshake(self.connection.clone()).await;
+
         // Create a channel to listen for the handshake completed event
         let (handshake_tx, handshake_rx) = async_channel::bounded::<ConnectionFile>(1);
 
@@ -995,7 +998,7 @@ impl KernelSession {
         });
 
         // Wait for the handshake to complete or for a timeout
-        match tokio::time::timeout(
+        let result = match tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             handshake_rx.recv(),
         )
@@ -1032,7 +1035,14 @@ impl KernelSession {
                     anyhow::anyhow!("Timeout waiting for handshake"),
                 ))
             }
-        }
+        };
+
+        // Regardless of whether the handshake succeeded or failed,
+        // unregister the session from the registry
+        crate::registration_socket::unregister_session_for_handshake(&self.connection.session_id)
+            .await;
+
+        result
     }
 
     pub async fn start_zmq_proxy(

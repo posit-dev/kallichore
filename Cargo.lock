@@ -1233,6 +1233,7 @@ dependencies = [
  "hyper-util",
  "kallichore_api",
  "kcshared",
+ "lazy_static",
  "libc",
  "log",
  "once_cell",
