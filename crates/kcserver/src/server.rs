@@ -41,11 +41,32 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use kallichore_api::models::ConnectionInfo;
+use kallichore_api::server::MakeService;
+use kallichore_api::{Api, ListSessionsResponse};
+use std::error::Error;
+use swagger::ApiError;
+
+use crate::client_session::ClientSession;
+use crate::connection_file::{self, ConnectionFile};
+use crate::error::KSError;
+use crate::kernel_session::{self, KernelSession};
+use crate::registration_file::RegistrationFile;
+use crate::registration_socket::HandshakeResult;
+use crate::registration_socket::RegistrationSocket;
+use crate::working_dir;
+use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
     DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
     NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
+use kcshared::{
+    handshake_protocol::{HandshakeStatus, HandshakeVersion},
+    kernel_message::KernelMessage,
+    websocket_message::WebsocketMessage,
+};
+use tokio::sync::broadcast;
 
 pub async fn create(addr: &str, token: Option<String>, idle_shutdown_hours: Option<u16>) {
     let addr = addr.parse().expect("Failed to parse bind address");
@@ -111,8 +132,6 @@ impl<C> Server<C> {
                     // Store the socket in the arc after successful start
                     let mut reg_socket = reg_socket_arc.write().unwrap();
                     *reg_socket = Some(socket);
-
-                    log::info!("JEP 66 handshaking protocol is available - kernels can connect to the registration socket");
 
                     // Get a receiver for handshake results
                     if let Some(ref socket) = *reg_socket {
@@ -429,31 +448,7 @@ impl<C> Server<C> {
         // If we got here, the token is valid or not required
         return true;
     }
-}
 
-use kallichore_api::models::ConnectionInfo;
-use kallichore_api::server::MakeService;
-use kallichore_api::{Api, ListSessionsResponse};
-use std::error::Error;
-use swagger::ApiError;
-
-use crate::client_session::ClientSession;
-use crate::connection_file::{self, ConnectionFile};
-use crate::error::KSError;
-use crate::kernel_session::{self, KernelSession};
-use crate::registration_file::RegistrationFile;
-use crate::registration_socket::HandshakeResult;
-use crate::registration_socket::RegistrationSocket;
-use crate::working_dir;
-use crate::zmq_ws_proxy::{self, ZmqWsProxy};
-use kcshared::{
-    handshake_protocol::{HandshakeStatus, HandshakeVersion},
-    kernel_message::KernelMessage,
-    websocket_message::WebsocketMessage,
-};
-use tokio::sync::broadcast;
-
-impl<C> Server<C> {
     /// Process handshake results received from kernels
     async fn process_handshake_results(
         mut receiver: broadcast::Receiver<HandshakeResult>,
@@ -566,14 +561,13 @@ impl<C> Server<C> {
         }
 
         log::info!(
-            "[session {}] Updated session with ports from handshake: shell={}, iopub={}, stdin={}, control={}, hb={}, key={}",
+            "[session {}] Updated session with ports from handshake: shell={}, iopub={}, stdin={}, control={}, hb={}",
             session_id,
             result.request.shell_port,
             result.request.iopub_port,
             result.request.stdin_port,
             result.request.control_port,
             result.request.hb_port,
-            info.key
         );
 
         // Send an event via the session's websocket channel

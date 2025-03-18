@@ -1,14 +1,14 @@
 //
 // registration_file.rs
 //
-// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2025 Posit Software, PBC. All rights reserved.
 //
 //
 
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 /// The contents of the Registration File as specified in JEP 66.
 /// Used for kernel handshaking protocol.

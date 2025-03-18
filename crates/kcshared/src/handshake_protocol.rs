@@ -5,15 +5,30 @@
 //
 //
 
+// This file contains the protocol for negotiating ports for ZeroMQ sockets
+// between the kernel and the supervisor.
+//
+// In the traditional Jupyter protocol, the client (in this case, the
+// supervisor) selects a set of ports for the shell, IOPub, stdin, control, and
+// heartbeat channels, then write a connection file for the kernel to read. The
+// kernel reads this file at startup and binds to the specified ports. This has
+// a race condition because other processes can bind to the same ports before
+// the kernel starts.
+//
+// Using the Jupyter Enhanced Proposal (JEP) 66, the kernel uses a REQ/REP
+// registration socket to negotiate ports. It sends the kernel the address of
+// the registration socket, and the kernel replies with the ports it has
+// selected.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Represents the handshake version supported by a kernel
-/// Format from Jupyter Enhancement Proposal 66 for Handshaking Protocol
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeVersion {
     /// Major version number
     pub major: u32,
+
     /// Minor version number
     pub minor: u32,
 }
@@ -33,8 +48,8 @@ pub enum HandshakeStatus {
     Error,
 }
 
-/// The information that the Supervisor sends to the kernel
-/// during the handshake process
+/// The information sent from the kernel to the supervisor after it has
+/// selected a set of ports
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeRequest {
     /// The port for the shell channel

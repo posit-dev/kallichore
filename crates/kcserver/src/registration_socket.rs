@@ -10,7 +10,7 @@ use kcshared::{
     handshake_protocol::{HandshakeReply, HandshakeRequest, HandshakeStatus},
     jupyter_message::{JupyterMessage, JupyterMessageHeader},
 };
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
 use zeromq::{RepSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
@@ -18,10 +18,21 @@ use zeromq::{RepSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 use crate::{
     jupyter_messages::JupyterMsg, kernel_connection::KernelConnection, wire_message::WireMessage,
 };
-use futures::StreamExt;
 use kcshared::jupyter_message::JupyterChannel;
 
-// Global registry to track sessions waiting for handshakes
+// Global registry to track sessions waiting for handshakes.
+//
+// This registry is needed because we only have one registration socket that can
+// receive handshakes from multiple kernels, the handshake request bears no
+// identifying information about the originating session (its Jupyter header
+// contains a randomly generated session ID), and we need to match the handshake
+// to the correct kernel session.
+//
+// It would be preferable to have a more sophisticated system that can match
+// handshakes to the correct session based on some identifying information in
+// the handshake request (maybe the peer ID?). Failing that, we could start a
+// just-in-time registration socket per session, to eliminate the chance of
+// mismatching handshakes.
 lazy_static::lazy_static! {
     static ref HANDSHAKE_REGISTRY: Arc<RwLock<HashMap<String, KernelConnection>>> = Arc::new(RwLock::new(HashMap::new()));
 }
@@ -160,8 +171,6 @@ impl RegistrationSocket {
         };
 
         // Get the first waiting session from registry
-        // In a more complex implementation, we might use session-specific information
-        // from the request to match to the correct session
         let connection = {
             let registry = HANDSHAKE_REGISTRY.read().await;
             // Use the first session in the registry as they're all waiting for handshakes
@@ -222,7 +231,7 @@ impl RegistrationSocket {
         let socket = self.socket.take().unwrap();
         let running = self.running.clone();
 
-        info!(
+        debug!(
             "Started JEP 66 registration REP socket on port {}",
             self.port
         );
@@ -230,19 +239,7 @@ impl RegistrationSocket {
         // Spawn a task to handle incoming registration requests from kernels
         tokio::spawn(async move {
             let mut socket = socket;
-            info!("Waiting for handshake requests from kernels");
-            let mut monitor = socket.monitor();
-            // Wait for the socket to change states
-            match monitor.next().await {
-                Some(event) => {
-                    info!("Socket event: {:?}", event);
-                }
-                None => {
-                    warn!("Socket monitor stream ended");
-                }
-            };
             while *running.read().await {
-                info!("Waiting socket.recv().await");
                 // Wait for a request from a kernel
                 match socket.recv().await {
                     Ok(request_data) => {
