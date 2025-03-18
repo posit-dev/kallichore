@@ -23,27 +23,6 @@ pub struct ConnectionFile {
     pub info: ConnectionInfo,
 }
 
-/// The contents of the Registration File as specified in JEP 66.
-/// Used for kernel handshaking protocol.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RegistrationFile {
-    /// The transport type to use for ZeroMQ; generally "tcp"
-    pub transport: String,
-
-    /// The signature scheme to use for messages; generally "hmac-sha256"
-    pub signature_scheme: String,
-
-    /// The IP address to bind to
-    pub ip: String,
-
-    /// The HMAC-256 signing key, or an empty string for an unauthenticated
-    /// connection
-    pub key: String,
-
-    /// ZeroMQ port: Registration messages (handshake)
-    pub registration_port: u16,
-}
-
 impl ConnectionFile {
     /// Create a ConnectionFile from a ConnectionInfo struct.
     pub fn from_info(info: ConnectionInfo) -> Self {
@@ -184,34 +163,5 @@ impl ConnectionFile {
     /// i.e., if it's version 5.5 or higher
     pub fn requires_handshaking(protocol_version: &str) -> bool {
         HandshakeVersion::supports_handshaking(protocol_version)
-    }
-}
-
-impl RegistrationFile {
-    /// Create a RegistrationFile from the parts needed to connect
-    pub fn new(ip: String, port: u16, key: String) -> Self {
-        Self {
-            transport: "tcp".to_string(),
-            signature_scheme: "hmac-sha256".to_string(),
-            ip,
-            key,
-            registration_port: port,
-        }
-    }
-
-    /// Write the registration file to disk
-    pub fn to_file<P: AsRef<Path>>(&self, file_path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::create(file_path)?;
-        serde_json::to_writer_pretty(file, &self)?;
-        Ok(())
-    }
-
-    /// Given a registration port, return a URI-like string that can be used to connect
-    /// Example: "tcp://127.0.0.1:8888"
-    pub fn endpoint(&self) -> String {
-        format!(
-            "{}://{}:{}",
-            self.transport, self.ip, self.registration_port
-        )
     }
 }

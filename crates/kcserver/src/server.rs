@@ -438,7 +438,8 @@ use std::error::Error;
 use swagger::ApiError;
 
 use crate::client_session::ClientSession;
-use crate::connection_file::{self, ConnectionFile, RegistrationFile};
+use crate::connection_file::{self, ConnectionFile};
+use crate::registration_file::RegistrationFile;
 use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
 use crate::registration_socket::HandshakeResult;
