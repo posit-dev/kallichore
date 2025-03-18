@@ -511,6 +511,20 @@ impl<C> Server<C> {
                     state.status == models::Status::Starting
                 };
 
+                let info = ConnectionInfo {
+                    shell_port: result.request.shell_port as i32,
+                    iopub_port: result.request.iopub_port as i32,
+                    stdin_port: result.request.stdin_port as i32,
+                    control_port: result.request.control_port as i32,
+                    hb_port: result.request.hb_port as i32,
+                    transport: "tcp".to_string(),
+                    signature_scheme: "hmac-sha256".to_string(),
+                    // The HandshakeRequest doesn't have a key field, use an empty string
+                    // This doesn't matter as it's just used for displaying the connection info
+                    key: String::new(),
+                    ip: "127.0.0.1".to_string(),
+                };
+
                 if is_starting {
                     // Update the session in the sessions list
                     {
@@ -531,20 +545,8 @@ impl<C> Server<C> {
                                 conn_file.info.hb_port = result.request.hb_port as i32;
                             } else {
                                 // Create a new connection file with ports from handshake
-                                let info = ConnectionInfo {
-                                    shell_port: result.request.shell_port as i32,
-                                    iopub_port: result.request.iopub_port as i32,
-                                    stdin_port: result.request.stdin_port as i32,
-                                    control_port: result.request.control_port as i32,
-                                    hb_port: result.request.hb_port as i32,
-                                    transport: "tcp".to_string(),
-                                    signature_scheme: "hmac-sha256".to_string(),
-                                    // The HandshakeRequest doesn't have a key field, use an empty string
-                                    // This doesn't matter as it's just used for displaying the connection info
-                                    key: String::new(),
-                                    ip: "127.0.0.1".to_string(),
-                                };
-                                session.connection_file = Some(ConnectionFile::from_info(info));
+                                session.connection_file =
+                                    Some(ConnectionFile::from_info(info.clone()));
                             }
                         }
                     }
@@ -569,6 +571,7 @@ impl<C> Server<C> {
                     // Send an event via the session's websocket channel
                     let msg = WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(
                         session_id.clone(),
+                        info,
                     ));
                     if let Err(e) = session.ws_json_tx.send(msg).await {
                         log::warn!(

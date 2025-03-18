@@ -294,11 +294,14 @@ impl KernelSession {
 
             // Wait for the handshake to complete
             match self.wait_for_handshake(connection_timeout).await {
-                Ok(()) => {
+                Ok(connection_file) => {
                     log::info!(
                         "[session {}] JEP 66 handshake completed successfully",
                         self.connection.session_id
                     );
+
+                    // Update the connection file with the negotiated ports
+                    self.update_connection_file(connection_file);
                 }
                 Err(e) => {
                     log::warn!(
@@ -310,6 +313,52 @@ impl KernelSession {
                         "[session {}] Continuing with traditional connection method",
                         self.connection.session_id
                     );
+
+                    // Allocate ports using the generate method
+                    if let Some(connection_file) = &self.connection_file {
+                        if let Ok(new_connection_file) = ConnectionFile::generate(
+                            connection_file.info.ip.clone(), // Use IP from the existing connection file
+                            self.reserved_ports.clone(),
+                        ) {
+                            self.update_connection_file(new_connection_file);
+                        } else {
+                            log::error!(
+                                "[session {}] Failed to allocate ports for traditional connection method",
+                                self.connection.session_id
+                            );
+                            return Err(StartupError {
+                                exit_code: None,
+                                output: None,
+                                error: KSError::SessionCreateFailed(
+                                    self.connection.session_id.clone(),
+                                    anyhow::anyhow!("Port allocation failed"),
+                                )
+                                .to_json(None),
+                            });
+                        }
+                    } else {
+                        // Allocate ports using the generate method
+                        if let Ok(new_connection_file) = ConnectionFile::generate(
+                            "127.0.0.1".to_string(), // Use 127.0.0.1 as the default IP
+                            self.reserved_ports.clone(),
+                        ) {
+                            self.update_connection_file(new_connection_file);
+                        } else {
+                            log::error!(
+                                "[session {}] Failed to allocate ports for traditional connection method",
+                                self.connection.session_id
+                            );
+                            return Err(StartupError {
+                                exit_code: None,
+                                output: None,
+                                error: KSError::SessionCreateFailed(
+                                    self.connection.session_id.clone(),
+                                    anyhow::anyhow!("Port allocation failed"),
+                                )
+                                .to_json(None),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -945,9 +994,9 @@ impl KernelSession {
      * Wait for a handshake to be completed. This is used when starting a kernel that supports
      * JEP 66 handshaking.
      */
-    pub async fn wait_for_handshake(&self, timeout_secs: u64) -> Result<(), KSError> {
+    pub async fn wait_for_handshake(&self, timeout_secs: u64) -> Result<ConnectionFile, KSError> {
         // Create a channel to listen for the handshake completed event
-        let (handshake_tx, handshake_rx) = async_channel::bounded::<()>(1);
+        let (handshake_tx, handshake_rx) = async_channel::bounded::<ConnectionFile>(1);
 
         // Listen for events from the WebSocket
         let session_id = self.connection.session_id.clone();
@@ -957,10 +1006,11 @@ impl KernelSession {
         tokio::spawn(async move {
             let rx = ws_json_rx.clone();
             while let Ok(msg) = rx.recv().await {
-                if let WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(id)) = msg {
+                if let WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(id, info)) = msg {
                     if id == session_id {
                         // We found the handshake completed event for this session
-                        if let Err(e) = handshake_tx.send(()).await {
+                        let connection_file = ConnectionFile::from_info(info);
+                        if let Err(e) = handshake_tx.send(connection_file).await {
                             log::warn!(
                                 "[session {}] Failed to send handshake completed notification: {}",
                                 session_id,
@@ -980,13 +1030,13 @@ impl KernelSession {
         )
         .await
         {
-            Ok(Ok(())) => {
+            Ok(Ok(info)) => {
                 // Handshake completed successfully
                 log::info!(
                     "[session {}] Handshake completed successfully",
                     self.connection.session_id
                 );
-                Ok(())
+                Ok(info)
             }
             Ok(Err(e)) => {
                 // Error receiving from channel

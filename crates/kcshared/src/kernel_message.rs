@@ -5,7 +5,7 @@
 //
 //
 
-use kallichore_api::models;
+use kallichore_api::models::{self, ConnectionInfo};
 use serde::{Deserialize, Serialize};
 
 /// Kernel output streams
@@ -53,7 +53,8 @@ pub enum KernelMessage {
 
     /// The kernel has exited
     Exited(i32),
-    
-    /// The kernel has completed the JEP 66 handshake. The parameter is the session ID.
-    HandshakeCompleted(String),
+
+    /// The kernel has completed the JEP 66 handshake. The parameters are the session
+    /// ID and connection info.
+    HandshakeCompleted(String, ConnectionInfo),
 }
