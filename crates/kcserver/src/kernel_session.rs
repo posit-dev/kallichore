@@ -93,20 +93,20 @@ impl KernelSession {
             idle_nudge_tx,
             json_tx.clone(),
         )));
-        
+
         // Get key for HMAC signature, even if connection_file is None
         let key = match &connection_file {
             Some(file) => file.info.key.clone(),
             None => {
                 // For JEP 66, we won't have connection details yet.
-                // Generate a key for HMAC signature - the same key will be 
+                // Generate a key for HMAC signature - the same key will be
                 // in the registration file we wrote for the kernel.
                 // Generate random key bytes
                 let key_bytes = rand::thread_rng().gen::<[u8; 16]>();
                 hex::encode(key_bytes)
             }
         };
-        
+
         let connection = KernelConnection::from_session(&session, key)?;
         let started = Utc::now();
         let kernel_session = KernelSession {
@@ -268,16 +268,6 @@ impl KernelSession {
         // Create a channel to receive startup status from the kernel
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
-        // Spawn the ZeroMQ proxy thread
-        let kernel = self.clone();
-        let connection_file = self.connection_file.clone();
-        let startup_proxy_tx = startup_tx.clone();
-        tokio::spawn(async move {
-            kernel
-                .start_zmq_proxy(connection_file.clone(), startup_proxy_tx)
-                .await;
-        });
-
         // Spawn a task to wait for the child process to exit
         let kernel = self.clone();
         let startup_child_tx = startup_tx.clone();
@@ -288,30 +278,52 @@ impl KernelSession {
         // First, check if we expect JEP 66 handshaking based on protocol version
         let protocol_version = self.model.protocol_version.as_deref().unwrap_or("5.3");
         let jep66_enabled = ConnectionFile::requires_handshaking(protocol_version);
-        
+
         if jep66_enabled {
-            log::info!("[session {}] Kernel supports JEP 66 (protocol version {}) - waiting for handshake", 
-                         self.connection.session_id,
-                         protocol_version);
-            
+            log::info!(
+                "[session {}] Kernel supports JEP 66 (protocol version {}) - waiting for handshake",
+                self.connection.session_id,
+                protocol_version
+            );
+
             // Get the connection timeout from the model, defaulting to 30 seconds
             let connection_timeout = match self.model.connection_timeout {
                 Some(timeout) => timeout as u64,
                 None => 30,
             };
-            
+
             // Wait for the handshake to complete
             match self.wait_for_handshake(connection_timeout).await {
                 Ok(()) => {
-                    log::info!("[session {}] JEP 66 handshake completed successfully", self.connection.session_id);
-                },
+                    log::info!(
+                        "[session {}] JEP 66 handshake completed successfully",
+                        self.connection.session_id
+                    );
+                }
                 Err(e) => {
-                    log::warn!("[session {}] JEP 66 handshake failed: {}", self.connection.session_id, e);
-                    log::info!("[session {}] Continuing with traditional connection method", self.connection.session_id);
+                    log::warn!(
+                        "[session {}] JEP 66 handshake failed: {}",
+                        self.connection.session_id,
+                        e
+                    );
+                    log::info!(
+                        "[session {}] Continuing with traditional connection method",
+                        self.connection.session_id
+                    );
                 }
             }
         }
-        
+
+        // Spawn the ZeroMQ proxy thread
+        let kernel = self.clone();
+        let connection_file = self.connection_file.clone();
+        let startup_proxy_tx = startup_tx.clone();
+        tokio::spawn(async move {
+            kernel
+                .start_zmq_proxy(connection_file.clone(), startup_proxy_tx)
+                .await;
+        });
+
         // Wait for either the session to connect to its sockets or for
         // something awful to happen
         log::trace!(
@@ -814,7 +826,7 @@ impl KernelSession {
         // Store the connection file
         // Since we're adopting an existing kernel, we always have a full connection file
         self.update_connection_file(connection_file.clone());
-        
+
         // Create a channel to receive startup status from the kernel.
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
@@ -827,7 +839,9 @@ impl KernelSession {
             );
 
             // Start the proxy. The proxy runs until all sockets are disconnected.
-            kernel.start_zmq_proxy(Some(connection_file), startup_tx).await;
+            kernel
+                .start_zmq_proxy(Some(connection_file), startup_tx)
+                .await;
 
             log::debug!(
                 "[session {}] ZeroMQ proxy for adopted kernel has exited",
@@ -901,7 +915,7 @@ impl KernelSession {
         };
         result
     }
-    
+
     /**
      * Update the connection file for this kernel session
      * Used when connection details become available after handshaking
@@ -909,7 +923,7 @@ impl KernelSession {
     pub fn update_connection_file(&self, connection_file: ConnectionFile) {
         // Since connection_file is an Option, we need a thread-safe way to update it
         // We use the existing RwLock for the kernel state to do this safely
-        
+
         // First log the update
         log::debug!(
             "[session {}] Updating connection file with ports: shell={}, iopub={}, stdin={}, control={}, hb={}",
@@ -920,13 +934,13 @@ impl KernelSession {
             connection_file.info.control_port,
             connection_file.info.hb_port
         );
-        
+
         // Update our connection_file in a thread-safe way
         let session = Arc::new(std::sync::Mutex::new(self.clone()));
         let mut session_guard = session.lock().unwrap();
         session_guard.connection_file = Some(connection_file);
     }
-    
+
     /**
      * Wait for a handshake to be completed. This is used when starting a kernel that supports
      * JEP 66 handshaking.
@@ -934,11 +948,11 @@ impl KernelSession {
     pub async fn wait_for_handshake(&self, timeout_secs: u64) -> Result<(), KSError> {
         // Create a channel to listen for the handshake completed event
         let (handshake_tx, handshake_rx) = async_channel::bounded::<()>(1);
-        
+
         // Listen for events from the WebSocket
         let session_id = self.connection.session_id.clone();
         let ws_json_rx = self.ws_json_rx.clone();
-        
+
         // Spawn a task to listen for the handshake completed event
         tokio::spawn(async move {
             let rx = ws_json_rx.clone();
@@ -947,33 +961,55 @@ impl KernelSession {
                     if id == session_id {
                         // We found the handshake completed event for this session
                         if let Err(e) = handshake_tx.send(()).await {
-                            log::warn!("[session {}] Failed to send handshake completed notification: {}", session_id, e);
+                            log::warn!(
+                                "[session {}] Failed to send handshake completed notification: {}",
+                                session_id,
+                                e
+                            );
                         }
                         break;
                     }
                 }
             }
         });
-        
+
         // Wait for the handshake to complete or for a timeout
         match tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             handshake_rx.recv(),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(())) => {
                 // Handshake completed successfully
-                log::info!("[session {}] Handshake completed successfully", self.connection.session_id);
+                log::info!(
+                    "[session {}] Handshake completed successfully",
+                    self.connection.session_id
+                );
                 Ok(())
-            },
+            }
             Ok(Err(e)) => {
                 // Error receiving from channel
-                log::error!("[session {}] Error waiting for handshake: {}", self.connection.session_id, e);
-                Err(KSError::HandshakeFailed(self.connection.session_id.clone(), anyhow::anyhow!("Channel error: {}", e)))
-            },
+                log::error!(
+                    "[session {}] Error waiting for handshake: {}",
+                    self.connection.session_id,
+                    e
+                );
+                Err(KSError::HandshakeFailed(
+                    self.connection.session_id.clone(),
+                    anyhow::anyhow!("Channel error: {}", e),
+                ))
+            }
             Err(_) => {
                 // Timeout waiting for handshake
-                log::error!("[session {}] Timeout waiting for handshake", self.connection.session_id);
-                Err(KSError::HandshakeFailed(self.connection.session_id.clone(), anyhow::anyhow!("Timeout waiting for handshake")))
+                log::error!(
+                    "[session {}] Timeout waiting for handshake",
+                    self.connection.session_id
+                );
+                Err(KSError::HandshakeFailed(
+                    self.connection.session_id.clone(),
+                    anyhow::anyhow!("Timeout waiting for handshake"),
+                ))
             }
         }
     }
@@ -1041,17 +1077,17 @@ impl KernelSession {
                             self.connection.session_id,
                             info
                         );
-                        
+
                         // JEP 66 handshaking is done through the registration socket, not directly here.
                         // The kernel would have connected to the registration socket before starting.
                         // At this point, we're just confirming we have a successful connection
                         // through the traditional Jupyter protocol sockets.
-                                                
+
                         log::debug!(
                             "[session {}] Successfully connected to kernel using traditional Jupyter protocol",
                             self.connection.session_id
                         );
-                        
+
                         status_tx
                             .send(StartupStatus::Connected(info))
                             .await

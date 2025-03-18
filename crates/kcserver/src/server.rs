@@ -714,22 +714,20 @@ where
             let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
             let key = hex::encode(key_bytes);
 
-            // Generate the registration file with a free port
-            let registration_file = match RegistrationFile::generate(
-                String::from("127.0.0.1"),
-                key.clone(),
-                self.reserved_ports.clone(),
-            ) {
-                Ok(reg_file) => reg_file,
-                Err(e) => {
+            // Generate the registration file from our registration_socket's port
+            let port = match self.registration_socket.read().unwrap().as_ref() {
+                Some(socket) => socket.port,
+                None => {
                     let error = KSError::SessionCreateFailed(
                         new_session_id.clone(),
-                        anyhow!("Couldn't create registration file: {}", e),
+                        anyhow!("Registration socket not available for JEP 66 handshaking"),
                     );
                     error.log();
                     return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
                 }
             };
+            let registration_file =
+                RegistrationFile::new(String::from("127.0.0.1"), port, key.clone());
 
             // Store the registration port for later use
             let registration_port = registration_file.registration_port;

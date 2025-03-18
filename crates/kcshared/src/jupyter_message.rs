@@ -39,6 +39,9 @@ pub enum JupyterChannel {
 
     /// The heartbeat channel
     Heartbeat,
+
+    /// The registration channel
+    Registration,
 }
 
 /// A serialized Jupyter message.

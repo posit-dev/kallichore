@@ -202,25 +202,6 @@ impl RegistrationFile {
         }
     }
 
-    /// Generate a new RegistrationFile by picking free ports
-    pub fn generate(
-        ip: String,
-        key: String,
-        reserved_ports: Arc<RwLock<Vec<i32>>>,
-    ) -> Result<Self, anyhow::Error> {
-        // Find a free port for the registration socket
-        let registration_port =
-            ConnectionFile::find_port(String::from("registration"), reserved_ports.clone())?;
-
-        Ok(Self {
-            transport: "tcp".to_string(),
-            signature_scheme: "hmac-sha256".to_string(),
-            ip,
-            key,
-            registration_port: registration_port,
-        })
-    }
-
     /// Write the registration file to disk
     pub fn to_file<P: AsRef<Path>>(&self, file_path: P) -> Result<(), Box<dyn Error>> {
         let file = File::create(file_path)?;
