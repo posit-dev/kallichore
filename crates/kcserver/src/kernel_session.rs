@@ -41,10 +41,6 @@ pub struct KernelSession {
     /// Metadata about the session
     pub connection: KernelConnection,
 
-    /// The connection file for the kernel
-    /// For JEP 66 kernels, this starts as None and is filled during handshaking
-    pub connection_file: Option<ConnectionFile>,
-
     /// The session model that was used to create this session
     pub model: models::NewSession,
 
@@ -79,7 +75,7 @@ pub struct KernelSession {
 
 impl KernelSession {
     /// Create a new kernel session.
-    pub fn new(
+    pub async fn new(
         session: models::NewSession,
         connection_file: Option<ConnectionFile>,
         idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
@@ -94,20 +90,12 @@ impl KernelSession {
             json_tx.clone(),
         )));
 
-        // Get key for HMAC signature, even if connection_file is None
-        let key = match &connection_file {
-            Some(file) => file.info.key.clone(),
-            None => {
-                // For JEP 66, we won't have connection details yet.
-                // Generate a key for HMAC signature - the same key will be
-                // in the registration file we wrote for the kernel.
-                // Generate random key bytes
-                let key_bytes = rand::thread_rng().gen::<[u8; 16]>();
-                hex::encode(key_bytes)
-            }
-        };
+        if let Some(file) = connection_file {
+            let mut state = kernel_state.write().await;
+            state.connection_file = Some(file);
+        }
 
-        let connection = KernelConnection::from_session(&session, key)?;
+        let connection = KernelConnection::from_session(&session, "key_placeholder".to_string())?;
         let started = Utc::now();
         let kernel_session = KernelSession {
             argv: session.argv.clone(),
@@ -120,7 +108,6 @@ impl KernelSession {
             connection,
             started,
             exit_event: Arc::new(Event::new()),
-            connection_file,
             reserved_ports,
         };
         Ok(kernel_session)
@@ -301,7 +288,7 @@ impl KernelSession {
                     );
 
                     // Update the connection file with the negotiated ports
-                    self.update_connection_file(connection_file);
+                    self.update_connection_file(connection_file).await;
                 }
                 Err(e) => {
                     log::warn!(
@@ -315,12 +302,12 @@ impl KernelSession {
                     );
 
                     // Allocate ports using the generate method
-                    if let Some(connection_file) = &self.connection_file {
+                    if let Some(connection_file) = self.get_connection_file().await {
                         if let Ok(new_connection_file) = ConnectionFile::generate(
                             connection_file.info.ip.clone(), // Use IP from the existing connection file
                             self.reserved_ports.clone(),
                         ) {
-                            self.update_connection_file(new_connection_file);
+                            self.update_connection_file(new_connection_file).await;
                         } else {
                             log::error!(
                                 "[session {}] Failed to allocate ports for traditional connection method",
@@ -342,7 +329,7 @@ impl KernelSession {
                             "127.0.0.1".to_string(), // Use 127.0.0.1 as the default IP
                             self.reserved_ports.clone(),
                         ) {
-                            self.update_connection_file(new_connection_file);
+                            self.update_connection_file(new_connection_file).await;
                         } else {
                             log::error!(
                                 "[session {}] Failed to allocate ports for traditional connection method",
@@ -365,7 +352,7 @@ impl KernelSession {
 
         // Spawn the ZeroMQ proxy thread
         let kernel = self.clone();
-        let connection_file = self.connection_file.clone();
+        let connection_file = self.get_connection_file().await;
         let startup_proxy_tx = startup_tx.clone();
         tokio::spawn(async move {
             kernel
@@ -874,7 +861,7 @@ impl KernelSession {
     ) -> Result<serde_json::Value, KSError> {
         // Store the connection file
         // Since we're adopting an existing kernel, we always have a full connection file
-        self.update_connection_file(connection_file.clone());
+        self.update_connection_file(connection_file.clone()).await;
 
         // Create a channel to receive startup status from the kernel.
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
@@ -969,25 +956,9 @@ impl KernelSession {
      * Update the connection file for this kernel session
      * Used when connection details become available after handshaking
      */
-    pub fn update_connection_file(&self, connection_file: ConnectionFile) {
-        // Since connection_file is an Option, we need a thread-safe way to update it
-        // We use the existing RwLock for the kernel state to do this safely
-
-        // First log the update
-        log::debug!(
-            "[session {}] Updating connection file with ports: shell={}, iopub={}, stdin={}, control={}, hb={}",
-            self.connection.session_id,
-            connection_file.info.shell_port,
-            connection_file.info.iopub_port,
-            connection_file.info.stdin_port,
-            connection_file.info.control_port,
-            connection_file.info.hb_port
-        );
-
-        // Update our connection_file in a thread-safe way
-        let session = Arc::new(std::sync::Mutex::new(self.clone()));
-        let mut session_guard = session.lock().unwrap();
-        session_guard.connection_file = Some(connection_file);
+    pub async fn update_connection_file(&self, connection_file: ConnectionFile) {
+        let mut state = self.state.write().await;
+        state.connection_file = Some(connection_file);
     }
 
     /**
@@ -1227,6 +1198,11 @@ impl KernelSession {
             }
         }
         output
+    }
+
+    pub async fn get_connection_file(&self) -> Option<ConnectionFile> {
+        let state = self.state.read().await;
+        state.connection_file.clone()
     }
 }
 

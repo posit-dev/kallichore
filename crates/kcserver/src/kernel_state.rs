@@ -15,6 +15,7 @@ use kcshared::{
 use std::collections::HashMap;
 
 use crate::execution_queue::ExecutionQueue;
+use crate::connection_file::ConnectionFile;
 
 #[cfg(not(target_os = "windows"))]
 use crate::working_dir::get_process_cwd;
@@ -73,6 +74,9 @@ pub struct KernelState {
     /// Additional capabilities advertised by the kernel during handshaking
     #[allow(dead_code)]
     pub kernel_capabilities: HashMap<String, serde_json::Value>,
+
+    /// The connection file for the kernel, or None if not set.
+    pub connection_file: Option<ConnectionFile>,
 }
 
 impl KernelState {
@@ -99,6 +103,7 @@ impl KernelState {
             busy_since: None,
             handshake_version: None,
             kernel_capabilities: HashMap::new(),
+            connection_file: None,
         }
     }
 
