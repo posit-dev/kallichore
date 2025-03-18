@@ -14,8 +14,8 @@ use kcshared::{
 };
 use std::collections::HashMap;
 
-use crate::execution_queue::ExecutionQueue;
 use crate::connection_file::ConnectionFile;
+use crate::execution_queue::ExecutionQueue;
 
 #[cfg(not(target_os = "windows"))]
 use crate::working_dir::get_process_cwd;
@@ -65,12 +65,12 @@ pub struct KernelState {
 
     /// A channel to publish status updates to the websocket
     ws_json_tx: Sender<WebsocketMessage>,
-    
+
     /// The negotiated handshake protocol version with the kernel
     /// If None, the traditional Jupyter protocol (5.x) is being used
     /// If Some, contains the negotiated JEP 66 handshake version
     pub handshake_version: Option<HandshakeVersion>,
-    
+
     /// Additional capabilities advertised by the kernel during handshaking
     #[allow(dead_code)]
     pub kernel_capabilities: HashMap<String, serde_json::Value>,

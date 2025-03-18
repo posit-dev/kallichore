@@ -6,13 +6,18 @@
 //
 
 use anyhow::Result;
-use kcshared::handshake_protocol::{HandshakeReply, HandshakeRequest, HandshakeStatus};
+use kcshared::{
+    handshake_protocol::{HandshakeReply, HandshakeRequest, HandshakeStatus},
+    jupyter_message::{JupyterMessage, JupyterMessageHeader},
+};
 use log::{info, warn};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
 use zeromq::{RepSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
-use crate::{jupyter_messages::JupyterMsg, wire_message::WireMessage};
+use crate::{
+    jupyter_messages::JupyterMsg, kernel_connection::KernelConnection, wire_message::WireMessage,
+};
 use futures::StreamExt;
 use kcshared::jupyter_message::JupyterChannel;
 
@@ -62,14 +67,15 @@ impl RegistrationSocket {
     ) {
         info!("Received handshake request from kernel");
         let wire_message = WireMessage::from_zmq(
-            "session_id".to_string(),
+            "registration".to_string(),
             JupyterChannel::Registration,
             request_data.clone(),
         );
         match wire_message.to_jupyter(JupyterChannel::Registration) {
             Ok(jupyter_message) => match JupyterMsg::from(jupyter_message.clone()) {
                 JupyterMsg::HandshakeRequest(request) => {
-                    Self::send_successful_handshake(socket, result_tx, request).await;
+                    Self::send_successful_handshake(socket, result_tx, jupyter_message, request)
+                        .await;
                 }
                 _ => {
                     warn!(
@@ -97,6 +103,7 @@ impl RegistrationSocket {
     async fn send_successful_handshake(
         socket: &mut RepSocket,
         result_tx: &broadcast::Sender<HandshakeResult>,
+        message: JupyterMessage,
         request: HandshakeRequest,
     ) {
         let result = HandshakeResult {
@@ -108,17 +115,48 @@ impl RegistrationSocket {
             warn!("Failed to send handshake result internally: {}", e);
         }
 
+        // Create a successful handshake reply
         let reply = HandshakeReply {
             status: HandshakeStatus::Ok,
             error: None,
             capabilities: HashMap::new(),
         };
 
-        let reply_data = serde_json::to_vec(&reply).expect("Failed to serialize handshake reply");
-        if let Err(e) = socket.send(reply_data.into()).await {
-            warn!("Failed to send handshake reply to kernel: {}", e);
-        } else {
-            info!("Sent successful handshake reply to kernel");
+        // Create a Jupyter message containing the handshake reply
+        // Generate a message id
+        let jupyter_msg = JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_type: "handshake_reply".to_string(),
+                msg_id: uuid::Uuid::new_v4().to_string(),
+            },
+            parent_header: Some(message.header),
+            channel: JupyterChannel::Registration,
+            content: serde_json::to_value(reply).unwrap(),
+            metadata: serde_json::Value::Null,
+            buffers: vec![],
+        };
+
+        let connection: KernelConnection = KernelConnection {
+            session_id: "registration".to_string(),
+            username: "".to_string(),
+            hmac_key: None,
+        };
+
+        // Convert to a wire message for sending
+        let wire_message = WireMessage::from_jupyter(jupyter_msg, connection, None);
+        match wire_message {
+            Ok(wire_message) => {
+                info!("Sending successful handshake reply to kernel");
+                // Convert wire message to ZMQ format for sending
+                if let Err(e) = socket.send(wire_message.into()).await {
+                    warn!("Failed to send handshake reply to kernel: {}", e);
+                } else {
+                    info!("Sent successful handshake reply to kernel");
+                }
+            }
+            Err(e) => {
+                warn!("Failed to create wire message for handshake reply: {}", e);
+            }
         }
     }
 

@@ -1246,6 +1246,7 @@ dependencies = [
  "sysinfo",
  "tokio",
  "tokio-tungstenite",
+ "uuid 1.10.0",
  "zeromq",
 ]
 

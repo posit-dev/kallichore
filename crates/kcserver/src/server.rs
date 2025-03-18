@@ -480,95 +480,105 @@ impl<C> Server<C> {
 
                     // Process each session separately
                     for session_id in session_ids {
-                        let result = result.clone();
-                        let kernel_sessions = kernel_sessions.clone();
-                        
-                        tokio::spawn(async move {
-                            // Find the session again
-                            let session_opt = {
-                                let sessions = kernel_sessions.read().unwrap();
-                                sessions
-                                    .iter()
-                                    .find(|s| s.connection.session_id == session_id)
-                                    .cloned()
-                            };
-                            
-                            if let Some(session) = session_opt {
-                                // Check if it's in Starting state
-                                let is_starting = {
-                                    let state = session.state.read().await;
-                                    state.status == models::Status::Starting
-                                };
-
-                                if is_starting {
-                                    // Prepare connection info
-                                    let info = ConnectionInfo {
-                                        shell_port: result.request.shell_port as i32,
-                                        iopub_port: result.request.iopub_port as i32,
-                                        stdin_port: result.request.stdin_port as i32,
-                                        control_port: result.request.control_port as i32,
-                                        hb_port: result.request.hb_port as i32,
-                                        transport: "tcp".to_string(),
-                                        signature_scheme: "hmac-sha256".to_string(),
-                                        key: String::new(),
-                                        ip: "127.0.0.1".to_string(),
-                                    };
-
-                                    // Handle the connection file update
-                                    let maybe_conn_file = session.get_connection_file().await;
-                                    if let Some(conn_file) = maybe_conn_file {
-                                        let mut updated_file = conn_file.clone();
-                                        updated_file.info.shell_port = result.request.shell_port as i32;
-                                        updated_file.info.iopub_port = result.request.iopub_port as i32;
-                                        updated_file.info.stdin_port = result.request.stdin_port as i32;
-                                        updated_file.info.control_port = result.request.control_port as i32;
-                                        updated_file.info.hb_port = result.request.hb_port as i32;
-                                        session.update_connection_file(updated_file).await;
-                                    } else {
-                                        let new_file = ConnectionFile::from_info(info.clone());
-                                        session.update_connection_file(new_file).await;
-                                    }
-
-                                    // Update the kernel state with handshake information
-                                    {
-                                        let mut state = session.state.write().await;
-                                        state.handshake_version = Some(HandshakeVersion::new(5, 5));
-                                    }
-
-                                    log::info!(
-                                        "[session {}] Updated session with ports from handshake: shell={}, iopub={}, stdin={}, control={}, hb={}",
-                                        session_id,
-                                        result.request.shell_port,
-                                        result.request.iopub_port,
-                                        result.request.stdin_port,
-                                        result.request.control_port,
-                                        result.request.hb_port
-                                    );
-
-                                    // Send an event via the session's websocket channel
-                                    let msg = WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(
-                                        session_id.clone(),
-                                        info,
-                                    ));
-                                    if let Err(e) = session.ws_json_tx.send(msg).await {
-                                        log::warn!(
-                                            "[session {}] Failed to send handshake completed message: {}",
-                                            session_id,
-                                            e
-                                        );
-                                    }
-                                    
-                                    // We found a matching session, stop processing
-                                    return;
-                                }
-                            }
-                        });
+                        Self::process_session_handshake(
+                            session_id,
+                            result.clone(),
+                            kernel_sessions.clone(),
+                        )
+                        .await;
                     }
                 }
                 HandshakeStatus::Error => {
                     log::warn!("Received invalid handshake request from kernel");
                 }
             }
+        }
+    }
+
+    /// Process a handshake result for a specific session
+    async fn process_session_handshake(
+        session_id: String,
+        result: HandshakeResult,
+        kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
+    ) {
+        // Find the session
+        let session_opt = {
+            let sessions = kernel_sessions.read().unwrap();
+            sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+                .cloned()
+        };
+
+        if let Some(session) = session_opt {
+            // Check if it's in Starting state
+            let is_starting = {
+                let state = session.state.read().await;
+                state.status == models::Status::Starting
+            };
+
+            if is_starting {
+                Self::update_session_with_handshake_ports(session, result).await;
+            }
+        }
+    }
+
+    /// Update a session with ports received from a handshake
+    async fn update_session_with_handshake_ports(session: KernelSession, result: HandshakeResult) {
+        // Prepare connection info
+        let session_id = session.connection.session_id.clone();
+        let info = ConnectionInfo {
+            shell_port: result.request.shell_port as i32,
+            iopub_port: result.request.iopub_port as i32,
+            stdin_port: result.request.stdin_port as i32,
+            control_port: result.request.control_port as i32,
+            hb_port: result.request.hb_port as i32,
+            transport: "tcp".to_string(),
+            signature_scheme: "hmac-sha256".to_string(),
+            key: String::new(),
+            ip: "127.0.0.1".to_string(),
+        };
+
+        // Handle the connection file update
+        let maybe_conn_file = session.get_connection_file().await;
+        if let Some(conn_file) = maybe_conn_file {
+            let mut updated_file = conn_file.clone();
+            updated_file.info.shell_port = result.request.shell_port as i32;
+            updated_file.info.iopub_port = result.request.iopub_port as i32;
+            updated_file.info.stdin_port = result.request.stdin_port as i32;
+            updated_file.info.control_port = result.request.control_port as i32;
+            updated_file.info.hb_port = result.request.hb_port as i32;
+            session.update_connection_file(updated_file).await;
+        } else {
+            let new_file = ConnectionFile::from_info(info.clone());
+            session.update_connection_file(new_file).await;
+        }
+
+        // Update the kernel state with handshake information
+        {
+            let mut state = session.state.write().await;
+            state.handshake_version = Some(HandshakeVersion::new(5, 5));
+        }
+
+        log::info!(
+            "[session {}] Updated session with ports from handshake: shell={}, iopub={}, stdin={}, control={}, hb={}",
+            session_id,
+            result.request.shell_port,
+            result.request.iopub_port,
+            result.request.stdin_port,
+            result.request.control_port,
+            result.request.hb_port
+        );
+
+        // Send an event via the session's websocket channel
+        let msg =
+            WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(session_id.clone(), info));
+        if let Err(e) = session.ws_json_tx.send(msg).await {
+            log::warn!(
+                "[session {}] Failed to send handshake completed message: {}",
+                session_id,
+                e
+            );
         }
     }
 }
@@ -876,7 +886,9 @@ where
             Some(session_connection_file),
             self.idle_nudge_tx.clone(),
             self.reserved_ports.clone(),
-        ).await {
+        )
+        .await
+        {
             Ok(kernel_session) => kernel_session,
             Err(e) => {
                 let error = KSError::SessionCreateFailed(

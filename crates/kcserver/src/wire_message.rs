@@ -44,7 +44,12 @@ impl WireMessage {
         let hmac_key = connection.hmac_key.clone();
 
         // Derive a wire message header from the Jupyter message header
-        let header = WireMessageHeader::new(msg.header, session.clone(), username.clone(), handshake_version);
+        let header = WireMessageHeader::new(
+            msg.header,
+            session.clone(),
+            username.clone(),
+            handshake_version,
+        );
         parts.push(serde_json::to_vec(&header)?);
 
         // Add the parent header, if any
@@ -66,13 +71,19 @@ impl WireMessage {
         // Add the content
         parts.push(serde_json::to_vec(&msg.content)?);
 
-        // Compute the HMAC signature from all of the existing parts and prepend it
-        let mut signature = hmac_key.clone();
-        for part in &parts {
-            signature.update(part);
+        if let Some(hmac_key) = hmac_key {
+            // If we have a key, compute the HMAC signature from all of the existing parts
+            // and prepend it
+            let mut signature = hmac_key.clone();
+            for part in &parts {
+                signature.update(part);
+            }
+            let signature = hex::encode(signature.finalize().into_bytes());
+            parts.insert(0, signature.as_bytes().to_vec());
+        } else {
+            // No key, insert an empty signature
+            parts.insert(0, Vec::new());
         }
-        let signature = hex::encode(signature.finalize().into_bytes());
-        parts.insert(0, signature.as_bytes().to_vec());
 
         Ok(WireMessage {
             session_id: connection.session_id.clone(),
@@ -80,7 +91,7 @@ impl WireMessage {
             parts,
         })
     }
-    
+
     /// Create a new wire message from a Jupyter message using the traditional Jupyter protocol.
     pub fn from_jupyter_v5(
         msg: JupyterMessage,

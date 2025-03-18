@@ -17,8 +17,8 @@ pub struct KernelConnection {
     /// The username of the user who owns the session
     pub username: String,
 
-    /// The HMAC key used to sign messages
-    pub hmac_key: Hmac<Sha256>,
+    /// The HMAC key used to sign messages, if any
+    pub hmac_key: Option<Hmac<Sha256>>,
 }
 
 impl KernelConnection {
@@ -29,7 +29,7 @@ impl KernelConnection {
         Ok(Self {
             session_id: session.session_id.clone(),
             username: session.username.clone(),
-            hmac_key,
+            hmac_key: Some(hmac_key),
         })
     }
 }
