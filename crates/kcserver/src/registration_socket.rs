@@ -6,13 +6,11 @@
 //
 
 use anyhow::Result;
-use kcshared::handshake_protocol::{
-    HandshakeReply, HandshakeRequest, HandshakeStatus, HandshakeVersion,
-};
-use log::{debug, info, warn};
+use kcshared::handshake_protocol::{HandshakeReply, HandshakeRequest, HandshakeStatus};
+use log::{info, warn};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
-use zeromq::{RepSocket, Socket, SocketRecv, SocketSend};
+use zeromq::{RepSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
 use crate::{jupyter_messages::JupyterMsg, wire_message::WireMessage};
 use futures::StreamExt;
@@ -26,10 +24,6 @@ pub struct HandshakeResult {
 
     /// The status of the handshake
     pub status: HandshakeStatus,
-
-    /// Any capabilities the kernel requested
-    #[allow(dead_code)]
-    pub capabilities: HashMap<String, serde_json::Value>,
 }
 
 /// Manages a registration socket for JEP 66 handshaking protocol
@@ -57,6 +51,74 @@ impl RegistrationSocket {
             socket: None,
             result_tx,
             running: Arc::new(RwLock::new(false)),
+        }
+    }
+
+    /// Handle a handshake request from a kernel
+    async fn handle_handshake_request(
+        socket: &mut RepSocket,
+        result_tx: &broadcast::Sender<HandshakeResult>,
+        request_data: ZmqMessage, // Updated type to match expected
+    ) {
+        info!("Received handshake request from kernel");
+        let wire_message = WireMessage::from_zmq(
+            "session_id".to_string(),
+            JupyterChannel::Registration,
+            request_data.clone(),
+        );
+        match wire_message.to_jupyter(JupyterChannel::Registration) {
+            Ok(jupyter_message) => match JupyterMsg::from(jupyter_message.clone()) {
+                JupyterMsg::HandshakeRequest(request) => {
+                    Self::send_successful_handshake(socket, result_tx, request).await;
+                }
+                _ => {
+                    warn!(
+                        "Received non-handshake request from kernel: {:?}",
+                        jupyter_message
+                    );
+                }
+            },
+            Err(e) => {
+                warn!("Failed to parse JupyterMessage: {}", e);
+                let reply = HandshakeReply {
+                    status: HandshakeStatus::Error,
+                    error: Some(format!("Failed to parse JupyterMessage: {}", e)),
+                    capabilities: HashMap::new(),
+                };
+                let reply_data =
+                    serde_json::to_vec(&reply).expect("Failed to serialize handshake reply");
+                if let Err(e) = socket.send(reply_data.into()).await {
+                    warn!("Failed to send handshake reply to kernel: {}", e);
+                }
+            }
+        }
+    }
+
+    async fn send_successful_handshake(
+        socket: &mut RepSocket,
+        result_tx: &broadcast::Sender<HandshakeResult>,
+        request: HandshakeRequest,
+    ) {
+        let result = HandshakeResult {
+            request: request.clone(),
+            status: HandshakeStatus::Ok,
+        };
+
+        if let Err(e) = result_tx.send(result) {
+            warn!("Failed to send handshake result internally: {}", e);
+        }
+
+        let reply = HandshakeReply {
+            status: HandshakeStatus::Ok,
+            error: None,
+            capabilities: HashMap::new(),
+        };
+
+        let reply_data = serde_json::to_vec(&reply).expect("Failed to serialize handshake reply");
+        if let Err(e) = socket.send(reply_data.into()).await {
+            warn!("Failed to send handshake reply to kernel: {}", e);
+        } else {
+            info!("Sent successful handshake reply to kernel");
         }
     }
 
@@ -107,130 +169,8 @@ impl RegistrationSocket {
                 // Wait for a request from a kernel
                 match socket.recv().await {
                     Ok(request_data) => {
-                        info!("Received handshake request from kernel");
-                        // Convert raw message data to a Jupyter message
-                        let wire_message = WireMessage::from_zmq(
-                            "session_id".to_string(),
-                            JupyterChannel::Registration,
-                            request_data.clone(),
-                        );
-                        match wire_message.to_jupyter(JupyterChannel::Registration) {
-                            Ok(jupyter_message) => {
-                                match JupyterMsg::from(jupyter_message) {
-                                    JupyterMsg::HandshakeRequest(request) => {
-                                        debug!(
-                                            "Received handshake request from kernel with protocol version {}",
-                                            request.protocol_version
-                                        );
-
-                                        // Check if the request is from a kernel that supports JEP 66
-                                        if HandshakeVersion::supports_handshaking(
-                                            &request.protocol_version,
-                                        ) {
-                                            // Create the handshake result for internal use
-                                            let result = HandshakeResult {
-                                                request: request.clone(),
-                                                status: HandshakeStatus::Ok,
-                                                capabilities: request.capabilities.clone(),
-                                            };
-
-                                            // Send the result internally for processing using broadcast
-                                            if let Err(e) = result_tx.send(result) {
-                                                warn!("Failed to send handshake result internally: {}", e);
-                                            }
-
-                                            // Create a successful reply to send back to the kernel
-                                            let reply = HandshakeReply {
-                                                status: HandshakeStatus::Ok,
-                                                error: None,
-                                                capabilities: HashMap::new(),
-                                            };
-
-                                            // Serialize the reply
-                                            let reply_data = serde_json::to_vec(&reply)
-                                                .expect("Failed to serialize handshake reply");
-
-                                            // Send the reply to the kernel
-                                            if let Err(e) = socket.send(reply_data.into()).await {
-                                                warn!(
-                                                    "Failed to send handshake reply to kernel: {}",
-                                                    e
-                                                );
-                                            } else {
-                                                info!("Sent successful handshake reply to kernel");
-                                            }
-                                        } else {
-                                            // Create the handshake result for internal use
-                                            let result = HandshakeResult {
-                                                request: request.clone(),
-                                                status: HandshakeStatus::Error,
-                                                capabilities: request.capabilities.clone(),
-                                            };
-
-                                            // Send the result internally for processing using broadcast
-                                            if let Err(e) = result_tx.send(result) {
-                                                warn!("Failed to send handshake result internally: {}", e);
-                                            }
-
-                                            // Create an error reply to send back to the kernel
-                                            let reply = HandshakeReply {
-                                                status: HandshakeStatus::Error,
-                                                error: Some(format!(
-                                                    "Kernel protocol version {} does not support JEP 66 handshaking (>= 5.5 required)",
-                                                    request.protocol_version
-                                                )),
-                                                capabilities: HashMap::new(),
-                                            };
-
-                                            // Serialize the reply
-                                            let reply_data = serde_json::to_vec(&reply)
-                                                .expect("Failed to serialize handshake reply");
-
-                                            // Send the reply to the kernel
-                                            if let Err(e) = socket.send(reply_data.into()).await {
-                                                warn!(
-                                                    "Failed to send handshake reply to kernel: {}",
-                                                    e
-                                                );
-                                            } else {
-                                                warn!(
-                                                    "Sent error handshake reply to kernel with unsupported protocol version {}",
-                                                    request.protocol_version
-                                                );
-                                            }
-                                        }
-                                    }
-                                    _ => {
-                                        // Exceedingly unlikely, but log a warning if we receive a non-handshake request
-                                        let data_vec = request_data.into_vec();
-                                        let flat_bytes: Vec<u8> =
-                                            data_vec.iter().flat_map(|b| b.to_vec()).collect();
-                                        let request_str = String::from_utf8_lossy(&flat_bytes);
-                                        warn!(
-                                            "Received non-handshake request from kernel: {}",
-                                            request_str
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse JupyterMessage: {}", e);
-                                // Handle the error (e.g., send an error reply)
-                                let reply = HandshakeReply {
-                                    status: HandshakeStatus::Error,
-                                    error: Some(format!("Failed to parse JupyterMessage: {}", e)),
-                                    capabilities: HashMap::new(),
-                                };
-
-                                let reply_data = serde_json::to_vec(&reply)
-                                    .expect("Failed to serialize handshake reply");
-
-                                if let Err(e) = socket.send(reply_data.into()).await {
-                                    warn!("Failed to send handshake reply to kernel: {}", e);
-                                }
-                                continue;
-                            }
-                        }
+                        let request_data = request_data.into(); // Convert ZmqMessage to Vec<u8>
+                        Self::handle_handshake_request(&mut socket, &result_tx, request_data).await;
                     }
                     Err(e) => {
                         warn!("Error receiving handshake request from kernel: {}", e);

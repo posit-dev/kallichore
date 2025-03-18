@@ -512,28 +512,6 @@ impl<C> Server<C> {
                 };
 
                 if is_starting {
-                    // Parse the handshake version
-                    let version =
-                        if HandshakeVersion::supports_handshaking(&result.request.protocol_version)
-                        {
-                            // Parse the version from the string (e.g., "5.5")
-                            if let Some((major, minor)) =
-                                result.request.protocol_version.split_once('.')
-                            {
-                                if let (Ok(major), Ok(minor)) =
-                                    (major.parse::<u32>(), minor.parse::<u32>())
-                                {
-                                    Some(HandshakeVersion { major, minor })
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-
                     // Update the session in the sessions list
                     {
                         let mut sessions = kernel_sessions.write().unwrap();
@@ -574,8 +552,8 @@ impl<C> Server<C> {
                     // Update the kernel state with handshake information
                     {
                         let mut state = session.state.write().await;
-                        state.handshake_version = version;
-                        state.kernel_capabilities = result.request.capabilities.clone();
+                        // TODO: update the handshake version based on the protocol version
+                        state.handshake_version = Some(HandshakeVersion::new(5, 5));
                     }
 
                     log::info!(

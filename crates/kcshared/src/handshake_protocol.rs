@@ -51,13 +51,6 @@ pub struct HandshakeRequest {
 
     /// The port for the heartbeat channel
     pub hb_port: u16,
-
-    /// The protocol version supported by the supervisor
-    pub protocol_version: String,
-
-    /// Additional capabilities supported by the supervisor
-    #[serde(default)]
-    pub capabilities: HashMap<String, serde_json::Value>,
 }
 
 /// The response sent by the kernel to accept or reject the connection
