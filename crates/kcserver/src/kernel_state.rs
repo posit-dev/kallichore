@@ -12,7 +12,6 @@ use kcshared::{
     kernel_message::{KernelMessage, StatusUpdate},
     websocket_message::WebsocketMessage,
 };
-use std::collections::HashMap;
 
 use crate::connection_file::ConnectionFile;
 use crate::execution_queue::ExecutionQueue;
@@ -71,10 +70,6 @@ pub struct KernelState {
     /// If Some, contains the negotiated JEP 66 handshake version
     pub handshake_version: Option<HandshakeVersion>,
 
-    /// Additional capabilities advertised by the kernel during handshaking
-    #[allow(dead_code)]
-    pub kernel_capabilities: HashMap<String, serde_json::Value>,
-
     /// The connection file for the kernel, or None if not set.
     pub connection_file: Option<ConnectionFile>,
 }
@@ -102,7 +97,6 @@ impl KernelState {
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,
             handshake_version: None,
-            kernel_capabilities: HashMap::new(),
             connection_file: None,
         }
     }
