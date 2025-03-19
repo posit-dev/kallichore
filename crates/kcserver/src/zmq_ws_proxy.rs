@@ -1,7 +1,7 @@
 //
 // zmq_ws_proxy.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -10,6 +10,7 @@ use event_listener::Event;
 use futures::{stream, StreamExt};
 use kallichore_api::models;
 use kcshared::{
+    handshake_protocol::HandshakeVersion,
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_message::KernelMessage,
     websocket_message::WebsocketMessage,
@@ -73,10 +74,6 @@ impl ZmqWsProxy {
         exit_event: Arc<Event>,
     ) -> Self {
         let session_id = connection.session_id.clone();
-        let hb_address = format!(
-            "tcp://{}:{}",
-            connection_file.info.ip, connection_file.info.hb_port
-        );
         let disconnected_event = Arc::new(Event::new());
 
         Self {
@@ -93,7 +90,10 @@ impl ZmqWsProxy {
             heartbeat: HeartbeatMonitor::new(
                 state.clone(),
                 session_id.clone(),
-                hb_address,
+                format!(
+                    "tcp://{}:{}",
+                    connection_file.info.ip, connection_file.info.hb_port
+                ),
                 disconnected_event.clone(),
             ),
             connection_file,
@@ -124,8 +124,9 @@ impl ZmqWsProxy {
             anyhow::bail!("Cannot connect; proxy is closed.");
         }
 
+        // Ensure we have a connection file before connecting
         log::trace!(
-            "[session {}] Connecting to sockets on ip ${} (shell = {}, iopub = {}, control = {}, stdin = {})",
+            "[session {}] Connecting to sockets on ip {} (shell = {}, iopub = {}, control = {}, stdin = {})",
             self.connection.session_id,
             self.connection_file.info.ip,
             self.connection_file.info.shell_port,
@@ -237,6 +238,8 @@ impl ZmqWsProxy {
             "[session {}] Sending initial kernel_info_request message to kernel",
             self.connection.session_id
         );
+
+        // Use the protocol version for the initial message
         let wire_message = WireMessage::from_jupyter(request, self.connection.clone())?;
         let zmq_message: ZmqMessage = wire_message.into();
         self.shell_socket
@@ -256,6 +259,22 @@ impl ZmqWsProxy {
         );
 
         Ok(reply.content)
+    }
+
+    /// Tries to perform the Jupyter Handshaking Protocol with the kernel.
+    /// Returns the negotiated handshake version if successful, None otherwise.
+    pub async fn try_handshake(&mut self) -> Result<Option<HandshakeVersion>, anyhow::Error> {
+        log::debug!(
+            "[session {}] Traditional socket connection established; not using JEP 66 handshaking",
+            self.connection.session_id
+        );
+
+        // JEP 66 uses the registration socket approach, not direct messaging between
+        // the supervisor and kernel over the traditional Jupyter sockets.
+        // This function therefore always returns None, but is kept for future expansion
+        // of the handshaking protocol.
+
+        Ok(None)
     }
 
     async fn wait_for_shell_reply(
@@ -470,9 +489,11 @@ impl ZmqWsProxy {
                 // Do nothing for other message types
             }
         }
-        // Convert the message to a wire message
+
+        // Convert the message to a wire message using the protocol version
         let channel = msg.channel.clone();
         let wire_message = WireMessage::from_jupyter(msg, self.connection.clone())?;
+
         let zmq_message: ZmqMessage = wire_message.into();
         match channel {
             JupyterChannel::Shell => {
@@ -579,13 +600,14 @@ impl ZmqWsProxy {
                         let mut state = self.state.write().await;
                         match state.execution_queue.next_request() {
                             Some(request) => {
-                                // Send the next request to the kernel
-                                let message =
+                                // Send the next request to the kernel with the protocol version
+                                let wire_message =
                                     WireMessage::from_jupyter(request, self.connection.clone())?;
+
                                 self.shell_socket
                                     .as_mut()
                                     .unwrap()
-                                    .send(message.into())
+                                    .send(wire_message.into())
                                     .await?;
                             }
                             None => {

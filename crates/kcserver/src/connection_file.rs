@@ -1,7 +1,7 @@
 //
 // connection_file.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use kallichore_api::models::ConnectionInfo;
-use serde::Deserialize;
-use serde::Serialize;
+use kcshared::handshake_protocol::HandshakeVersion;
+use serde::{Deserialize, Serialize};
 
 /// The contents of the Connection File as listed in the Jupyter specfication;
 /// directly parsed from JSON.
@@ -124,15 +124,12 @@ impl ConnectionFile {
     /// * `reserved_ports` - A list of ports that should not be used. These are
     /// generally ports that are already in use by other running kernels, or
     /// have been reserved for use by another kernel that's also starting up.
+    /// * `key` - The HMAC-256 signing key to use for messages
     pub fn generate(
         ip: String,
         reserved_ports: Arc<RwLock<Vec<i32>>>,
+        key: Option<String>,
     ) -> Result<Self, anyhow::Error> {
-        use rand::Rng;
-
-        let key_bytes = rand::thread_rng().gen::<[u8; 16]>();
-        let key = hex::encode(key_bytes);
-
         let control_port =
             ConnectionFile::find_port(String::from("control"), reserved_ports.clone())?;
         let shell_port = ConnectionFile::find_port(String::from("shell"), reserved_ports.clone())?;
@@ -147,7 +144,10 @@ impl ConnectionFile {
             hb_port: hb_port.into(),
             transport: "tcp".to_string(),
             signature_scheme: "hmac-sha256".to_string(),
-            key,
+            key: match key {
+                Some(key) => key,
+                None => String::new(),
+            },
             ip,
         };
         Ok(Self { info })
@@ -160,5 +160,11 @@ impl ConnectionFile {
     #[allow(dead_code)]
     pub fn endpoint(&self, port: u16) -> String {
         format!("{}://{}:{}", self.info.transport, self.info.ip, port)
+    }
+
+    /// Checks whether a protocol version requires JEP 66 handshaking
+    /// i.e., if it's version 5.5 or higher
+    pub fn requires_handshaking(protocol_version: &str) -> bool {
+        HandshakeVersion::supports_handshaking(protocol_version)
     }
 }

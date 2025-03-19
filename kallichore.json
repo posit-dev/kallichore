@@ -750,6 +750,11 @@
           },
           "interrupt_mode": {
             "$ref": "#/components/schemas/interrupt_mode"
+          },
+          "protocol_version": {
+            "type": "string",
+            "description": "The Jupyter protocol version supported by the underlying kernel",
+            "default": "5.3"
           }
         },
         "required": [

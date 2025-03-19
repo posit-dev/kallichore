@@ -12,8 +12,10 @@ use std::{fs, process::Stdio, sync::Arc};
 use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
 use event_listener::Event;
+use kallichore_api::models::ConnectionInfo;
 use kallichore_api::models::{self, StartupError};
 use kcshared::{
+    handshake_protocol::HandshakeStatus,
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_info::KernelInfoReply,
     kernel_message::{KernelMessage, OutputStream},
@@ -27,8 +29,9 @@ use tokio::sync::RwLock;
 
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
-    kernel_state::KernelState, startup_status::StartupStatus, working_dir::expand_path,
-    zmq_ws_proxy::ZmqWsProxy,
+    kernel_state::KernelState, registration_file::RegistrationFile,
+    registration_socket::RegistrationSocket, startup_status::StartupStatus,
+    working_dir::expand_path, zmq_ws_proxy::ZmqWsProxy,
 };
 
 /// A Jupyter kernel session.
@@ -40,9 +43,6 @@ use crate::{
 pub struct KernelSession {
     /// Metadata about the session
     pub connection: KernelConnection,
-
-    /// The connection file for the kernel
-    pub connection_file: ConnectionFile,
 
     /// The session model that was used to create this session
     pub model: models::NewSession,
@@ -78,9 +78,9 @@ pub struct KernelSession {
 
 impl KernelSession {
     /// Create a new kernel session.
-    pub fn new(
+    pub async fn new(
         session: models::NewSession,
-        connection_file: ConnectionFile,
+        key: String,
         idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
@@ -92,8 +92,8 @@ impl KernelSession {
             idle_nudge_tx,
             json_tx.clone(),
         )));
-        let connection =
-            KernelConnection::from_session(&session, connection_file.info.key.clone())?;
+
+        let connection = KernelConnection::from_session(&session, key.clone())?;
         let started = Utc::now();
         let kernel_session = KernelSession {
             argv: session.argv.clone(),
@@ -106,7 +106,6 @@ impl KernelSession {
             connection,
             started,
             exit_event: Arc::new(Event::new()),
-            connection_file,
             reserved_ports,
         };
         Ok(kernel_session)
@@ -143,15 +142,117 @@ impl KernelSession {
             state.working_directory.clone()
         };
 
+        // First, check if we expect JEP 66 handshaking based on protocol version
+        let jep66_enabled =
+            ConnectionFile::requires_handshaking(&self.connection.protocol_version.clone());
+
+        // Create a copy of argv where we substitute the connection file path. This needs to be done
+        // before we start the kernel process.
+        let mut argv = self.argv.clone();
+
+        // Write the appropriate connection or registration file and get its path for substitution
+        // in the kernel arguments
+        let (connection_file_path, registration_port) = if jep66_enabled {
+            // For JEP 66 handshaking, pick a free port for the registration socket to use
+            let port = portpicker::pick_unused_port().ok_or_else(|| StartupError {
+                exit_code: None,
+                output: None,
+                error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                    "Could not find a free port for the registration socket"
+                ))
+                .to_json(None),
+            })?;
+
+            // Create the registration file name and path
+            let mut registration_file_name = std::ffi::OsString::from("registration_");
+            registration_file_name.push(self.connection.session_id.clone());
+            registration_file_name.push(".json");
+            let registration_path = std::env::temp_dir().join(registration_file_name);
+
+            // Create the registration file
+            let registration_file =
+                RegistrationFile::new("127.0.0.1".to_string(), port, self.connection.key.clone());
+            registration_file
+                .to_file(registration_path.clone())
+                .map_err(|e| StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Failed to write registration file: {}",
+                        e
+                    ))
+                    .to_json(None),
+                })?;
+
+            log::debug!(
+                "Wrote registration file for session {} at {:?} with port {}",
+                self.connection.session_id.clone(),
+                registration_path,
+                port
+            );
+
+            (registration_path, Some(port))
+        } else {
+            // For traditional kernels, generate a new connection file with allocated ports first
+            let connection_file = ConnectionFile::generate(
+                "127.0.0.1".to_string(),
+                self.reserved_ports.clone(),
+                self.connection.key.clone(),
+            )
+            .map_err(|e| StartupError {
+                exit_code: None,
+                output: None,
+                error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                    "Failed to generate connection file: {}",
+                    e
+                ))
+                .to_json(None),
+            })?;
+
+            // Store the generated connection file in our state
+            self.update_connection_file(connection_file.clone()).await;
+
+            // Write the connection file to disk
+            let mut connection_file_name = std::ffi::OsString::from("connection_");
+            connection_file_name.push(self.connection.session_id.clone());
+            connection_file_name.push(".json");
+            let connection_path = std::env::temp_dir().join(connection_file_name);
+
+            connection_file
+                .to_file(connection_path.clone())
+                .map_err(|e| StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Failed to write connection file: {}",
+                        e
+                    ))
+                    .to_json(None),
+                })?;
+            log::debug!(
+                "Wrote connection file for session {} at {:?}",
+                self.connection.session_id.clone(),
+                connection_path
+            );
+            (connection_path, None)
+        };
+
+        // Substitute the connection file path in the arguments
+        for arg in argv.iter_mut() {
+            if arg.contains("{connection_file}") {
+                *arg = arg.replace("{connection_file}", connection_file_path.to_str().unwrap());
+            }
+        }
+
         log::debug!(
             "Starting kernel for session {}: {:?}",
             self.model.session_id,
-            self.argv
+            argv
         );
 
-        // Create the command to start the kernel
-        let mut command = tokio::process::Command::new(&self.argv[0]);
-        command.args(&self.argv[1..]);
+        // Create the command to start the kernel with the processed arguments
+        let mut command = tokio::process::Command::new(&argv[0]);
+        command.args(&argv[1..]);
 
         // If a working directory was specified, test the working directory to
         // see if it exists. If it doesn't, log a warning and don't set the
@@ -254,21 +355,83 @@ impl KernelSession {
         // Create a channel to receive startup status from the kernel
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
-        // Spawn the ZeroMQ proxy thread
-        let kernel = self.clone();
-        let connection_file = self.connection_file.clone();
-        let startup_proxy_tx = startup_tx.clone();
-        tokio::spawn(async move {
-            kernel
-                .start_zmq_proxy(connection_file, startup_proxy_tx)
-                .await;
-        });
-
         // Spawn a task to wait for the child process to exit
         let kernel = self.clone();
         let startup_child_tx = startup_tx.clone();
         tokio::spawn(async move {
             kernel.run_child(child, startup_child_tx).await;
+        });
+
+        if jep66_enabled {
+            log::info!(
+                "[session {}] Kernel supports JEP 66 (protocol version {}) - waiting for handshake",
+                self.connection.session_id,
+                self.connection.protocol_version
+            );
+
+            // Get the connection timeout from the model, defaulting to 30 seconds
+            let connection_timeout = match self.model.connection_timeout {
+                Some(timeout) => timeout as u64,
+                None => 30,
+            };
+
+            // Wait for the handshake to complete using the port we already chose
+            match self
+                .wait_for_handshake(connection_timeout, registration_port.unwrap())
+                .await
+            {
+                Ok(connection_file) => {
+                    log::info!(
+                        "[session {}] JEP 66 handshake completed successfully",
+                        self.connection.session_id
+                    );
+
+                    // Update the connection file with the negotiated ports
+                    self.update_connection_file(connection_file).await;
+                }
+                Err(e) => {
+                    log::error!(
+                        "[session {}] JEP 66 handshake failed: {}",
+                        self.connection.session_id,
+                        e
+                    );
+                    return Err(StartupError {
+                        exit_code: None,
+                        output: None,
+                        error: KSError::SessionConnectionFailed(anyhow::anyhow!(
+                            "Failed to complete JEP 66 handshake: {}",
+                            e
+                        ))
+                        .to_json(None),
+                    });
+                }
+            }
+        }
+
+        // Spawn the ZeroMQ proxy thread
+        let kernel = self.clone();
+        let connection_file = match self.get_connection_file().await {
+            Some(connection_file) => connection_file,
+            None => {
+                log::error!(
+                    "[session {}] Failed to get connection information!",
+                    self.connection.session_id
+                );
+                return Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Failed to get connection file for ZeroMQ proxy"
+                    ))
+                    .to_json(None),
+                });
+            }
+        };
+        let startup_proxy_tx = startup_tx.clone();
+        tokio::spawn(async move {
+            kernel
+                .start_zmq_proxy(connection_file.clone(), startup_proxy_tx)
+                .await;
         });
 
         // Wait for either the session to connect to its sockets or for
@@ -770,6 +933,10 @@ impl KernelSession {
         &self,
         connection_file: ConnectionFile,
     ) -> Result<serde_json::Value, KSError> {
+        // Store the connection file
+        // Since we're adopting an existing kernel, we always have a full connection file
+        self.update_connection_file(connection_file.clone()).await;
+
         // Create a channel to receive startup status from the kernel.
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
@@ -857,7 +1024,154 @@ impl KernelSession {
         result
     }
 
-    pub async fn start_zmq_proxy(
+    /**
+     * Update the connection file for this kernel session
+     * Used when connection details become available after handshaking
+     */
+    pub async fn update_connection_file(&self, connection_file: ConnectionFile) {
+        let mut state = self.state.write().await;
+        state.connection_file = Some(connection_file);
+    }
+
+    /**
+     * Wait for a handshake to be completed. This is used when starting a kernel that supports
+     * JEP 66 handshaking.
+     *
+     * @param timeout_secs Time to wait for the handshake in seconds
+     * @param port The port to use for the registration socket (already chosen earlier)
+     */
+    pub async fn wait_for_handshake(
+        &self,
+        timeout_secs: u64,
+        port: u16,
+    ) -> Result<ConnectionFile, KSError> {
+        // Create a new registration socket for this session with the already chosen port
+        let mut registration_socket = RegistrationSocket::new(port, self.connection.clone());
+
+        // Start the registration socket
+        if let Err(e) = registration_socket.start().await {
+            return Err(KSError::HandshakeFailed(
+                self.connection.session_id.clone(),
+                anyhow::anyhow!("Failed to start registration socket: {}", e),
+            ));
+        }
+
+        // Get a receiver for handshake results
+        let mut handshake_rx = registration_socket.get_result_receiver();
+
+        // Create a channel to listen for the handshake completed event
+        let (handshake_tx, result_rx) = async_channel::bounded::<ConnectionFile>(1);
+
+        // Monitor for handshake results from the registration socket
+        let session_id = self.connection.session_id.clone();
+        let connection_key = match &self.connection.key {
+            Some(key) => key.clone(),
+            None => String::new(),
+        };
+
+        tokio::spawn(async move {
+            if let Ok(result) = handshake_rx.recv().await {
+                if result.status == HandshakeStatus::Ok {
+                    // Create connection info from the handshake request
+                    let info = ConnectionInfo {
+                        shell_port: result.request.shell_port as i32,
+                        iopub_port: result.request.iopub_port as i32,
+                        stdin_port: result.request.stdin_port as i32,
+                        control_port: result.request.control_port as i32,
+                        hb_port: result.request.hb_port as i32,
+                        transport: "tcp".to_string(),
+                        signature_scheme: "hmac-sha256".to_string(),
+                        key: connection_key,
+                        ip: "127.0.0.1".to_string(),
+                    };
+
+                    // Create a connection file from the connection info
+                    let connection_file = ConnectionFile::from_info(info);
+
+                    // Send the connection file to the waiting thread
+                    if let Err(e) = handshake_tx.send(connection_file).await {
+                        log::warn!(
+                            "[session {}] Failed to send handshake result: {}",
+                            session_id,
+                            e
+                        );
+                    }
+                } else {
+                    log::warn!("[session {}] Received failed handshake result", session_id);
+                }
+            }
+        });
+
+        // Wait for the handshake to complete or for a timeout
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            result_rx.recv(),
+        )
+        .await
+        {
+            Ok(Ok(connection_file)) => {
+                // Handshake completed successfully
+                log::info!(
+                    "[session {}] Handshake completed successfully",
+                    self.connection.session_id
+                );
+
+                // Create a new connection file with the key included
+                let mut connection_file = connection_file;
+                connection_file.info.key = match &self.connection.key {
+                    Some(key) => key.clone(),
+                    None => String::new(),
+                };
+
+                // Create an event message to send through the websocket
+                let msg = WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(
+                    self.connection.session_id.clone(),
+                    connection_file.info.clone(),
+                ));
+
+                // Send the event through the websocket channel
+                if let Err(e) = self.ws_json_tx.send(msg).await {
+                    log::warn!(
+                        "[session {}] Failed to send handshake completed message: {}",
+                        self.connection.session_id,
+                        e
+                    );
+                }
+
+                Ok(connection_file)
+            }
+            Ok(Err(e)) => {
+                // Error receiving from channel
+                log::error!(
+                    "[session {}] Error waiting for handshake: {}",
+                    self.connection.session_id,
+                    e
+                );
+                Err(KSError::HandshakeFailed(
+                    self.connection.session_id.clone(),
+                    anyhow::anyhow!("Channel error: {}", e),
+                ))
+            }
+            Err(_) => {
+                // Timeout waiting for handshake
+                log::error!(
+                    "[session {}] Timeout waiting for handshake",
+                    self.connection.session_id
+                );
+                Err(KSError::HandshakeFailed(
+                    self.connection.session_id.clone(),
+                    anyhow::anyhow!("Timeout waiting for handshake"),
+                ))
+            }
+        };
+
+        // Stop the registration socket
+        registration_socket.stop().await;
+
+        result
+    }
+
+    async fn start_zmq_proxy(
         &self,
         connection_file: ConnectionFile,
         status_tx: Sender<StartupStatus>,
@@ -920,6 +1234,17 @@ impl KernelSession {
                             self.connection.session_id,
                             info
                         );
+
+                        // JEP 66 handshaking is done through the registration socket, not directly here.
+                        // The kernel would have connected to the registration socket before starting.
+                        // At this point, we're just confirming we have a successful connection
+                        // through the traditional Jupyter protocol sockets.
+
+                        log::debug!(
+                            "[session {}] Successfully connected to kernel using traditional Jupyter protocol",
+                            self.connection.session_id
+                        );
+
                         status_tx
                             .send(StartupStatus::Connected(info))
                             .await
@@ -1004,6 +1329,29 @@ impl KernelSession {
             }
         }
         output
+    }
+
+    async fn get_connection_file(&self) -> Option<ConnectionFile> {
+        let state = self.state.read().await;
+        state.connection_file.clone()
+    }
+
+    pub async fn ensure_connection_file(&self) -> Result<ConnectionFile, anyhow::Error> {
+        match self.get_connection_file().await {
+            Some(connection_file) => {
+                // We have a connection file; return it
+                Ok(connection_file)
+            }
+            None => {
+                let connection_file = ConnectionFile::generate(
+                    "127.0.0.1".to_string(),
+                    self.reserved_ports.clone(),
+                    self.connection.key.clone(),
+                )?;
+                self.update_connection_file(connection_file.clone()).await;
+                Ok(connection_file)
+            }
+        }
     }
 }
 

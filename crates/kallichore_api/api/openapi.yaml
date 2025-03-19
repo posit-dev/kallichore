@@ -530,6 +530,10 @@ components:
           type: integer
         interrupt_mode:
           $ref: '#/components/schemas/interrupt_mode'
+        protocol_version:
+          default: "5.3"
+          description: The Jupyter protocol version supported by the underlying kernel
+          type: string
       required:
       - argv
       - continuation_prompt

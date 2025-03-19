@@ -1,7 +1,7 @@
 //
 // wire_message.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -40,7 +40,12 @@ impl WireMessage {
         let hmac_key = connection.hmac_key.clone();
 
         // Derive a wire message header from the Jupyter message header
-        let header = WireMessageHeader::new(msg.header, session.clone(), username.clone());
+        let header = WireMessageHeader::new(
+            msg.header,
+            session.clone(),
+            username.clone(),
+            connection.protocol_version.clone(),
+        );
         parts.push(serde_json::to_vec(&header)?);
 
         // Add the parent header, if any
@@ -49,6 +54,7 @@ impl WireMessage {
                 msg.parent_header.unwrap(),
                 session.clone(),
                 username.clone(),
+                connection.protocol_version.clone(),
             );
             parts.push(serde_json::to_vec(&parent_header)?);
         } else {
@@ -61,13 +67,19 @@ impl WireMessage {
         // Add the content
         parts.push(serde_json::to_vec(&msg.content)?);
 
-        // Compute the HMAC signature from all of the existing parts and prepend it
-        let mut signature = hmac_key.clone();
-        for part in &parts {
-            signature.update(part);
+        if let Some(hmac_key) = hmac_key {
+            // If we have a key, compute the HMAC signature from all of the existing parts
+            // and prepend it
+            let mut signature = hmac_key.clone();
+            for part in &parts {
+                signature.update(part);
+            }
+            let signature = hex::encode(signature.finalize().into_bytes());
+            parts.insert(0, signature.as_bytes().to_vec());
+        } else {
+            // No key, insert an empty signature
+            parts.insert(0, Vec::new());
         }
-        let signature = hex::encode(signature.finalize().into_bytes());
-        parts.insert(0, signature.as_bytes().to_vec());
 
         Ok(WireMessage {
             session_id: connection.session_id.clone(),

@@ -1,11 +1,11 @@
 //
 // jupyter_messages.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
-use kcshared::jupyter_message::JupyterMessage;
+use kcshared::{handshake_protocol::HandshakeRequest, jupyter_message::JupyterMessage};
 use serde::Deserialize;
 
 /// An enum of message types we know how to handle from Jupyter. This is in no
@@ -15,6 +15,7 @@ pub enum JupyterMsg {
     ExecuteRequest(JupyterExecuteRequest),
     InterruptRequest,
     ShutdownRequest,
+    HandshakeRequest(HandshakeRequest),
     Status(JupyterStatus),
     Other,
 }
@@ -34,6 +35,10 @@ impl From<JupyterMessage> for JupyterMsg {
             },
             "interrupt_request" => JupyterMsg::InterruptRequest,
             "shutdown_request" => JupyterMsg::ShutdownRequest,
+            "handshake_request" => match serde_json::from_value::<HandshakeRequest>(msg.content) {
+                Ok(content) => JupyterMsg::HandshakeRequest(content),
+                Err(_) => JupyterMsg::Other,
+            },
             _ => JupyterMsg::Other,
         }
     }

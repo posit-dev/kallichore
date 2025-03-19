@@ -12,6 +12,7 @@ use kcshared::{
     websocket_message::WebsocketMessage,
 };
 
+use crate::connection_file::ConnectionFile;
 use crate::execution_queue::ExecutionQueue;
 
 #[cfg(not(target_os = "windows"))]
@@ -62,6 +63,9 @@ pub struct KernelState {
 
     /// A channel to publish status updates to the websocket
     ws_json_tx: Sender<WebsocketMessage>,
+
+    /// The connection file for the kernel, or None if not set.
+    pub connection_file: Option<ConnectionFile>,
 }
 
 impl KernelState {
@@ -86,6 +90,7 @@ impl KernelState {
             idle_nudge_tx,
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,
+            connection_file: None,
         }
     }
 

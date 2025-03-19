@@ -11,3 +11,6 @@ pub mod websocket_message;
 
 /// Kernel info messages
 pub mod kernel_info;
+
+/// Jupyter Handshaking Protocol (JEP 66)
+pub mod handshake_protocol;

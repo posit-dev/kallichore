@@ -12,6 +12,7 @@
 use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use hyper::client::connect;
 use hyper::header::{HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
 use hyper::server::conn::Http;
 use hyper::service::Service;
@@ -34,17 +35,37 @@ use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use kallichore_api::models::ConnectionInfo;
+use kallichore_api::server::MakeService;
+use kallichore_api::{Api, ListSessionsResponse};
+use std::error::Error;
+use swagger::ApiError;
+
+use crate::client_session::ClientSession;
+use crate::connection_file::{self, ConnectionFile};
+use crate::error::KSError;
+use crate::kernel_session::{self, KernelSession};
+use crate::registration_file::RegistrationFile;
+use crate::registration_socket::HandshakeResult;
+use crate::working_dir;
+use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
     DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
     NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
+use kcshared::{
+    handshake_protocol::{HandshakeStatus, HandshakeVersion},
+    kernel_message::KernelMessage,
+    websocket_message::WebsocketMessage,
+};
+use tokio::sync::broadcast;
 
 pub async fn create(addr: &str, token: Option<String>, idle_shutdown_hours: Option<u16>) {
     let addr = addr.parse().expect("Failed to parse bind address");
@@ -84,7 +105,7 @@ impl<C> Server<C> {
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
 
         // Start the idle poll task
-        let (idle_nudge_tx, idle_nudge_rx) = tokio::sync::mpsc::channel(256);
+        let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
         Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
 
         Server {
@@ -115,7 +136,7 @@ impl<C> Server<C> {
     ///    inactivity.
     fn idle_poll_task(
         all_sessions: Arc<RwLock<Vec<KernelSession>>>,
-        mut idle_nudge_rx: tokio::sync::mpsc::Receiver<()>,
+        mut idle_nudge_rx: mpsc::Receiver<()>,
         idle_shutdown_hours: Option<u16>,
     ) {
         tokio::spawn(async move {
@@ -385,20 +406,6 @@ impl<C> Server<C> {
     }
 }
 
-use kallichore_api::server::MakeService;
-use kallichore_api::{Api, ListSessionsResponse};
-use std::error::Error;
-use swagger::ApiError;
-
-use crate::client_session::ClientSession;
-use crate::connection_file::{self, ConnectionFile};
-use crate::error::KSError;
-use crate::kernel_session::{self, KernelSession};
-use crate::working_dir;
-use crate::zmq_ws_proxy::{self, ZmqWsProxy};
-
-impl<C> Server<C> {}
-
 #[async_trait]
 impl<C> Api<C> for Server<C>
 where
@@ -486,50 +493,13 @@ where
         let session_id = NewSession200Response {
             session_id: new_session_id.clone(),
         };
-        let args = session.argv.clone();
 
-        // Create a connection file for the session in a temporary directory
-        let connection_file = match ConnectionFile::generate(
-            String::from("127.0.0.1"),
-            self.reserved_ports.clone(),
-        ) {
-            Ok(connection_file) => connection_file,
-            Err(e) => {
-                let error = KSError::SessionCreateFailed(
-                    new_session_id.clone(),
-                    anyhow!("Couldn't create connection file: {}", e),
-                );
-                error.log();
-                return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
-            }
-        };
+        // Generate a key for the session
+        let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
+        let key = hex::encode(key_bytes);
 
+        // Create log file path which may be needed in argv
         let temp_dir = env::temp_dir();
-        let mut connection_file_name = std::ffi::OsString::from("connection_");
-        connection_file_name.push(new_session_id.clone());
-        connection_file_name.push(".json");
-
-        // Combine the temporary directory with the file name to get the full path
-        let connection_path: PathBuf = temp_dir.join(connection_file_name);
-        if let Err(err) = connection_file.to_file(connection_path.clone()) {
-            let error = KSError::SessionCreateFailed(
-                new_session_id.clone(),
-                anyhow!(
-                    "Failed to write connection file {}: {}",
-                    connection_path.to_string_lossy(),
-                    err
-                ),
-            );
-            error.log();
-            return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
-        }
-
-        log::debug!(
-            "Created connection file for session {} at {:?}",
-            new_session_id.clone(),
-            connection_path
-        );
-
         let mut log_file_name = std::ffi::OsString::from("kernel_log_");
         log_file_name.push(new_session_id.clone());
         log_file_name.push(".txt");
@@ -541,23 +511,9 @@ where
             log_path
         );
 
-        // Loop through the arguments; if any is the special string "{connection_file}", replace it with the session id
-        let args: Vec<String> = args
-            .iter()
-            .map(|arg| {
-                if arg == "{connection_file}" {
-                    connection_path.to_string_lossy().to_string()
-                } else if arg == "{log_file}" {
-                    log_path.to_string_lossy().to_string()
-                } else {
-                    arg.clone()
-                }
-            })
-            .collect();
-
         let session = models::NewSession {
             session_id: session_id.session_id.clone(),
-            argv: args,
+            argv: session.argv,
             display_name: session.display_name.clone(),
             language: session.language.clone(),
             working_directory: session.working_directory.clone(),
@@ -567,15 +523,19 @@ where
             env: session.env.clone(),
             interrupt_mode: session.interrupt_mode.clone(),
             connection_timeout: session.connection_timeout.clone(),
+            protocol_version: session.protocol_version.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
+
         let kernel_session = match KernelSession::new(
             session,
-            connection_file.clone(),
+            key,
             self.idle_nudge_tx.clone(),
             self.reserved_ports.clone(),
-        ) {
+        )
+        .await
+        {
             Ok(kernel_session) => kernel_session,
             Err(e) => {
                 let error = KSError::SessionCreateFailed(
@@ -595,7 +555,7 @@ where
     async fn adopt_session(
         &self,
         session_id: String,
-        connection_info: models::ConnectionInfo,
+        connection_info: ConnectionInfo,
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
@@ -730,9 +690,16 @@ where
         };
 
         // Return the connection info
-        Ok(ConnectionInfoResponse::ConnectionInfo(
-            kernel_session.connection_file.info.clone(),
-        ))
+        match kernel_session.ensure_connection_file().await {
+            Ok(conn_file) => Ok(ConnectionInfoResponse::ConnectionInfo(
+                conn_file.info.clone(),
+            )),
+            Err(e) => {
+                let error = KSError::NoConnectionInfo(session_id.clone(), e);
+                error.log();
+                Ok(ConnectionInfoResponse::Failed(error.to_json(None)))
+            }
+        }
     }
 
     async fn kill_session(

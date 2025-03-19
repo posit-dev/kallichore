@@ -1132,6 +1132,11 @@ pub struct NewSession {
 
     #[serde(rename = "interrupt_mode")]
     pub interrupt_mode: models::InterruptMode,
+
+    /// The Jupyter protocol version supported by the underlying kernel
+    #[serde(rename = "protocol_version")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
 }
 
 impl NewSession {
@@ -1160,6 +1165,7 @@ impl NewSession {
             env,
             connection_timeout: Some(30),
             interrupt_mode,
+            protocol_version: Some("5.3".to_string()),
         }
     }
 }
@@ -1201,6 +1207,9 @@ impl std::string::ToString for NewSession {
                 .join(",")
             }),
             // Skipping interrupt_mode in query parameter serialization
+            self.protocol_version.as_ref().map(|protocol_version| {
+                ["protocol_version".to_string(), protocol_version.to_string()].join(",")
+            }),
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -1229,6 +1238,7 @@ impl std::str::FromStr for NewSession {
             pub env: Vec<std::collections::HashMap<String, String>>,
             pub connection_timeout: Vec<i32>,
             pub interrupt_mode: Vec<models::InterruptMode>,
+            pub protocol_version: Vec<String>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -1299,6 +1309,10 @@ impl std::str::FromStr for NewSession {
                         <models::InterruptMode as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "protocol_version" => intermediate_rep.protocol_version.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing NewSession".to_string(),
@@ -1364,6 +1378,7 @@ impl std::str::FromStr for NewSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "interrupt_mode missing in NewSession".to_string())?,
+            protocol_version: intermediate_rep.protocol_version.into_iter().next(),
         })
     }
 }
