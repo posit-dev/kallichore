@@ -37,7 +37,7 @@ pub struct ZmqWsProxy {
     pub iopub_socket: Option<SubSocket>,
     pub control_socket: Option<DealerSocket>,
     pub stdin_socket: Option<DealerSocket>,
-    pub connection_file: Option<ConnectionFile>,
+    pub connection_file: ConnectionFile,
     pub connection: KernelConnection,
     pub heartbeat: HeartbeatMonitor,
     pub session_id: String,
@@ -65,9 +65,8 @@ impl ZmqWsProxy {
     /// - `ws_zmq_rx`: A channel to receive messages from the WebSocket
     /// - `exit_event`: An event listener that notifies the proxy when the
     ///    kernel has exited
-    /// - `protocol_version`: The protocol version to use for messages
     pub fn new(
-        connection_file: Option<ConnectionFile>,
+        connection_file: ConnectionFile,
         connection: KernelConnection,
         state: Arc<RwLock<KernelState>>,
         ws_json_tx: Sender<WebsocketMessage>,
@@ -75,11 +74,6 @@ impl ZmqWsProxy {
         exit_event: Arc<Event>,
     ) -> Self {
         let session_id = connection.session_id.clone();
-        // Extract the heartbeat address if we have a connection file
-        let hb_address = match &connection_file {
-            Some(conn_file) => format!("tcp://{}:{}", conn_file.info.ip, conn_file.info.hb_port),
-            None => String::from("tcp://127.0.0.1:0"), // Placeholder, not used until we have a real connection
-        };
         let disconnected_event = Arc::new(Event::new());
 
         Self {
@@ -96,7 +90,10 @@ impl ZmqWsProxy {
             heartbeat: HeartbeatMonitor::new(
                 state.clone(),
                 session_id.clone(),
-                hb_address,
+                format!(
+                    "tcp://{}:{}",
+                    connection_file.info.ip, connection_file.info.hb_port
+                ),
                 disconnected_event.clone(),
             ),
             connection_file,
@@ -128,19 +125,14 @@ impl ZmqWsProxy {
         }
 
         // Ensure we have a connection file before connecting
-        if self.connection_file.is_none() {
-            anyhow::bail!("Cannot connect; connection file not available yet.");
-        }
-        let connection_file = self.connection_file.as_ref().unwrap();
-
         log::trace!(
             "[session {}] Connecting to sockets on ip {} (shell = {}, iopub = {}, control = {}, stdin = {})",
             self.connection.session_id,
-            connection_file.info.ip,
-            connection_file.info.shell_port,
-            connection_file.info.iopub_port,
-            connection_file.info.control_port,
-            connection_file.info.stdin_port,
+            self.connection_file.info.ip,
+            self.connection_file.info.shell_port,
+            self.connection_file.info.iopub_port,
+            self.connection_file.info.control_port,
+            self.connection_file.info.stdin_port,
         );
 
         self.shell_socket
@@ -149,7 +141,7 @@ impl ZmqWsProxy {
             .connect(
                 format!(
                     "tcp://{}:{}",
-                    connection_file.info.ip, connection_file.info.shell_port
+                    self.connection_file.info.ip, self.connection_file.info.shell_port
                 )
                 .as_str(),
             )
@@ -158,7 +150,7 @@ impl ZmqWsProxy {
         log::trace!(
             "[session {}] Connected to shell socket on port {}",
             self.connection.session_id,
-            connection_file.info.shell_port
+            self.connection_file.info.shell_port
         );
 
         self.iopub_socket
@@ -167,7 +159,7 @@ impl ZmqWsProxy {
             .connect(
                 format!(
                     "tcp://{}:{}",
-                    connection_file.info.ip, connection_file.info.iopub_port
+                    self.connection_file.info.ip, self.connection_file.info.iopub_port
                 )
                 .as_str(),
             )
@@ -175,7 +167,7 @@ impl ZmqWsProxy {
         log::trace!(
             "[session {}] Connected to iopub socket on port {}",
             self.connection.session_id,
-            connection_file.info.iopub_port
+            self.connection_file.info.iopub_port
         );
 
         // Subscribe to all messages
@@ -187,7 +179,7 @@ impl ZmqWsProxy {
             .connect(
                 format!(
                     "tcp://{}:{}",
-                    connection_file.info.ip, connection_file.info.control_port
+                    self.connection_file.info.ip, self.connection_file.info.control_port
                 )
                 .as_str(),
             )
@@ -195,7 +187,7 @@ impl ZmqWsProxy {
         log::trace!(
             "[session {}] Connected to control socket on port {}",
             self.connection.session_id,
-            connection_file.info.control_port
+            self.connection_file.info.control_port
         );
 
         self.stdin_socket
@@ -204,7 +196,7 @@ impl ZmqWsProxy {
             .connect(
                 format!(
                     "tcp://{}:{}",
-                    connection_file.info.ip, connection_file.info.stdin_port
+                    self.connection_file.info.ip, self.connection_file.info.stdin_port
                 )
                 .as_str(),
             )
@@ -212,7 +204,7 @@ impl ZmqWsProxy {
         log::trace!(
             "[session {}] Connected to stdin socket on port {}",
             self.connection.session_id,
-            connection_file.info.stdin_port
+            self.connection_file.info.stdin_port
         );
 
         // Sockets are connected; start the heartbeat monitor

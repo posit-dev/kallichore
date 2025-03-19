@@ -453,7 +453,23 @@ impl KernelSession {
 
         // Spawn the ZeroMQ proxy thread
         let kernel = self.clone();
-        let connection_file = self.get_connection_file().await;
+        let connection_file = match self.get_connection_file().await {
+            Some(connection_file) => connection_file,
+            None => {
+                log::error!(
+                    "[session {}] Failed to get connection information!",
+                    self.connection.session_id
+                );
+                return Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Failed to get connection file for ZeroMQ proxy"
+                    ))
+                    .to_json(None),
+                });
+            }
+        };
         let startup_proxy_tx = startup_tx.clone();
         tokio::spawn(async move {
             kernel
@@ -976,9 +992,7 @@ impl KernelSession {
             );
 
             // Start the proxy. The proxy runs until all sockets are disconnected.
-            kernel
-                .start_zmq_proxy(Some(connection_file), startup_tx)
-                .await;
+            kernel.start_zmq_proxy(connection_file, startup_tx).await;
 
             log::debug!(
                 "[session {}] ZeroMQ proxy for adopted kernel has exited",
@@ -1202,7 +1216,7 @@ impl KernelSession {
 
     async fn start_zmq_proxy(
         &self,
-        connection_file: Option<ConnectionFile>,
+        connection_file: ConnectionFile,
         status_tx: Sender<StartupStatus>,
     ) {
         let mut proxy = ZmqWsProxy::new(
@@ -1330,16 +1344,14 @@ impl KernelSession {
 
         // When this listen future resolves, the proxy has stopped and the
         // sockets are closed; release the reserved ports
-        if let Some(cf) = &connection_file {
-            let mut reserved_ports = self.reserved_ports.write().unwrap();
-            reserved_ports.retain(|&port| {
-                port != cf.info.control_port
-                    && port != cf.info.shell_port
-                    && port != cf.info.stdin_port
-                    && port != cf.info.iopub_port
-                    && port != cf.info.hb_port
-            });
-        }
+        let mut reserved_ports = self.reserved_ports.write().unwrap();
+        reserved_ports.retain(|&port| {
+            port != connection_file.info.control_port
+                && port != connection_file.info.shell_port
+                && port != connection_file.info.stdin_port
+                && port != connection_file.info.iopub_port
+                && port != connection_file.info.hb_port
+        });
         {
             let reserved_ports = self.reserved_ports.read().unwrap();
             log::trace!(

@@ -506,10 +506,9 @@ where
             key = hex::encode(key_bytes);
 
             log::debug!(
-                "[session {}] Using JEP 66 handshaking (protocol version {}) - key: {}",
+                "[session {}] Using JEP 66 handshaking (protocol version {})",
                 new_session_id,
                 protocol_version,
-                key.clone()
             );
         }
 
