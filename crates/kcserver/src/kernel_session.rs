@@ -12,8 +12,10 @@ use std::{fs, process::Stdio, sync::Arc};
 use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
 use event_listener::Event;
+use kallichore_api::models::ConnectionInfo;
 use kallichore_api::models::{self, StartupError};
 use kcshared::{
+    handshake_protocol::HandshakeStatus,
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_info::KernelInfoReply,
     kernel_message::{KernelMessage, OutputStream},
@@ -27,8 +29,9 @@ use tokio::sync::RwLock;
 
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
-    kernel_state::KernelState, registration_file::RegistrationFile, registration_socket,
-    startup_status::StartupStatus, working_dir::expand_path, zmq_ws_proxy::ZmqWsProxy,
+    kernel_state::KernelState, registration_file::RegistrationFile,
+    registration_socket::RegistrationSocket, startup_status::StartupStatus,
+    working_dir::expand_path, zmq_ws_proxy::ZmqWsProxy,
 };
 
 /// A Jupyter kernel session.
@@ -153,49 +156,47 @@ impl KernelSession {
 
         // Write the appropriate connection or registration file and get its path for substitution
         // in the kernel arguments
-        let connection_file_path = if jep66_enabled {
-            // For JEP 66 handshaking, write a registration file
+        let (connection_file_path, registration_port) = if jep66_enabled {
+            // For JEP 66 handshaking, pick a free port for the registration socket to use
+            // We need to pick this once and use it for both the registration file and socket
+            let port = portpicker::pick_unused_port()
+                .ok_or_else(|| StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Could not find a free port for the registration socket"
+                    ))
+                    .to_json(None),
+                })?;
+                
+            // Create the registration file name and path
             let mut registration_file_name = std::ffi::OsString::from("registration_");
             registration_file_name.push(self.connection.session_id.clone());
             registration_file_name.push(".json");
             let registration_path = std::env::temp_dir().join(registration_file_name);
 
-            // Get the registration socket port from the server
-            if let Some(port) = registration_socket::REGISTRATION_PORT
-                .read()
-                .await
-                .as_ref()
-                .map(|p| *p)
-            {
-                let registration_file =
-                    RegistrationFile::new("127.0.0.1".to_string(), port, self.key.clone());
-                registration_file
-                    .to_file(registration_path.clone())
-                    .map_err(|e| StartupError {
-                        exit_code: None,
-                        output: None,
-                        error: KSError::ProcessStartFailed(anyhow::anyhow!(
-                            "Failed to write registration file: {}",
-                            e
-                        ))
-                        .to_json(None),
-                    })?;
-                log::debug!(
-                    "Wrote registration file for session {} at {:?}",
-                    self.connection.session_id.clone(),
-                    registration_path
-                );
-                registration_path
-            } else {
-                return Err(StartupError {
+            // Create the registration file
+            let registration_file = RegistrationFile::new("127.0.0.1".to_string(), port, self.key.clone());
+            registration_file
+                .to_file(registration_path.clone())
+                .map_err(|e| StartupError {
                     exit_code: None,
                     output: None,
                     error: KSError::ProcessStartFailed(anyhow::anyhow!(
-                        "Registration socket not available"
+                        "Failed to write registration file: {}",
+                        e
                     ))
                     .to_json(None),
-                });
-            }
+                })?;
+            
+            log::debug!(
+                "Wrote registration file for session {} at {:?} with port {}",
+                self.connection.session_id.clone(),
+                registration_path,
+                port
+            );
+            
+            (registration_path, Some(port))
         } else {
             // For traditional kernels, generate a new connection file with allocated ports first
             let connection_file = ConnectionFile::generate(
@@ -238,7 +239,7 @@ impl KernelSession {
                 self.connection.session_id.clone(),
                 connection_path
             );
-            connection_path
+            (connection_path, None)
         };
 
         // Substitute the connection file path in the arguments
@@ -379,8 +380,8 @@ impl KernelSession {
                 None => 30,
             };
 
-            // Wait for the handshake to complete
-            match self.wait_for_handshake(connection_timeout).await {
+            // Wait for the handshake to complete using the port we already chose
+            match self.wait_for_handshake(connection_timeout, registration_port.unwrap()).await {
                 Ok(connection_file) => {
                     log::info!(
                         "[session {}] JEP 66 handshake completed successfully",
@@ -1066,35 +1067,64 @@ impl KernelSession {
     /**
      * Wait for a handshake to be completed. This is used when starting a kernel that supports
      * JEP 66 handshaking.
+     * 
+     * @param timeout_secs Time to wait for the handshake in seconds
+     * @param port The port to use for the registration socket (already chosen earlier)
      */
-    pub async fn wait_for_handshake(&self, timeout_secs: u64) -> Result<ConnectionFile, KSError> {
-        // Register this session in the handshake registry so the registration socket can find it
-        registration_socket::register_session_for_handshake(self.connection.clone()).await;
+    pub async fn wait_for_handshake(&self, timeout_secs: u64, port: u16) -> Result<ConnectionFile, KSError> {
+        // Create a new registration socket for this session with the already chosen port
+        let mut registration_socket = RegistrationSocket::new(port, self.connection.clone());
+
+        // Start the registration socket
+        if let Err(e) = registration_socket.start().await {
+            return Err(KSError::HandshakeFailed(
+                self.connection.session_id.clone(),
+                anyhow::anyhow!("Failed to start registration socket: {}", e),
+            ));
+        }
+
+        // Get a receiver for handshake results
+        let mut handshake_rx = registration_socket.get_result_receiver();
 
         // Create a channel to listen for the handshake completed event
-        let (handshake_tx, handshake_rx) = async_channel::bounded::<ConnectionFile>(1);
+        let (handshake_tx, result_rx) = async_channel::bounded::<ConnectionFile>(1);
 
-        // Listen for events from the WebSocket
+        // Monitor for handshake results from the registration socket
         let session_id = self.connection.session_id.clone();
-        let ws_json_rx = self.ws_json_rx.clone();
+        let connection_key = match &self.connection.key {
+            Some(key) => key.clone(),
+            None => String::new(),
+        };
 
-        // Spawn a task to listen for the handshake completed event
         tokio::spawn(async move {
-            let rx = ws_json_rx.clone();
-            while let Ok(msg) = rx.recv().await {
-                if let WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(id, info)) = msg {
-                    if id == session_id {
-                        // We found the handshake completed event for this session
-                        let connection_file = ConnectionFile::from_info(info);
-                        if let Err(e) = handshake_tx.send(connection_file).await {
-                            log::warn!(
-                                "[session {}] Failed to send handshake completed notification: {}",
-                                session_id,
-                                e
-                            );
-                        }
-                        break;
+            if let Ok(result) = handshake_rx.recv().await {
+                if result.status == HandshakeStatus::Ok {
+                    // Create connection info from the handshake request
+                    let info = ConnectionInfo {
+                        shell_port: result.request.shell_port as i32,
+                        iopub_port: result.request.iopub_port as i32,
+                        stdin_port: result.request.stdin_port as i32,
+                        control_port: result.request.control_port as i32,
+                        hb_port: result.request.hb_port as i32,
+                        transport: "tcp".to_string(),
+                        signature_scheme: "hmac-sha256".to_string(),
+                        key: connection_key,
+                        ip: "127.0.0.1".to_string(),
+                    };
+
+                    // Create a connection file from the connection info
+                    let connection_file = ConnectionFile::from_info(info);
+
+                    // Send the connection file to the waiting thread
+                    if let Err(e) = handshake_tx.send(connection_file).await {
+                        log::warn!(
+                            "[session {}] Failed to send handshake result: {}",
+                            session_id,
+                            e
+                        );
                     }
+                } else {
+                    log::warn!("[session {}] Received failed handshake result", session_id);
                 }
             }
         });
@@ -1102,17 +1132,38 @@ impl KernelSession {
         // Wait for the handshake to complete or for a timeout
         let result = match tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
-            handshake_rx.recv(),
-        )
-        .await
-        {
-            Ok(Ok(info)) => {
+            result_rx.recv(),
+        ).await {
+            Ok(Ok(connection_file)) => {
                 // Handshake completed successfully
                 log::info!(
                     "[session {}] Handshake completed successfully",
                     self.connection.session_id
                 );
-                Ok(info)
+
+                // Create a new connection file with the key included
+                let mut connection_file = connection_file;
+                connection_file.info.key = match &self.connection.key {
+                    Some(key) => key.clone(),
+                    None => String::new(),
+                };
+
+                // Create an event message to send through the websocket
+                let msg = WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(
+                    self.connection.session_id.clone(),
+                    connection_file.info.clone(),
+                ));
+
+                // Send the event through the websocket channel
+                if let Err(e) = self.ws_json_tx.send(msg).await {
+                    log::warn!(
+                        "[session {}] Failed to send handshake completed message: {}",
+                        self.connection.session_id,
+                        e
+                    );
+                }
+
+                Ok(connection_file)
             }
             Ok(Err(e)) => {
                 // Error receiving from channel
@@ -1139,9 +1190,8 @@ impl KernelSession {
             }
         };
 
-        // Regardless of whether the handshake succeeded or failed,
-        // unregister the session from the registry
-        registration_socket::unregister_session_for_handshake(&self.connection.session_id).await;
+        // Stop the registration socket
+        registration_socket.stop().await;
 
         result
     }

@@ -53,7 +53,6 @@ use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
 use crate::registration_file::RegistrationFile;
 use crate::registration_socket::HandshakeResult;
-use crate::registration_socket::RegistrationSocket;
 use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
@@ -98,9 +97,6 @@ pub struct Server<C> {
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
     idle_nudge_tx: Sender<()>,
     reserved_ports: Arc<RwLock<Vec<i32>>>,
-    /// Registration socket for JEP 66 handshaking
-    #[allow(dead_code)]
-    registration_socket: Arc<RwLock<Option<RegistrationSocket>>>,
 }
 
 impl<C> Server<C> {
@@ -112,51 +108,6 @@ impl<C> Server<C> {
         let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
         Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
 
-        // Create registration socket for JEP 66 handshaking
-        let registration_socket = Arc::new(RwLock::new(None));
-
-        // Pick a free port for the registration socket
-        let port = portpicker::pick_unused_port()
-            .expect("Could not find a free port for the registration socket");
-
-        // Store the port in the global REGISTRATION_PORT
-        tokio::spawn(async move {
-            let mut port_lock = crate::registration_socket::REGISTRATION_PORT.write().await;
-            *port_lock = Some(port);
-        });
-
-        // Start the registration socket in a separate async task
-        let reg_socket_arc = registration_socket.clone();
-        let kernel_sessions_clone = kernel_sessions.clone();
-        tokio::spawn(async move {
-            // Create the registration socket with the default port
-            let mut socket = RegistrationSocket::new(port);
-
-            // Start the socket
-            match socket.start().await {
-                Ok(()) => {
-                    // Store the socket in the arc after successful start
-                    let mut reg_socket = reg_socket_arc.write().unwrap();
-                    *reg_socket = Some(socket);
-
-                    // Get a receiver for handshake results
-                    if let Some(ref socket) = *reg_socket {
-                        let receiver = socket.get_result_receiver();
-
-                        // Spawn a task to handle handshake results
-                        let kernel_sessions = kernel_sessions_clone.clone();
-                        tokio::spawn(async move {
-                            Self::process_handshake_results(receiver, kernel_sessions).await;
-                        });
-                    }
-                }
-                Err(e) => {
-                    // Log the error but continue without the handshaking protocol
-                    log::warn!("Failed to start JEP 66 registration socket: {}. Handshaking protocol will not be available.", e);
-                }
-            }
-        });
-
         Server {
             token,
             started_time: std::time::Instant::now(),
@@ -165,7 +116,6 @@ impl<C> Server<C> {
             client_sessions: Arc::new(RwLock::new(vec![])),
             reserved_ports: Arc::new(RwLock::new(vec![])),
             idle_nudge_tx,
-            registration_socket,
         }
     }
 
@@ -453,139 +403,6 @@ impl<C> Server<C> {
 
         // If we got here, the token is valid or not required
         return true;
-    }
-
-    /// Process handshake results received from kernels
-    async fn process_handshake_results(
-        mut receiver: broadcast::Receiver<HandshakeResult>,
-        kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
-    ) {
-        while let Ok(result) = receiver.recv().await {
-            match result.status {
-                HandshakeStatus::Ok => {
-                    log::info!(
-                        "Received handshake request from kernel with ports: shell={}, iopub={}, stdin={}, control={}, hb={}",
-                        result.request.shell_port,
-                        result.request.iopub_port,
-                        result.request.stdin_port,
-                        result.request.control_port,
-                        result.request.hb_port
-                    );
-
-                    // Get all session ids in a separate scope to avoid holding the lock
-                    let session_ids = {
-                        let sessions = kernel_sessions.read().unwrap();
-                        sessions
-                            .iter()
-                            .map(|s| s.connection.session_id.clone())
-                            .collect::<Vec<_>>()
-                    };
-
-                    // Process each session separately
-                    for session_id in session_ids {
-                        Self::process_session_handshake(
-                            session_id,
-                            result.clone(),
-                            kernel_sessions.clone(),
-                        )
-                        .await;
-                    }
-                }
-                HandshakeStatus::Error => {
-                    log::warn!("Received invalid handshake request from kernel");
-                }
-            }
-        }
-    }
-
-    /// Process a handshake result for a specific session
-    async fn process_session_handshake(
-        session_id: String,
-        result: HandshakeResult,
-        kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
-    ) {
-        // Find the session
-        let session_opt = {
-            let sessions = kernel_sessions.read().unwrap();
-            sessions
-                .iter()
-                .find(|s| s.connection.session_id == session_id)
-                .cloned()
-        };
-
-        if let Some(session) = session_opt {
-            // Check if it's in Starting state
-            let is_starting = {
-                let state = session.state.read().await;
-                state.status == models::Status::Starting
-            };
-
-            if is_starting {
-                Self::update_session_with_handshake_ports(session, result).await;
-            }
-        }
-    }
-
-    /// Update a session with ports received from a handshake
-    async fn update_session_with_handshake_ports(session: KernelSession, result: HandshakeResult) {
-        // Prepare connection info
-        let session_id = session.connection.session_id.clone();
-        let info = ConnectionInfo {
-            shell_port: result.request.shell_port as i32,
-            iopub_port: result.request.iopub_port as i32,
-            stdin_port: result.request.stdin_port as i32,
-            control_port: result.request.control_port as i32,
-            hb_port: result.request.hb_port as i32,
-            transport: "tcp".to_string(),
-            signature_scheme: "hmac-sha256".to_string(),
-            key: match session.connection.key {
-                Some(ref key) => key.clone(),
-                None => "".to_string(),
-            },
-            ip: "127.0.0.1".to_string(),
-        };
-
-        // Handle the connection file update
-        let maybe_conn_file = session.get_connection_file().await;
-        if let Some(conn_file) = maybe_conn_file {
-            let mut updated_file = conn_file.clone();
-            updated_file.info.shell_port = result.request.shell_port as i32;
-            updated_file.info.iopub_port = result.request.iopub_port as i32;
-            updated_file.info.stdin_port = result.request.stdin_port as i32;
-            updated_file.info.control_port = result.request.control_port as i32;
-            updated_file.info.hb_port = result.request.hb_port as i32;
-            session.update_connection_file(updated_file).await;
-        } else {
-            let new_file = ConnectionFile::from_info(info.clone());
-            session.update_connection_file(new_file).await;
-        }
-
-        // Update the kernel state with handshake information
-        {
-            let mut state = session.state.write().await;
-            state.handshake_version = Some(HandshakeVersion::new(5, 5));
-        }
-
-        log::info!(
-            "[session {}] Updated session with ports from handshake: shell={}, iopub={}, stdin={}, control={}, hb={}",
-            session_id,
-            result.request.shell_port,
-            result.request.iopub_port,
-            result.request.stdin_port,
-            result.request.control_port,
-            result.request.hb_port,
-        );
-
-        // Send an event via the session's websocket channel
-        let msg =
-            WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(session_id.clone(), info));
-        if let Err(e) = session.ws_json_tx.send(msg).await {
-            log::warn!(
-                "[session {}] Failed to send handshake completed message: {}",
-                session_id,
-                e
-            );
-        }
     }
 }
 
