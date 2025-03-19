@@ -690,13 +690,12 @@ where
         };
 
         // Return the connection info
-        // Ensure we have connection info available
-        match kernel_session.get_connection_file().await {
-            Some(conn_file) => Ok(ConnectionInfoResponse::ConnectionInfo(
+        match kernel_session.ensure_connection_file().await {
+            Ok(conn_file) => Ok(ConnectionInfoResponse::ConnectionInfo(
                 conn_file.info.clone(),
             )),
-            None => {
-                let error = KSError::NoConnectionInfo(session_id.clone());
+            Err(e) => {
+                let error = KSError::NoConnectionInfo(session_id.clone(), e);
                 error.log();
                 Ok(ConnectionInfoResponse::Failed(error.to_json(None)))
             }

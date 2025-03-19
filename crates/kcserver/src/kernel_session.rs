@@ -1331,9 +1331,27 @@ impl KernelSession {
         output
     }
 
-    pub async fn get_connection_file(&self) -> Option<ConnectionFile> {
+    async fn get_connection_file(&self) -> Option<ConnectionFile> {
         let state = self.state.read().await;
         state.connection_file.clone()
+    }
+
+    pub async fn ensure_connection_file(&self) -> Result<ConnectionFile, anyhow::Error> {
+        match self.get_connection_file().await {
+            Some(connection_file) => {
+                // We have a connection file; return it
+                Ok(connection_file)
+            }
+            None => {
+                let connection_file = ConnectionFile::generate(
+                    "127.0.0.1".to_string(),
+                    self.reserved_ports.clone(),
+                    self.connection.key.clone(),
+                )?;
+                self.update_connection_file(connection_file.clone()).await;
+                Ok(connection_file)
+            }
+        }
     }
 }
 
