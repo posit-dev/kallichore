@@ -158,17 +158,15 @@ impl KernelSession {
         // in the kernel arguments
         let (connection_file_path, registration_port) = if jep66_enabled {
             // For JEP 66 handshaking, pick a free port for the registration socket to use
-            // We need to pick this once and use it for both the registration file and socket
-            let port = portpicker::pick_unused_port()
-                .ok_or_else(|| StartupError {
-                    exit_code: None,
-                    output: None,
-                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
-                        "Could not find a free port for the registration socket"
-                    ))
-                    .to_json(None),
-                })?;
-                
+            let port = portpicker::pick_unused_port().ok_or_else(|| StartupError {
+                exit_code: None,
+                output: None,
+                error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                    "Could not find a free port for the registration socket"
+                ))
+                .to_json(None),
+            })?;
+
             // Create the registration file name and path
             let mut registration_file_name = std::ffi::OsString::from("registration_");
             registration_file_name.push(self.connection.session_id.clone());
@@ -176,7 +174,8 @@ impl KernelSession {
             let registration_path = std::env::temp_dir().join(registration_file_name);
 
             // Create the registration file
-            let registration_file = RegistrationFile::new("127.0.0.1".to_string(), port, self.key.clone());
+            let registration_file =
+                RegistrationFile::new("127.0.0.1".to_string(), port, self.key.clone());
             registration_file
                 .to_file(registration_path.clone())
                 .map_err(|e| StartupError {
@@ -188,14 +187,14 @@ impl KernelSession {
                     ))
                     .to_json(None),
                 })?;
-            
+
             log::debug!(
                 "Wrote registration file for session {} at {:?} with port {}",
                 self.connection.session_id.clone(),
                 registration_path,
                 port
             );
-            
+
             (registration_path, Some(port))
         } else {
             // For traditional kernels, generate a new connection file with allocated ports first
@@ -381,7 +380,10 @@ impl KernelSession {
             };
 
             // Wait for the handshake to complete using the port we already chose
-            match self.wait_for_handshake(connection_timeout, registration_port.unwrap()).await {
+            match self
+                .wait_for_handshake(connection_timeout, registration_port.unwrap())
+                .await
+            {
                 Ok(connection_file) => {
                     log::info!(
                         "[session {}] JEP 66 handshake completed successfully",
@@ -1067,11 +1069,15 @@ impl KernelSession {
     /**
      * Wait for a handshake to be completed. This is used when starting a kernel that supports
      * JEP 66 handshaking.
-     * 
+     *
      * @param timeout_secs Time to wait for the handshake in seconds
      * @param port The port to use for the registration socket (already chosen earlier)
      */
-    pub async fn wait_for_handshake(&self, timeout_secs: u64, port: u16) -> Result<ConnectionFile, KSError> {
+    pub async fn wait_for_handshake(
+        &self,
+        timeout_secs: u64,
+        port: u16,
+    ) -> Result<ConnectionFile, KSError> {
         // Create a new registration socket for this session with the already chosen port
         let mut registration_socket = RegistrationSocket::new(port, self.connection.clone());
 
@@ -1133,7 +1139,9 @@ impl KernelSession {
         let result = match tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             result_rx.recv(),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(connection_file)) => {
                 // Handshake completed successfully
                 log::info!(

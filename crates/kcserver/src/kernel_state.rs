@@ -8,7 +8,6 @@
 use async_channel::Sender;
 use kallichore_api::models;
 use kcshared::{
-    handshake_protocol::HandshakeVersion,
     kernel_message::{KernelMessage, StatusUpdate},
     websocket_message::WebsocketMessage,
 };
@@ -65,11 +64,6 @@ pub struct KernelState {
     /// A channel to publish status updates to the websocket
     ws_json_tx: Sender<WebsocketMessage>,
 
-    /// The negotiated handshake protocol version with the kernel
-    /// If None, the traditional Jupyter protocol (5.x) is being used
-    /// If Some, contains the negotiated JEP 66 handshake version
-    pub handshake_version: Option<HandshakeVersion>,
-
     /// The connection file for the kernel, or None if not set.
     pub connection_file: Option<ConnectionFile>,
 }
@@ -96,7 +90,6 @@ impl KernelState {
             idle_nudge_tx,
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,
-            handshake_version: None,
             connection_file: None,
         }
     }

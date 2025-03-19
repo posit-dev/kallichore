@@ -5,10 +5,7 @@
 //
 //
 
-use kcshared::{
-    handshake_protocol::HandshakeVersion,
-    jupyter_message::JupyterMessageHeader,
-};
+use kcshared::jupyter_message::JupyterMessageHeader;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,36 +32,23 @@ pub struct WireMessageHeader {
 impl WireMessageHeader {
     /// Create a new wire message header from a Jupyter message header.
     pub fn new(
-        jupyter_header: JupyterMessageHeader, 
-        session: String, 
-        username: String, 
-        handshake_version: Option<&HandshakeVersion>,
+        jupyter_header: JupyterMessageHeader,
+        session: String,
+        username: String,
+        protocol_version: String,
     ) -> Self {
         // Create an ISO 8601 date string to use as a timestamp
         let date = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-        // Determine which protocol version to use
-        let version = match handshake_version {
-            // If we've successfully negotiated a handshake protocol version, use it
-            Some(version) => format!("{}.{}", version.major, version.minor),
-            // Otherwise use the traditional Jupyter protocol version
-            None => String::from("5.3"),
-        };
 
         // Create the wire message header from the Jupyter message header
         WireMessageHeader {
             msg_id: jupyter_header.msg_id,
             msg_type: jupyter_header.msg_type,
-            version,
+            version: protocol_version,
             date,
             session,
             username,
         }
-    }
-    
-    /// Create a new wire message header for the traditional Jupyter protocol.
-    pub fn new_v5(jupyter_header: JupyterMessageHeader, session: String, username: String) -> Self {
-        Self::new(jupyter_header, session, username, None)
     }
 }
 

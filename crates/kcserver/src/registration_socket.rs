@@ -117,12 +117,14 @@ impl RegistrationSocket {
         if let Err(e) = result_tx.send(result) {
             warn!("Failed to send handshake result internally: {}", e);
         }
+
         // Create a successful handshake reply
         let reply = HandshakeReply {
             status: HandshakeStatus::Ok,
             error: None,
             capabilities: HashMap::new(),
         };
+
         // Create a Jupyter message containing the handshake reply
         // Generate a message id
         let jupyter_msg = JupyterMessage {
@@ -138,7 +140,7 @@ impl RegistrationSocket {
         };
 
         // Convert to a wire message for sending
-        let wire_message = WireMessage::from_jupyter(jupyter_msg, connection.clone(), None);
+        let wire_message = WireMessage::from_jupyter(jupyter_msg, connection.clone());
         match wire_message {
             Ok(wire_message) => {
                 info!(
@@ -177,14 +179,19 @@ impl RegistrationSocket {
         let mut socket = RepSocket::new();
         let address = format!("tcp://127.0.0.1:{}", self.port);
         socket.bind(&address).await?;
+
         // Store the socket
         self.socket = Some(socket);
+
         // Set the running flag
         self.running = true;
+
         // Create a new broadcast channel for receiving handshake results
         let (result_tx, _) = broadcast::channel(32);
+
         // Update our broadcast sender
         self.result_tx = result_tx.clone();
+
         // Take ownership of the socket to move into the task
         let socket = self.socket.take().unwrap();
         let connection = self.connection.clone();
@@ -203,7 +210,6 @@ impl RegistrationSocket {
             // Process one message only - in JEP 66, we receive a single handshake and then we can close
             match socket.recv().await {
                 Ok(request_data) => {
-                    let request_data = request_data.into(); // Convert ZmqMessage to Vec<u8>
                     Self::handle_handshake_request(
                         &mut socket,
                         &result_tx,
