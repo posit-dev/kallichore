@@ -32,12 +32,16 @@ pub struct HandshakeResult {
 pub struct RegistrationSocket {
     /// The port on which the registration socket is listening
     pub port: u16,
+
     /// The ZeroMQ Reply socket for the registration socket
     socket: Option<RepSocket>,
+
     /// Channel for broadcasting handshake results
     result_tx: broadcast::Sender<HandshakeResult>,
+
     /// Flag indicating if the socket is running
     running: bool,
+
     /// The connection information for this socket
     connection: KernelConnection,
 }
@@ -152,11 +156,6 @@ impl RegistrationSocket {
                     warn!(
                         "[session {}] Failed to send handshake reply to kernel: {}",
                         connection.session_id, e
-                    );
-                } else {
-                    info!(
-                        "[session {}] Sent successful handshake reply to kernel",
-                        connection.session_id
                     );
                 }
             }

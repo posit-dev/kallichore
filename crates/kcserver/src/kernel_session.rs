@@ -1301,24 +1301,19 @@ impl KernelSession {
 
         // When this listen future resolves, the proxy has stopped and the
         // sockets are closed; release the reserved ports
-        {
-            let mut reserved_ports = self.reserved_ports.write().unwrap();
-            reserved_ports.retain(|&port| {
-                port != connection_file.info.control_port
-                    && port != connection_file.info.shell_port
-                    && port != connection_file.info.stdin_port
-                    && port != connection_file.info.iopub_port
-                    && port != connection_file.info.hb_port
-            });
-        }
-        {
-            let reserved_ports = self.reserved_ports.read().unwrap();
-            log::trace!(
-                "Released reserved ports for session {}; there are now {} reserved ports",
-                self.connection.session_id,
-                reserved_ports.len()
-            );
-        }
+        let mut reserved_ports = self.reserved_ports.write().unwrap();
+        reserved_ports.retain(|&port| {
+            port != connection_file.info.control_port
+                && port != connection_file.info.shell_port
+                && port != connection_file.info.stdin_port
+                && port != connection_file.info.iopub_port
+                && port != connection_file.info.hb_port
+        });
+        log::trace!(
+            "Released reserved ports for session {}; there are now {} reserved ports",
+            self.connection.session_id,
+            reserved_ports.len()
+        );
     }
 
     /// Collect any standard out and standard error messages that were sent
