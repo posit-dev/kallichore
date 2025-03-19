@@ -25,7 +25,7 @@ pub struct RegistrationFile {
 
     /// The HMAC-256 signing key, or an empty string for an unauthenticated
     /// connection
-    pub key: String,
+    pub key: Option<String>,
 
     /// ZeroMQ port: Registration messages (handshake)
     pub registration_port: u16,
@@ -33,7 +33,7 @@ pub struct RegistrationFile {
 
 impl RegistrationFile {
     /// Create a RegistrationFile from the parts needed to connect
-    pub fn new(ip: String, port: u16, key: String) -> Self {
+    pub fn new(ip: String, port: u16, key: Option<String>) -> Self {
         Self {
             transport: "tcp".to_string(),
             signature_scheme: "hmac-sha256".to_string(),

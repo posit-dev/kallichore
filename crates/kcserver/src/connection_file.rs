@@ -128,7 +128,7 @@ impl ConnectionFile {
     pub fn generate(
         ip: String,
         reserved_ports: Arc<RwLock<Vec<i32>>>,
-        key: String,
+        key: Option<String>,
     ) -> Result<Self, anyhow::Error> {
         let control_port =
             ConnectionFile::find_port(String::from("control"), reserved_ports.clone())?;
@@ -144,7 +144,10 @@ impl ConnectionFile {
             hb_port: hb_port.into(),
             transport: "tcp".to_string(),
             signature_scheme: "hmac-sha256".to_string(),
-            key,
+            key: match key {
+                Some(key) => key,
+                None => String::new(),
+            },
             ip,
         };
         Ok(Self { info })

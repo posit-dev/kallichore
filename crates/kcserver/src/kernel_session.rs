@@ -47,9 +47,6 @@ pub struct KernelSession {
     /// The session model that was used to create this session
     pub model: models::NewSession,
 
-    /// The signing key used for messages in this session
-    pub key: String,
-
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
     pub argv: Vec<String>,
@@ -110,7 +107,6 @@ impl KernelSession {
             started,
             exit_event: Arc::new(Event::new()),
             reserved_ports,
-            key,
         };
         Ok(kernel_session)
     }
@@ -147,8 +143,8 @@ impl KernelSession {
         };
 
         // First, check if we expect JEP 66 handshaking based on protocol version
-        let protocol_version = self.model.protocol_version.as_deref().unwrap_or("5.3");
-        let jep66_enabled = ConnectionFile::requires_handshaking(protocol_version);
+        let jep66_enabled =
+            ConnectionFile::requires_handshaking(&self.connection.protocol_version.clone());
 
         // Create a copy of argv where we substitute the connection file path. This needs to be done
         // before we start the kernel process.
@@ -175,7 +171,7 @@ impl KernelSession {
 
             // Create the registration file
             let registration_file =
-                RegistrationFile::new("127.0.0.1".to_string(), port, self.key.clone());
+                RegistrationFile::new("127.0.0.1".to_string(), port, self.connection.key.clone());
             registration_file
                 .to_file(registration_path.clone())
                 .map_err(|e| StartupError {
@@ -201,7 +197,7 @@ impl KernelSession {
             let connection_file = ConnectionFile::generate(
                 "127.0.0.1".to_string(),
                 self.reserved_ports.clone(),
-                self.key.clone(),
+                self.connection.key.clone(),
             )
             .map_err(|e| StartupError {
                 exit_code: None,
@@ -370,7 +366,7 @@ impl KernelSession {
             log::info!(
                 "[session {}] Kernel supports JEP 66 (protocol version {}) - waiting for handshake",
                 self.connection.session_id,
-                protocol_version
+                self.connection.protocol_version
             );
 
             // Get the connection timeout from the model, defaulting to 30 seconds
@@ -409,7 +405,7 @@ impl KernelSession {
                         if let Ok(new_connection_file) = ConnectionFile::generate(
                             connection_file.info.ip.clone(), // Use IP from the existing connection file
                             self.reserved_ports.clone(),
-                            self.key.clone(),
+                            self.connection.key.clone(),
                         ) {
                             self.update_connection_file(new_connection_file).await;
                         } else {
@@ -432,7 +428,7 @@ impl KernelSession {
                         if let Ok(new_connection_file) = ConnectionFile::generate(
                             "127.0.0.1".to_string(), // Use 127.0.0.1 as the default IP
                             self.reserved_ports.clone(),
-                            self.key.clone(),
+                            self.connection.key.clone(),
                         ) {
                             self.update_connection_file(new_connection_file).await;
                         } else {
