@@ -27,8 +27,8 @@ use tokio::sync::RwLock;
 
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
-    kernel_state::KernelState, startup_status::StartupStatus, working_dir::expand_path,
-    zmq_ws_proxy::ZmqWsProxy,
+    kernel_state::KernelState, registration_file::RegistrationFile, registration_socket,
+    startup_status::StartupStatus, working_dir::expand_path, zmq_ws_proxy::ZmqWsProxy,
 };
 
 /// A Jupyter kernel session.
@@ -81,7 +81,6 @@ impl KernelSession {
     pub async fn new(
         session: models::NewSession,
         key: String,
-        connection_file: Option<ConnectionFile>,
         idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
@@ -93,11 +92,6 @@ impl KernelSession {
             idle_nudge_tx,
             json_tx.clone(),
         )));
-
-        if let Some(ref file) = connection_file {
-            let mut state = kernel_state.write().await;
-            state.connection_file = Some(file.clone());
-        }
 
         let connection = KernelConnection::from_session(&session, key.clone())?;
         let started = Utc::now();
@@ -149,15 +143,120 @@ impl KernelSession {
             state.working_directory.clone()
         };
 
+        // First, check if we expect JEP 66 handshaking based on protocol version
+        let protocol_version = self.model.protocol_version.as_deref().unwrap_or("5.3");
+        let jep66_enabled = ConnectionFile::requires_handshaking(protocol_version);
+
+        // Create a copy of argv where we substitute the connection file path. This needs to be done
+        // before we start the kernel process.
+        let mut argv = self.argv.clone();
+
+        // Write the appropriate connection or registration file and get its path for substitution
+        // in the kernel arguments
+        let connection_file_path = if jep66_enabled {
+            // For JEP 66 handshaking, write a registration file
+            let mut registration_file_name = std::ffi::OsString::from("registration_");
+            registration_file_name.push(self.connection.session_id.clone());
+            registration_file_name.push(".json");
+            let registration_path = std::env::temp_dir().join(registration_file_name);
+
+            // Get the registration socket port from the server
+            if let Some(port) = registration_socket::REGISTRATION_PORT
+                .read()
+                .await
+                .as_ref()
+                .map(|p| *p)
+            {
+                let registration_file =
+                    RegistrationFile::new("127.0.0.1".to_string(), port, self.key.clone());
+                registration_file
+                    .to_file(registration_path.clone())
+                    .map_err(|e| StartupError {
+                        exit_code: None,
+                        output: None,
+                        error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                            "Failed to write registration file: {}",
+                            e
+                        ))
+                        .to_json(None),
+                    })?;
+                log::debug!(
+                    "Wrote registration file for session {} at {:?}",
+                    self.connection.session_id.clone(),
+                    registration_path
+                );
+                registration_path
+            } else {
+                return Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Registration socket not available"
+                    ))
+                    .to_json(None),
+                });
+            }
+        } else {
+            // For traditional kernels, generate a new connection file with allocated ports first
+            let connection_file = ConnectionFile::generate(
+                "127.0.0.1".to_string(),
+                self.reserved_ports.clone(),
+                self.key.clone(),
+            )
+            .map_err(|e| StartupError {
+                exit_code: None,
+                output: None,
+                error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                    "Failed to generate connection file: {}",
+                    e
+                ))
+                .to_json(None),
+            })?;
+
+            // Store the generated connection file in our state
+            self.update_connection_file(connection_file.clone()).await;
+
+            // Write the connection file to disk
+            let mut connection_file_name = std::ffi::OsString::from("connection_");
+            connection_file_name.push(self.connection.session_id.clone());
+            connection_file_name.push(".json");
+            let connection_path = std::env::temp_dir().join(connection_file_name);
+
+            connection_file
+                .to_file(connection_path.clone())
+                .map_err(|e| StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Failed to write connection file: {}",
+                        e
+                    ))
+                    .to_json(None),
+                })?;
+            log::debug!(
+                "Wrote connection file for session {} at {:?}",
+                self.connection.session_id.clone(),
+                connection_path
+            );
+            connection_path
+        };
+
+        // Substitute the connection file path in the arguments
+        for arg in argv.iter_mut() {
+            if arg.contains("{connection_file}") {
+                *arg = arg.replace("{connection_file}", connection_file_path.to_str().unwrap());
+            }
+        }
+
         log::debug!(
             "Starting kernel for session {}: {:?}",
             self.model.session_id,
-            self.argv
+            argv
         );
 
-        // Create the command to start the kernel
-        let mut command = tokio::process::Command::new(&self.argv[0]);
-        command.args(&self.argv[1..]);
+        // Create the command to start the kernel with the processed arguments
+        let mut command = tokio::process::Command::new(&argv[0]);
+        command.args(&argv[1..]);
 
         // If a working directory was specified, test the working directory to
         // see if it exists. If it doesn't, log a warning and don't set the
@@ -266,10 +365,6 @@ impl KernelSession {
         tokio::spawn(async move {
             kernel.run_child(child, startup_child_tx).await;
         });
-
-        // First, check if we expect JEP 66 handshaking based on protocol version
-        let protocol_version = self.model.protocol_version.as_deref().unwrap_or("5.3");
-        let jep66_enabled = ConnectionFile::requires_handshaking(protocol_version);
 
         if jep66_enabled {
             log::info!(
@@ -974,7 +1069,7 @@ impl KernelSession {
      */
     pub async fn wait_for_handshake(&self, timeout_secs: u64) -> Result<ConnectionFile, KSError> {
         // Register this session in the handshake registry so the registration socket can find it
-        crate::registration_socket::register_session_for_handshake(self.connection.clone()).await;
+        registration_socket::register_session_for_handshake(self.connection.clone()).await;
 
         // Create a channel to listen for the handshake completed event
         let (handshake_tx, handshake_rx) = async_channel::bounded::<ConnectionFile>(1);
@@ -1046,13 +1141,12 @@ impl KernelSession {
 
         // Regardless of whether the handshake succeeded or failed,
         // unregister the session from the registry
-        crate::registration_socket::unregister_session_for_handshake(&self.connection.session_id)
-            .await;
+        registration_socket::unregister_session_for_handshake(&self.connection.session_id).await;
 
         result
     }
 
-    pub async fn start_zmq_proxy(
+    async fn start_zmq_proxy(
         &self,
         connection_file: Option<ConnectionFile>,
         status_tx: Sender<StartupStatus>,

@@ -35,6 +35,9 @@ use kcshared::jupyter_message::JupyterChannel;
 // mismatching handshakes.
 lazy_static::lazy_static! {
     static ref HANDSHAKE_REGISTRY: Arc<RwLock<HashMap<String, KernelConnection>>> = Arc::new(RwLock::new(HashMap::new()));
+
+    // Global port for the registration socket. Set when the server starts.
+    pub static ref REGISTRATION_PORT: Arc<RwLock<Option<u16>>> = Arc::new(RwLock::new(None));
 }
 
 /// Return value from a handshake negotiation
@@ -84,6 +87,12 @@ impl RegistrationSocket {
     /// Create a new registration socket with a required port
     pub fn new(port: u16) -> Self {
         let (result_tx, _) = broadcast::channel(32);
+
+        // Store the port in the global REGISTRATION_PORT
+        tokio::spawn(async move {
+            let mut port_lock = REGISTRATION_PORT.write().await;
+            *port_lock = Some(port);
+        });
 
         Self {
             port,
@@ -263,6 +272,10 @@ impl RegistrationSocket {
         if let Some(socket) = self.socket.take() {
             socket.close().await;
         }
+
+        // Clear the stored port
+        let mut port_lock = REGISTRATION_PORT.write().await;
+        *port_lock = None;
     }
 
     /// Get the sender for handshake results
