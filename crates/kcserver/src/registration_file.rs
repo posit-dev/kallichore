@@ -49,13 +49,4 @@ impl RegistrationFile {
         serde_json::to_writer_pretty(file, &self)?;
         Ok(())
     }
-
-    /// Given a registration port, return a URI-like string that can be used to connect
-    /// Example: "tcp://127.0.0.1:8888"
-    pub fn endpoint(&self) -> String {
-        format!(
-            "{}://{}:{}",
-            self.transport, self.ip, self.registration_port
-        )
-    }
 }

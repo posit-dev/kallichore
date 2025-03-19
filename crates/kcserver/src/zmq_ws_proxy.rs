@@ -10,7 +10,6 @@ use event_listener::Event;
 use futures::{stream, StreamExt};
 use kallichore_api::models;
 use kcshared::{
-    handshake_protocol::HandshakeVersion,
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_message::KernelMessage,
     websocket_message::WebsocketMessage,
@@ -259,22 +258,6 @@ impl ZmqWsProxy {
         );
 
         Ok(reply.content)
-    }
-
-    /// Tries to perform the Jupyter Handshaking Protocol with the kernel.
-    /// Returns the negotiated handshake version if successful, None otherwise.
-    pub async fn try_handshake(&mut self) -> Result<Option<HandshakeVersion>, anyhow::Error> {
-        log::debug!(
-            "[session {}] Traditional socket connection established; not using JEP 66 handshaking",
-            self.connection.session_id
-        );
-
-        // JEP 66 uses the registration socket approach, not direct messaging between
-        // the supervisor and kernel over the traditional Jupyter sockets.
-        // This function therefore always returns None, but is kept for future expansion
-        // of the handshaking protocol.
-
-        Ok(None)
     }
 
     async fn wait_for_shell_reply(
