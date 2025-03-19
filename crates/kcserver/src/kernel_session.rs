@@ -390,63 +390,20 @@ impl KernelSession {
                     self.update_connection_file(connection_file).await;
                 }
                 Err(e) => {
-                    log::warn!(
+                    log::error!(
                         "[session {}] JEP 66 handshake failed: {}",
                         self.connection.session_id,
                         e
                     );
-                    log::info!(
-                        "[session {}] Continuing with traditional connection method",
-                        self.connection.session_id
-                    );
-
-                    // Allocate ports using the generate method
-                    if let Some(connection_file) = self.get_connection_file().await {
-                        if let Ok(new_connection_file) = ConnectionFile::generate(
-                            connection_file.info.ip.clone(), // Use IP from the existing connection file
-                            self.reserved_ports.clone(),
-                            self.connection.key.clone(),
-                        ) {
-                            self.update_connection_file(new_connection_file).await;
-                        } else {
-                            log::error!(
-                                "[session {}] Failed to allocate ports for traditional connection method",
-                                self.connection.session_id
-                            );
-                            return Err(StartupError {
-                                exit_code: None,
-                                output: None,
-                                error: KSError::SessionCreateFailed(
-                                    self.connection.session_id.clone(),
-                                    anyhow::anyhow!("Port allocation failed"),
-                                )
-                                .to_json(None),
-                            });
-                        }
-                    } else {
-                        // Allocate ports using the generate method
-                        if let Ok(new_connection_file) = ConnectionFile::generate(
-                            "127.0.0.1".to_string(), // Use 127.0.0.1 as the default IP
-                            self.reserved_ports.clone(),
-                            self.connection.key.clone(),
-                        ) {
-                            self.update_connection_file(new_connection_file).await;
-                        } else {
-                            log::error!(
-                                "[session {}] Failed to allocate ports for traditional connection method",
-                                self.connection.session_id
-                            );
-                            return Err(StartupError {
-                                exit_code: None,
-                                output: None,
-                                error: KSError::SessionCreateFailed(
-                                    self.connection.session_id.clone(),
-                                    anyhow::anyhow!("Port allocation failed"),
-                                )
-                                .to_json(None),
-                            });
-                        }
-                    }
+                    return Err(StartupError {
+                        exit_code: None,
+                        output: None,
+                        error: KSError::SessionConnectionFailed(anyhow::anyhow!(
+                            "Failed to complete JEP 66 handshake: {}",
+                            e
+                        ))
+                        .to_json(None),
+                    });
                 }
             }
         }
@@ -1344,14 +1301,16 @@ impl KernelSession {
 
         // When this listen future resolves, the proxy has stopped and the
         // sockets are closed; release the reserved ports
-        let mut reserved_ports = self.reserved_ports.write().unwrap();
-        reserved_ports.retain(|&port| {
-            port != connection_file.info.control_port
-                && port != connection_file.info.shell_port
-                && port != connection_file.info.stdin_port
-                && port != connection_file.info.iopub_port
-                && port != connection_file.info.hb_port
-        });
+        {
+            let mut reserved_ports = self.reserved_ports.write().unwrap();
+            reserved_ports.retain(|&port| {
+                port != connection_file.info.control_port
+                    && port != connection_file.info.shell_port
+                    && port != connection_file.info.stdin_port
+                    && port != connection_file.info.iopub_port
+                    && port != connection_file.info.hb_port
+            });
+        }
         {
             let reserved_ports = self.reserved_ports.read().unwrap();
             log::trace!(

@@ -494,23 +494,9 @@ where
             session_id: new_session_id.clone(),
         };
 
-        // Determine if the kernel supports JEP 66 handshaking based on the protocol version
-        let protocol_version = session.protocol_version.as_deref().unwrap_or("5.3");
-        let supports_handshaking = ConnectionFile::requires_handshaking(protocol_version);
-
         // Generate a key for the session
-        let mut key: String = String::new();
-        if supports_handshaking {
-            // For JEP 66 handshaking, create a key for the registration file
-            let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
-            key = hex::encode(key_bytes);
-
-            log::debug!(
-                "[session {}] Using JEP 66 handshaking (protocol version {})",
-                new_session_id,
-                protocol_version,
-            );
-        }
+        let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
+        let key = hex::encode(key_bytes);
 
         // Create log file path which may be needed in argv
         let temp_dir = env::temp_dir();
