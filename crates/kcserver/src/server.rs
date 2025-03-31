@@ -871,19 +871,19 @@ where
             }
         };
 
-        // Extract the working directory from the restart session request if present.
-        let working_dir = match restart_session {
-            Some(restart_session) => match restart_session.working_directory {
-                Some(working_directory) => match working_directory.is_empty() {
-                    true => None,
-                    false => Some(working_directory),
-                },
-                None => None,
-            },
-            None => None,
-        };
+        let working_dir = restart_session
+            .as_ref()
+            .and_then(|rs| rs.working_directory.as_ref())
+            .filter(|dir| !dir.is_empty())
+            .cloned();
 
-        match session.restart(working_dir).await {
+        let env_vars = restart_session
+            .as_ref()
+            .and_then(|rs| rs.env.as_ref())
+            .filter(|env| !env.is_empty())
+            .cloned();
+
+        match session.restart(working_dir, env_vars).await {
             Ok(_) => Ok(RestartSessionResponse::Restarted(serde_json::Value::Null)),
             Err(e) => Ok(RestartSessionResponse::RestartFailed(e)),
         }

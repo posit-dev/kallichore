@@ -13,8 +13,8 @@ use std::{fs, process::Stdio, sync::Arc};
 use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
 use event_listener::Event;
-use kallichore_api::models::ConnectionInfo;
 use kallichore_api::models::{self, StartupError};
+use kallichore_api::models::{ConnectionInfo, VarAction};
 use kcshared::{
     handshake_protocol::HandshakeStatus,
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
@@ -302,8 +302,14 @@ impl KernelSession {
             resolved_env.insert(key, value);
         }
 
+        // Read the set of environment variable actions from the state
+        let env_var_actions = {
+            let state = self.state.read().await;
+            state.env_vars.clone()
+        };
+
         // Apply mutations from model
-        for action in &self.model.env {
+        for action in &env_var_actions {
             match action.action {
                 models::VarActionType::Replace => {
                     resolved_env.insert(action.name.clone(), action.value.clone())
@@ -325,6 +331,13 @@ impl KernelSession {
                     resolved_env.insert(action.name.clone(), value)
                 }
             };
+        }
+
+        // Store the resolved environment back in the kernel state so it can be
+        // queried later
+        {
+            let mut state = self.state.write().await;
+            state.resolved_env = resolved_env.clone();
         }
 
         // Attempt to actually start the kernel process
@@ -666,15 +679,23 @@ impl KernelSession {
     ///
     /// # Arguments
     ///
-    /// * `working_directory` - The working directory to use after restart. Optional; if not
-    /// supplied, the working directory supplied when the kernel was started will be used (Windows)
-    /// or the kernel's current working directory will be used (non-Windows).
+    /// * `working_directory` - The working directory to use after restart.
+    /// Optional; if not supplied, the working directory supplied when the
+    /// kernel was started will be used (Windows) or the kernel's current
+    /// working directory will be used (non-Windows).
+    ///
+    /// * `env` - The new set of environment variable actions to apply to
+    /// the kernel's environment.
     ///
     /// # Returns
     ///
     /// `Ok(())` if the kernel was restarted successfully, or an error if the
     /// kernel could not be restarted.
-    pub async fn restart(&self, working_directory: Option<String>) -> Result<(), StartupError> {
+    pub async fn restart(
+        &self,
+        working_directory: Option<String>,
+        env: Option<Vec<VarAction>>,
+    ) -> Result<(), StartupError> {
         // Expand the working directory if it was supplied
         let working_directory = match working_directory {
             Some(dir) => match expand_path(dir.clone()) {
@@ -768,6 +789,17 @@ impl KernelSession {
                     }
                 }
             }
+
+            // Set the environment variables, if supplied
+            if let Some(env) = env {
+                log::debug!(
+                    "[session {}] Will restart with environment variables: {:?}",
+                    self.connection.session_id,
+                    env
+                );
+                state.env_vars = env;
+            }
+
             state.restarting = true;
         }
 
@@ -862,7 +894,7 @@ impl KernelSession {
             display_name: self.model.display_name.clone(),
             language: self.model.language.clone(),
             interrupt_mode: self.model.interrupt_mode.clone(),
-            initial_env: None, // TODO
+            initial_env: Some(state.resolved_env.clone()),
             argv: self.argv.clone(),
             process_id: match state.process_id {
                 Some(pid) => Some(pid as i32),
