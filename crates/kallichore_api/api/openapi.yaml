@@ -552,6 +552,12 @@ components:
           description: "The desired working directory for the session after restart,\
             \ if different from the session's working directory at startup"
           type: string
+        env:
+          additionalProperties:
+            type: string
+          description: "A new set of environment variables for the session, if different\
+            \ from the session's environment at startup"
+          type: object
       type: object
     execution_queue:
       description: The execution queue for a session

@@ -776,6 +776,13 @@
           "working_directory": {
             "type": "string",
             "description": "The desired working directory for the session after restart, if different from the session's working directory at startup"
+          },
+          "env": {
+            "type": "object",
+            "description": "A new set of environment variables for the session, if different from the session's environment at startup",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         },
         "required": []

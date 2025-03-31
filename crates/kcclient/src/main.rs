@@ -639,6 +639,7 @@ fn main() {
             log::info!("Restarting session '{}'", session_id.clone());
             let restart = RestartSession {
                 working_directory: None,
+                env: None,
             };
             match rt.block_on(client.restart_session(session_id.clone(), Some(restart))) {
                 Ok(resp) => match resp {

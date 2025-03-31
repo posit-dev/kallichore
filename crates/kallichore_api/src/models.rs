@@ -1573,6 +1573,11 @@ pub struct RestartSession {
     #[serde(rename = "working_directory")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<String>,
+
+    /// A new set of environment variables for the session, if different from the session's environment at startup
+    #[serde(rename = "env")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<std::collections::HashMap<String, String>>,
 }
 
 impl RestartSession {
@@ -1580,6 +1585,7 @@ impl RestartSession {
     pub fn new() -> RestartSession {
         RestartSession {
             working_directory: None,
+            env: None,
         }
     }
 }
@@ -1589,14 +1595,16 @@ impl RestartSession {
 /// Should be implemented in a serde serializer
 impl std::string::ToString for RestartSession {
     fn to_string(&self) -> String {
-        let params: Vec<Option<String>> =
-            vec![self.working_directory.as_ref().map(|working_directory| {
+        let params: Vec<Option<String>> = vec![
+            self.working_directory.as_ref().map(|working_directory| {
                 [
                     "working_directory".to_string(),
                     working_directory.to_string(),
                 ]
                 .join(",")
-            })];
+            }),
+            // Skipping env in query parameter serialization
+        ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
     }
@@ -1614,6 +1622,7 @@ impl std::str::FromStr for RestartSession {
         #[allow(dead_code)]
         struct IntermediateRep {
             pub working_directory: Vec<String>,
+            pub env: Vec<std::collections::HashMap<String, String>>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -1639,6 +1648,12 @@ impl std::str::FromStr for RestartSession {
                     "working_directory" => intermediate_rep.working_directory.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    "env" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in RestartSession"
+                                .to_string(),
+                        )
+                    }
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing RestartSession".to_string(),
@@ -1654,6 +1669,7 @@ impl std::str::FromStr for RestartSession {
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(RestartSession {
             working_directory: intermediate_rep.working_directory.into_iter().next(),
+            env: intermediate_rep.env.into_iter().next(),
         })
     }
 }
