@@ -605,6 +605,43 @@
           "message"
         ]
       },
+      "envVarActions": {
+        "type": "array",
+        "description": "A list of environment variable actions to perform",
+        "items": {
+          "$ref": "#/components/schemas/varAction"
+        }
+      },
+      "varActionType": {
+        "type": "string",
+        "description": "The type of action to perform on the environment variable",
+        "enum": [
+          "replace",
+          "append",
+          "prepend"
+        ]
+      },
+      "varAction": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/varActionType"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of the variable to act on"
+          },
+          "value": {
+            "description": "The value to replace, append, or prepend",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "name",
+          "value"
+        ]
+      },
       "connectionInfo": {
         "type": "object",
         "description": "Connection information for an existing session",
@@ -737,11 +774,7 @@
             "description": "The working directory in which to start the session."
           },
           "env": {
-            "type": "object",
-            "description": "Environment variables to set for the session",
-            "additionalProperties": {
-              "type": "string"
-            }
+            "$ref": "#/components/schemas/envVarActions"
           },
           "connection_timeout": {
             "type": "integer",
@@ -778,11 +811,7 @@
             "description": "The desired working directory for the session after restart, if different from the session's working directory at startup"
           },
           "env": {
-            "type": "object",
-            "description": "A new set of environment variables for the session, if different from the session's environment at startup",
-            "additionalProperties": {
-              "type": "string"
-            }
+            "$ref": "#/components/schemas/envVarActions"
           }
         },
         "required": []

@@ -401,6 +401,33 @@ components:
       - code
       - message
       type: object
+    envVarActions:
+      description: A list of environment variable actions to perform
+      items:
+        $ref: '#/components/schemas/varAction'
+      type: array
+    varActionType:
+      description: The type of action to perform on the environment variable
+      enum:
+      - replace
+      - append
+      - prepend
+      type: string
+    varAction:
+      properties:
+        action:
+          $ref: '#/components/schemas/varActionType'
+        name:
+          description: The name of the variable to act on
+          type: string
+        value:
+          description: "The value to replace, append, or prepend"
+          type: string
+      required:
+      - action
+      - name
+      - value
+      type: object
     connectionInfo:
       description: Connection information for an existing session
       example:
@@ -519,10 +546,10 @@ components:
           description: The working directory in which to start the session.
           type: string
         env:
-          additionalProperties:
-            type: string
-          description: Environment variables to set for the session
-          type: object
+          description: A list of environment variable actions to perform
+          items:
+            $ref: '#/components/schemas/varAction'
+          type: array
         connection_timeout:
           default: 30
           description: The number of seconds to wait for a connection to the session's
@@ -553,11 +580,10 @@ components:
             \ if different from the session's working directory at startup"
           type: string
         env:
-          additionalProperties:
-            type: string
-          description: "A new set of environment variables for the session, if different\
-            \ from the session's environment at startup"
-          type: object
+          description: A list of environment variable actions to perform
+          items:
+            $ref: '#/components/schemas/varAction'
+          type: array
       type: object
     execution_queue:
       description: The execution queue for a session
