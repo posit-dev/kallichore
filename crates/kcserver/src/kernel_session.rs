@@ -7,6 +7,7 @@
 
 //! Wraps Jupyter kernel sessions.
 
+use std::collections::HashMap;
 use std::{fs, process::Stdio, sync::Arc};
 
 use async_channel::{Receiver, SendError, Sender};
@@ -294,9 +295,41 @@ impl KernelSession {
             }
         }
 
+        // Start with a copy of the process environment
+        let initial = std::env::vars();
+        let mut resolved_env = HashMap::new();
+        for (key, value) in initial {
+            resolved_env.insert(key, value);
+        }
+
+        // Apply mutations from model
+        for action in &self.model.env {
+            match action.action {
+                models::VarActionType::Replace => {
+                    resolved_env.insert(action.name.clone(), action.value.clone())
+                }
+                models::VarActionType::Append => {
+                    let mut value = resolved_env
+                        .get(&action.name)
+                        .unwrap_or(&String::new())
+                        .clone();
+                    value.push_str(&action.value);
+                    resolved_env.insert(action.name.clone(), value)
+                }
+                models::VarActionType::Prepend => {
+                    let mut value = resolved_env
+                        .get(&action.name)
+                        .unwrap_or(&String::new())
+                        .clone();
+                    value.insert_str(0, &action.value);
+                    resolved_env.insert(action.name.clone(), value)
+                }
+            };
+        }
+
         // Attempt to actually start the kernel process
         let mut child = match command
-            .envs(&self.model.env)
+            .envs(&resolved_env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -829,7 +862,7 @@ impl KernelSession {
             display_name: self.model.display_name.clone(),
             language: self.model.language.clone(),
             interrupt_mode: self.model.interrupt_mode.clone(),
-            initial_env: Some(self.model.env.clone()),
+            initial_env: None, // TODO
             argv: self.argv.clone(),
             process_id: match state.process_id {
                 Some(pid) => Some(pid as i32),

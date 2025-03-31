@@ -10,7 +10,7 @@
 //! Kallichore Client
 #![allow(missing_docs, unused_variables, trivial_casts)]
 
-use std::path::PathBuf;
+use std::{path::PathBuf, vec};
 
 use directories::BaseDirs;
 #[allow(unused_imports)]
@@ -429,9 +429,8 @@ fn main() {
                 serde_json::from_reader(std::fs::File::open(kernel_spec_json).unwrap())
                     .expect("Failed to parse kernel spec");
 
-            // Convert the environment variables from the kernel spec to a
-            // HashMap for use in the session
-            let mut env = std::collections::HashMap::new();
+            // Convert the environment variables from the kernel spec to a set of actions
+            let mut env = vec![];
             if kernel_spec.env.is_some() {
                 let kernel_env = kernel_spec.env.as_ref().unwrap();
                 for (key, value) in kernel_env.iter() {
@@ -443,7 +442,12 @@ fn main() {
                     );
                     if value.is_string() {
                         let value = value.as_str().unwrap();
-                        env.insert(key.clone(), value.to_string());
+                        let env_var = models::VarAction {
+                            action: models::VarActionType::Replace,
+                            name: key.clone(),
+                            value: value.to_string(),
+                        };
+                        env.push(env_var);
                     }
                 }
             }
