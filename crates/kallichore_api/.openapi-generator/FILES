@@ -15,6 +15,8 @@ docs/ServerStatus.md
 docs/SessionList.md
 docs/StartupError.md
 docs/Status.md
+docs/VarAction.md
+docs/VarActionType.md
 docs/default_api.md
 examples/ca.pem
 examples/client/main.rs

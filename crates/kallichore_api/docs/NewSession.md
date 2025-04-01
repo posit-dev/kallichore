@@ -11,7 +11,7 @@ Name | Type | Description | Notes
 **continuation_prompt** | **String** | The text to use to prompt for input continuations | 
 **argv** | **Vec<String>** | The program and command-line parameters for the session | 
 **working_directory** | **String** | The working directory in which to start the session. | 
-**env** | **std::collections::HashMap<String, String>** | Environment variables to set for the session | 
+**env** | [**Vec<models::VarAction>**](varAction.md) | A list of environment variable actions to perform | 
 **connection_timeout** | **i32** | The number of seconds to wait for a connection to the session's ZeroMQ sockets before timing out | [optional] [default to Some(30)]
 **interrupt_mode** | [***models::InterruptMode**](interrupt_mode.md) |  | 
 **protocol_version** | **String** | The Jupyter protocol version supported by the underlying kernel | [optional] [default to Some("5.3".to_string())]

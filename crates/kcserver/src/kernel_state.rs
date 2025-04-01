@@ -5,6 +5,8 @@
 //
 //
 
+use std::collections::HashMap;
+
 use async_channel::Sender;
 use kallichore_api::models;
 use kcshared::{
@@ -39,6 +41,12 @@ pub struct KernelState {
 
     /// The current working directory of the kernel.
     pub working_directory: String,
+
+    /// The set of environment variable actions for startup.
+    pub env_vars: Vec<models::VarAction>,
+
+    /// The resolved environment variables for the kernel.
+    pub resolved_env: HashMap<String, String>,
 
     /// The current process ID of the kernel, or None if the kernel is not running.
     pub process_id: Option<u32>,
@@ -84,6 +92,8 @@ impl KernelState {
             restarting: false,
             process_id: None,
             execution_queue: ExecutionQueue::new(),
+            env_vars: session.env.clone(),
+            resolved_env: HashMap::new(),
             input_prompt: session.input_prompt.clone(),
             continuation_prompt: session.continuation_prompt.clone(),
             ws_json_tx,

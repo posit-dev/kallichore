@@ -1121,9 +1121,9 @@ pub struct NewSession {
     #[serde(rename = "working_directory")]
     pub working_directory: String,
 
-    /// Environment variables to set for the session
+    /// A list of environment variable actions to perform
     #[serde(rename = "env")]
-    pub env: std::collections::HashMap<String, String>,
+    pub env: Vec<models::VarAction>,
 
     /// The number of seconds to wait for a connection to the session's ZeroMQ sockets before timing out
     #[serde(rename = "connection_timeout")]
@@ -1150,7 +1150,7 @@ impl NewSession {
         continuation_prompt: String,
         argv: Vec<String>,
         working_directory: String,
-        env: std::collections::HashMap<String, String>,
+        env: Vec<models::VarAction>,
         interrupt_mode: models::InterruptMode,
     ) -> NewSession {
         NewSession {
@@ -1235,7 +1235,7 @@ impl std::str::FromStr for NewSession {
             pub continuation_prompt: Vec<String>,
             pub argv: Vec<Vec<String>>,
             pub working_directory: Vec<String>,
-            pub env: Vec<std::collections::HashMap<String, String>>,
+            pub env: Vec<Vec<models::VarAction>>,
             pub connection_timeout: Vec<i32>,
             pub interrupt_mode: Vec<models::InterruptMode>,
             pub protocol_version: Vec<String>,
@@ -1573,6 +1573,11 @@ pub struct RestartSession {
     #[serde(rename = "working_directory")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<String>,
+
+    /// A list of environment variable actions to perform
+    #[serde(rename = "env")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<models::VarAction>>,
 }
 
 impl RestartSession {
@@ -1580,6 +1585,7 @@ impl RestartSession {
     pub fn new() -> RestartSession {
         RestartSession {
             working_directory: None,
+            env: None,
         }
     }
 }
@@ -1589,14 +1595,16 @@ impl RestartSession {
 /// Should be implemented in a serde serializer
 impl std::string::ToString for RestartSession {
     fn to_string(&self) -> String {
-        let params: Vec<Option<String>> =
-            vec![self.working_directory.as_ref().map(|working_directory| {
+        let params: Vec<Option<String>> = vec![
+            self.working_directory.as_ref().map(|working_directory| {
                 [
                     "working_directory".to_string(),
                     working_directory.to_string(),
                 ]
                 .join(",")
-            })];
+            }),
+            // Skipping env in query parameter serialization
+        ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
     }
@@ -1614,6 +1622,7 @@ impl std::str::FromStr for RestartSession {
         #[allow(dead_code)]
         struct IntermediateRep {
             pub working_directory: Vec<String>,
+            pub env: Vec<Vec<models::VarAction>>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -1639,6 +1648,12 @@ impl std::str::FromStr for RestartSession {
                     "working_directory" => intermediate_rep.working_directory.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    "env" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in RestartSession"
+                                .to_string(),
+                        )
+                    }
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing RestartSession".to_string(),
@@ -1654,6 +1669,7 @@ impl std::str::FromStr for RestartSession {
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(RestartSession {
             working_directory: intermediate_rep.working_directory.into_iter().next(),
+            env: intermediate_rep.env.into_iter().next(),
         })
     }
 }
@@ -2294,6 +2310,217 @@ impl std::str::FromStr for Status {
             "busy" => std::result::Result::Ok(Status::Busy),
             "offline" => std::result::Result::Ok(Status::Offline),
             "exited" => std::result::Result::Ok(Status::Exited),
+            _ => std::result::Result::Err(format!("Value not valid: {}", s)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct VarAction {
+    #[serde(rename = "action")]
+    pub action: models::VarActionType,
+
+    /// The name of the variable to act on
+    #[serde(rename = "name")]
+    pub name: String,
+
+    /// The value to replace, append, or prepend
+    #[serde(rename = "value")]
+    pub value: String,
+}
+
+impl VarAction {
+    #[allow(clippy::new_without_default)]
+    pub fn new(action: models::VarActionType, name: String, value: String) -> VarAction {
+        VarAction {
+            action,
+            name,
+            value,
+        }
+    }
+}
+
+/// Converts the VarAction value to the Query Parameters representation (style=form, explode=false)
+/// specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde serializer
+impl std::string::ToString for VarAction {
+    fn to_string(&self) -> String {
+        let params: Vec<Option<String>> = vec![
+            // Skipping action in query parameter serialization
+            Some("name".to_string()),
+            Some(self.name.to_string()),
+            Some("value".to_string()),
+            Some(self.value.to_string()),
+        ];
+
+        params.into_iter().flatten().collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a VarAction value
+/// as specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for VarAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub action: Vec<models::VarActionType>,
+            pub name: Vec<String>,
+            pub value: Vec<String>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing VarAction".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "action" => intermediate_rep.action.push(
+                        <models::VarActionType as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "name" => intermediate_rep.name.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "value" => intermediate_rep.value.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing VarAction".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(VarAction {
+            action: intermediate_rep
+                .action
+                .into_iter()
+                .next()
+                .ok_or_else(|| "action missing in VarAction".to_string())?,
+            name: intermediate_rep
+                .name
+                .into_iter()
+                .next()
+                .ok_or_else(|| "name missing in VarAction".to_string())?,
+            value: intermediate_rep
+                .value
+                .into_iter()
+                .next()
+                .ok_or_else(|| "value missing in VarAction".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<VarAction> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<VarAction>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<VarAction>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for VarAction - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<VarAction> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <VarAction as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into VarAction - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+/// The type of action to perform on the environment variable
+/// Enumeration of values.
+/// Since this enum's variants do not hold data, we can easily define them as `#[repr(C)]`
+/// which helps with FFI.
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
+pub enum VarActionType {
+    #[serde(rename = "replace")]
+    Replace,
+    #[serde(rename = "append")]
+    Append,
+    #[serde(rename = "prepend")]
+    Prepend,
+}
+
+impl std::fmt::Display for VarActionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            VarActionType::Replace => write!(f, "replace"),
+            VarActionType::Append => write!(f, "append"),
+            VarActionType::Prepend => write!(f, "prepend"),
+        }
+    }
+}
+
+impl std::str::FromStr for VarActionType {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "replace" => std::result::Result::Ok(VarActionType::Replace),
+            "append" => std::result::Result::Ok(VarActionType::Append),
+            "prepend" => std::result::Result::Ok(VarActionType::Prepend),
             _ => std::result::Result::Err(format!("Value not valid: {}", s)),
         }
     }
