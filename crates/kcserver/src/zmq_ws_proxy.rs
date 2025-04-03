@@ -46,6 +46,7 @@ pub struct ZmqWsProxy {
     pub exit_event: Arc<Event>,
     pub disconnected_event: Arc<Event>,
     pub state: Arc<RwLock<KernelState>>,
+    pub pending_iopub_messages: Vec<ZmqMessage>,
 }
 
 impl ZmqWsProxy {
@@ -104,6 +105,7 @@ impl ZmqWsProxy {
             state,
             session_id: session_id.clone(),
             closed: false,
+            pending_iopub_messages: Vec::new(),
         }
     }
 
@@ -290,16 +292,41 @@ impl ZmqWsProxy {
                         },
                     }
                 },
+                // While waiting for the kernel info reply, we need to discard
+                // the iopub busy/idle status messages that are emitted while
+                // processing the kernel info request; since the client did not
+                // initiate the request and can't see the reply, it may be
+                // confused by the status messages. All other outgoing iopub
+                // messages are queued and delivered later.
                 iopub_msg = self.iopub_socket.as_mut().unwrap().recv() => {
                     match iopub_msg {
                         Ok(msg) => {
-                            log::trace!("[session {}] Ignoring iopub message {:?}", session_id, msg);
+                            // Parse into a Jupyter message
+                            let wire_message = WireMessage::from_zmq(self.session_id.clone(), JupyterChannel::IOPub, msg.clone());
+                            let jupyter_message = wire_message.to_jupyter(JupyterChannel::IOPub)?;
+                            if let Some(ref parent_header) =  jupyter_message.parent_header {
+                                // If the message's parent header matches the msg_id we
+                                // are waiting for, we need to check if it is a status
+                                // message. If it is, we need to discard it.
+                                if parent_header.msg_id == msg_id {
+                                    if let JupyterMsg::Status(_) = JupyterMsg::from(jupyter_message.clone()) {
+                                            log::trace!(
+                                                "[session {}] Received kernel status message",
+                                                session_id,
+                                            );
+                                            continue;
+                                        }
+                                }
+                            };
+
+                            // If we got here, save the message for later delivery.
+                            self.pending_iopub_messages.push(msg);
                         },
                         Err(e) => {
                             return Err(anyhow::anyhow!("Failed to receive message from iopub socket: {}", e));
-                        },
+                        }
                     }
-                },
+                }
             }
         }
     }
@@ -310,6 +337,26 @@ impl ZmqWsProxy {
             "[session {}] Starting ZeroMQ-WebSocket proxy",
             self.connection.session_id
         );
+
+        // Start by flushing the queue of pending iopub messages and sending
+        // them to the WebSocket.
+        let pending_messages = self.pending_iopub_messages.drain(..).collect::<Vec<_>>();
+        if !pending_messages.is_empty() {
+            log::debug!(
+                "[session {}] Forwarding {} pending iopub messages to WebSocket",
+                session_id,
+                pending_messages.len()
+            );
+        }
+        for message in pending_messages {
+            if let Err(err) = self.forward_zmq(JupyterChannel::IOPub, message).await {
+                log::error!(
+                    "[session {}] Failed to forward pending iopub message to WebSocket: {}",
+                    session_id,
+                    err
+                );
+            }
+        }
 
         // Create monitors for each socket.
         //
