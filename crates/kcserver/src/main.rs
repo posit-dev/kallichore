@@ -242,7 +242,9 @@ async fn main() {
 
     // If a connection file path was specified, write the connection details to it
     if let Some(connection_file_path) = &args.connection_file {
-        if let Err(e) = write_server_connection_file(connection_file_path, &addr, &token) {
+        if let Err(e) =
+            write_server_connection_file(connection_file_path, port, &addr, &token, &args.log_file)
+        {
             log::error!("Failed to write connection file: {}", e);
             std::process::exit(1);
         }
@@ -257,8 +259,10 @@ async fn main() {
 /// Write server connection details to a file
 fn write_server_connection_file(
     path: &str,
+    port: u16,
     addr: &str,
     token: &Option<String>,
+    log_file: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use serde::{Deserialize, Serialize};
     use std::fs::File;
@@ -266,16 +270,42 @@ fn write_server_connection_file(
 
     #[derive(Serialize, Deserialize)]
     struct ServerConnectionInfo {
-        url: String,
-        pid: u32,
-        token: Option<String>,
+        /// The port the server is listening on
+        port: u16,
+
+        /// The full API basepath, starting with 'http'
+        base_path: String,
+
+        /// The path to the server executable (this process)
+        server_path: String,
+
+        /// The PID of the server process
+        server_pid: u32,
+
+        /// The authentication token, if any
+        bearer_token: Option<String>,
+
+        /// The path to the log file, if any
+        log_path: Option<String>,
     }
 
-    // Create the connection info
+    // Get the server path
+    let server_path = std::env::current_exe()?
+        .to_str()
+        .ok_or("Failed to convert server path to string")?
+        .to_string();
+
+    // Get the server PID
+    let server_pid = std::process::id();
+
+    // Create the connection info struct
     let connection_info = ServerConnectionInfo {
-        url: format!("http://{}", addr),
-        pid: std::process::id(),
-        token: token.clone(),
+        port,
+        base_path: format!("http://{}", addr),
+        server_path,
+        server_pid,
+        bearer_token: token.clone(),
+        log_path: log_file.clone(),
     };
 
     // Serialize to JSON
