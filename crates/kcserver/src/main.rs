@@ -38,7 +38,7 @@ mod zmq_ws_proxy;
 #[command(version, about, long_about = None)]
 struct Args {
     /// The port to bind the server to
-    #[arg(short, long, default_value_t = 8182)]
+    #[arg(short, long, default_value_t = 0)]
     port: u16,
 
     /// The path to a file containing the authentication token, or the special
@@ -51,6 +51,11 @@ struct Args {
     /// file in addition to standard streams.
     #[arg(long)]
     log_file: Option<String>,
+
+    /// The path to a connection file. If specified, the server will select a
+    /// port and authentication token itself, and write them to the given file.
+    #[arg(long)]
+    connection_file: Option<String>,
 
     /// The number of hours of idle time before the server shuts down. The
     /// server is considered idle if all sessions are idle and no session is
@@ -147,10 +152,23 @@ async fn main() {
     }
 
     // Check if the port is already in use
-    if !portpicker::is_free_tcp(args.port) {
-        log::error!("Port {} is already in use", args.port);
-        std::process::exit(1);
-    }
+    let port = match args.port {
+        0 => {
+            // If the port is 0, pick a random port
+            let port = portpicker::pick_unused_port().unwrap_or(0);
+            println!("Using random port: {}", port);
+            port
+        }
+        _ => {
+            // If the port is not 0, check if it's free
+            if !portpicker::is_free_tcp(args.port) {
+                log::error!("Port {} is already in use", args.port);
+                std::process::exit(1);
+            }
+            println!("Using specified port: {}", args.port);
+            args.port
+        }
+    };
 
     // See if a token file was provided
     let token = match args.token {
@@ -219,9 +237,83 @@ async fn main() {
     );
 
     // Start the server
-    let addr = format!("127.0.0.1:{}", args.port);
+    let addr = format!("127.0.0.1:{}", port);
     println!("Listening at {}", addr);
 
+    // If a connection file path was specified, write the connection details to it
+    if let Some(connection_file_path) = &args.connection_file {
+        if let Err(e) =
+            write_server_connection_file(connection_file_path, port, &addr, &token, &args.log_file)
+        {
+            log::error!("Failed to write connection file: {}", e);
+            std::process::exit(1);
+        }
+        log::info!("Wrote connection details to {}", connection_file_path);
+    }
+
     log::info!("Starting Kallichore server at {}", addr);
+
     server::create(&addr, token, args.idle_shutdown_hours).await;
+}
+
+/// Write server connection details to a file
+fn write_server_connection_file(
+    path: &str,
+    port: u16,
+    addr: &str,
+    token: &Option<String>,
+    log_file: &Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use serde::{Deserialize, Serialize};
+    use std::fs::File;
+    use std::io::Write;
+
+    #[derive(Serialize, Deserialize)]
+    struct ServerConnectionInfo {
+        /// The port the server is listening on
+        port: u16,
+
+        /// The full API basepath, starting with 'http'
+        base_path: String,
+
+        /// The path to the server executable (this process)
+        server_path: String,
+
+        /// The PID of the server process
+        server_pid: u32,
+
+        /// The authentication token, if any
+        bearer_token: Option<String>,
+
+        /// The path to the log file, if any
+        log_path: Option<String>,
+    }
+
+    // Get the server path
+    let server_path = std::env::current_exe()?
+        .to_str()
+        .ok_or("Failed to convert server path to string")?
+        .to_string();
+
+    // Get the server PID
+    let server_pid = std::process::id();
+
+    // Create the connection info struct
+    let connection_info = ServerConnectionInfo {
+        port,
+        base_path: format!("http://{}", addr),
+        server_path,
+        server_pid,
+        bearer_token: token.clone(),
+        log_path: log_file.clone(),
+    };
+
+    // Serialize to JSON
+    let json = serde_json::to_string_pretty(&connection_info)?;
+
+    // Write to file
+    let mut file = File::create(path)?;
+    file.write_all(json.as_bytes())?;
+
+    Ok(())
 }
