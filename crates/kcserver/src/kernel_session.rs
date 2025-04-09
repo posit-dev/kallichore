@@ -26,8 +26,9 @@ use rand::Rng;
 use std::iter;
 use sysinfo::{Pid, Signal, System};
 use tokio::io::{AsyncBufReadExt, AsyncRead};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
+use crate::registration_socket::HandshakeResult;
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
     kernel_state::KernelState, registration_file::RegistrationFile,
@@ -153,16 +154,39 @@ impl KernelSession {
 
         // Write the appropriate connection or registration file and get its path for substitution
         // in the kernel arguments
-        let (connection_file_path, registration_port) = if jep66_enabled {
-            // For JEP 66 handshaking, pick a free port for the registration socket to use
-            let port = portpicker::pick_unused_port().ok_or_else(|| StartupError {
-                exit_code: None,
-                output: None,
-                error: KSError::ProcessStartFailed(anyhow::anyhow!(
-                    "Could not find a free port for the registration socket"
-                ))
-                .to_json(None),
-            })?;
+        let (connection_file_path, registration_socket, handshake_result_rx) = if jep66_enabled {
+            log::info!(
+                "[session {}] Kernel supports JEP 66 (protocol version {}) - creating registration socket for handshake",
+                self.connection.session_id,
+                self.connection.protocol_version
+            );
+
+            let (handshake_result_tx, handshake_result_rx) = broadcast::channel(32);
+
+            // For JEP 66 handshaking, start a registration socket that immediately binds
+            // to an OS selected port
+            let registration_socket = match RegistrationSocket::new(handshake_result_tx).await {
+                Ok(socket) => socket,
+                Err(e) => {
+                    return Err(StartupError {
+                        exit_code: None,
+                        output: None,
+                        error: KSError::HandshakeFailed(
+                            self.connection.session_id.clone(),
+                            anyhow::anyhow!("Failed to create registration socket: {e}"),
+                        )
+                        .to_json(None),
+                    })
+                }
+            };
+
+            let registration_port = registration_socket.port();
+
+            log::debug!(
+                "Started registration socket for session {} with port {}",
+                self.connection.session_id.clone(),
+                registration_port
+            );
 
             // Create the registration file name and path
             let mut registration_file_name = std::ffi::OsString::from("registration_");
@@ -171,8 +195,11 @@ impl KernelSession {
             let registration_path = std::env::temp_dir().join(registration_file_name);
 
             // Create the registration file
-            let registration_file =
-                RegistrationFile::new("127.0.0.1".to_string(), port, self.connection.key.clone());
+            let registration_file = RegistrationFile::new(
+                "127.0.0.1".to_string(),
+                registration_port,
+                self.connection.key.clone(),
+            );
             registration_file
                 .to_file(registration_path.clone())
                 .map_err(|e| StartupError {
@@ -189,10 +216,14 @@ impl KernelSession {
                 "Wrote registration file for session {} at {:?} with port {}",
                 self.connection.session_id.clone(),
                 registration_path,
-                port
+                registration_port
             );
 
-            (registration_path, Some(port))
+            (
+                registration_path,
+                Some(registration_socket),
+                Some(handshake_result_rx),
+            )
         } else {
             // For traditional kernels, generate a new connection file with allocated ports first
             let connection_file = ConnectionFile::generate(
@@ -235,7 +266,7 @@ impl KernelSession {
                 self.connection.session_id.clone(),
                 connection_path
             );
-            (connection_path, None)
+            (connection_path, None, None)
         };
 
         // Substitute the connection file path in the arguments
@@ -410,10 +441,13 @@ impl KernelSession {
 
         if jep66_enabled {
             log::info!(
-                "[session {}] Kernel supports JEP 66 (protocol version {}) - waiting for handshake",
-                self.connection.session_id,
-                self.connection.protocol_version
+                "[session {}] Waiting for JEP 66 handshake",
+                self.connection.session_id
             );
+
+            // We unconditionally created these earlier in the other `jep66_enabled` path
+            let registration_socket = registration_socket.unwrap();
+            let handshake_result_rx = handshake_result_rx.unwrap();
 
             // Get the connection timeout from the model, defaulting to 30 seconds
             let connection_timeout = match self.model.connection_timeout {
@@ -421,9 +455,9 @@ impl KernelSession {
                 None => 30,
             };
 
-            // Wait for the handshake to complete using the port we already chose
+            // Wait for the handshake to complete
             match self
-                .wait_for_handshake(connection_timeout, registration_port.unwrap())
+                .wait_for_handshake(registration_socket, handshake_result_rx, connection_timeout)
                 .await
             {
                 Ok(connection_file) => {
@@ -1102,27 +1136,18 @@ impl KernelSession {
      * Wait for a handshake to be completed. This is used when starting a kernel that supports
      * JEP 66 handshaking.
      *
+     * @param registration_socket The socket to use for the handshake procedure
+     * @param handshake_result_rx The channel to receive the handshake result over
      * @param timeout_secs Time to wait for the handshake in seconds
-     * @param port The port to use for the registration socket (already chosen earlier)
      */
     pub async fn wait_for_handshake(
         &self,
+        registration_socket: RegistrationSocket,
+        mut handshake_result_rx: broadcast::Receiver<HandshakeResult>,
         timeout_secs: u64,
-        port: u16,
     ) -> Result<ConnectionFile, KSError> {
-        // Create a new registration socket for this session with the already chosen port
-        let mut registration_socket = RegistrationSocket::new(port, self.connection.clone());
-
-        // Start the registration socket
-        if let Err(e) = registration_socket.start().await {
-            return Err(KSError::HandshakeFailed(
-                self.connection.session_id.clone(),
-                anyhow::anyhow!("Failed to start registration socket: {}", e),
-            ));
-        }
-
-        // Get a receiver for handshake results
-        let mut handshake_rx = registration_socket.get_result_receiver();
+        // Start listening on the registration socket in a separate thread
+        registration_socket.listen(self.connection.clone());
 
         // Create a channel to listen for the handshake completed event
         let (handshake_tx, result_rx) = async_channel::bounded::<ConnectionFile>(1);
@@ -1135,7 +1160,7 @@ impl KernelSession {
         };
 
         tokio::spawn(async move {
-            if let Ok(result) = handshake_rx.recv().await {
+            if let Ok(result) = handshake_result_rx.recv().await {
                 if result.status == HandshakeStatus::Ok {
                     // Create connection info from the handshake request
                     let info = ConnectionInfo {
@@ -1229,9 +1254,6 @@ impl KernelSession {
                 ))
             }
         };
-
-        // Stop the registration socket
-        registration_socket.stop().await;
 
         result
     }

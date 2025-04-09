@@ -14,7 +14,7 @@ use kcshared::{
     handshake_protocol::{HandshakeReply, HandshakeRequest, HandshakeStatus},
     jupyter_message::{JupyterMessage, JupyterMessageHeader},
 };
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::collections::HashMap;
 use tokio::sync::broadcast;
 use zeromq::{RepSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
@@ -30,41 +30,49 @@ pub struct HandshakeResult {
 
 /// Manages a registration socket for JEP 66 handshaking protocol
 pub struct RegistrationSocket {
-    /// The port on which the registration socket is listening
-    pub port: u16,
-
     /// The ZeroMQ Reply socket for the registration socket
-    socket: Option<RepSocket>,
+    socket: RepSocket,
+
+    /// The port that the `socket` is bound to
+    port: u16,
 
     /// Channel for broadcasting handshake results
-    result_tx: broadcast::Sender<HandshakeResult>,
-
-    /// Flag indicating if the socket is running
-    running: bool,
-
-    /// The connection information for this socket
-    connection: KernelConnection,
+    handshake_result_tx: broadcast::Sender<HandshakeResult>,
 }
 
 impl RegistrationSocket {
-    /// Create a new registration socket with a required port and connection information
-    pub fn new(port: u16, connection: KernelConnection) -> Self {
-        let (result_tx, _) = broadcast::channel(32);
-        Self {
+    /// Create a new registration socket
+    ///
+    /// It is bound to a port immediately on creation. Uses an initial port of `0` to
+    /// allow the OS to pick the port, avoiding race conditions.
+    pub async fn new(handshake_result_tx: broadcast::Sender<HandshakeResult>) -> Result<Self> {
+        let address = "tcp://127.0.0.1:0";
+
+        let mut socket = RepSocket::new();
+
+        // Save the port that the OS binds to
+        let port = match socket.bind(address).await? {
+            zeromq::Endpoint::Tcp(_, port) => port,
+            _ => unreachable!("Address is always TCP"),
+        };
+
+        Ok(Self {
+            socket,
             port,
-            socket: None,
-            result_tx,
-            running: false,
-            connection,
-        }
+            handshake_result_tx,
+        })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     /// Handle a handshake request from a kernel
     async fn handle_handshake_request(
         socket: &mut RepSocket,
-        result_tx: &broadcast::Sender<HandshakeResult>,
+        handshake_result_tx: broadcast::Sender<HandshakeResult>,
         request_data: ZmqMessage, // Updated type to match expected
-        connection: &KernelConnection,
+        connection: KernelConnection,
     ) {
         info!("Received handshake request from kernel");
         let wire_message = WireMessage::from_zmq(
@@ -77,7 +85,7 @@ impl RegistrationSocket {
                 JupyterMsg::HandshakeRequest(request) => {
                     Self::send_successful_handshake(
                         socket,
-                        result_tx,
+                        handshake_result_tx,
                         jupyter_message,
                         request,
                         connection,
@@ -109,16 +117,16 @@ impl RegistrationSocket {
 
     async fn send_successful_handshake(
         socket: &mut RepSocket,
-        result_tx: &broadcast::Sender<HandshakeResult>,
+        handshake_result_tx: broadcast::Sender<HandshakeResult>,
         message: JupyterMessage,
         request: HandshakeRequest,
-        connection: &KernelConnection,
+        connection: KernelConnection,
     ) {
         let result = HandshakeResult {
             request: request.clone(),
             status: HandshakeStatus::Ok,
         };
-        if let Err(e) = result_tx.send(result) {
+        if let Err(e) = handshake_result_tx.send(result) {
             warn!("Failed to send handshake result internally: {}", e);
         }
 
@@ -169,51 +177,23 @@ impl RegistrationSocket {
     }
 
     /// Start listening on the registration socket
-    pub async fn start(&mut self) -> Result<()> {
-        if self.running {
-            return Ok(());
-        }
-
-        // Create and bind the ZeroMQ REP socket
-        let mut socket = RepSocket::new();
-        let address = format!("tcp://127.0.0.1:{}", self.port);
-        socket.bind(&address).await?;
-
-        // Store the socket
-        self.socket = Some(socket);
-
-        // Set the running flag
-        self.running = true;
-
-        // Create a new broadcast channel for receiving handshake results
-        let (result_tx, _) = broadcast::channel(32);
-
-        // Update our broadcast sender
-        self.result_tx = result_tx.clone();
-
-        // Take ownership of the socket to move into the task
-        let socket = self.socket.take().unwrap();
-        let connection = self.connection.clone();
-
-        debug!(
-            "[session {}] Started JEP 66 registration REP socket on port {}",
-            connection.session_id, self.port
-        );
+    ///
+    /// Consumes `self`, avoiding the possibility of ever starting the same socket twice.
+    pub fn listen(self, connection: KernelConnection) {
+        // Take ownership of `socket` and `handshake_result_tx` to move into the task
+        let mut socket = self.socket;
+        let handshake_result_tx = self.handshake_result_tx;
 
         // Spawn a task to handle incoming registration requests from kernels
-        // Remove unused variable
-        let connection_clone = connection.clone();
         tokio::spawn(async move {
-            let mut socket = socket;
-
             // Process one message only - in JEP 66, we receive a single handshake and then we can close
             match socket.recv().await {
                 Ok(request_data) => {
                     Self::handle_handshake_request(
                         &mut socket,
-                        &result_tx,
+                        handshake_result_tx,
                         request_data,
-                        &connection_clone,
+                        connection,
                     )
                     .await;
                 }
@@ -228,21 +208,5 @@ impl RegistrationSocket {
             // Close the socket after handling the handshake (or on error)
             socket.close().await;
         });
-
-        Ok(())
-    }
-
-    /// Stop the registration socket
-    pub async fn stop(&mut self) {
-        self.running = false;
-        if let Some(socket) = self.socket.take() {
-            socket.close().await;
-        }
-    }
-
-    /// Get a receiver for handshake results
-    pub fn get_result_receiver(&self) -> broadcast::Receiver<HandshakeResult> {
-        // Create a new receiver from our broadcast channel
-        self.result_tx.subscribe()
     }
 }
