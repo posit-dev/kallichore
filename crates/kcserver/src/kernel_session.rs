@@ -26,7 +26,7 @@ use rand::Rng;
 use std::iter;
 use sysinfo::{Pid, Signal, System};
 use tokio::io::{AsyncBufReadExt, AsyncRead};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{oneshot, RwLock};
 
 use crate::registration_socket::HandshakeResult;
 use crate::{
@@ -161,7 +161,7 @@ impl KernelSession {
                 self.connection.protocol_version
             );
 
-            let (handshake_result_tx, handshake_result_rx) = broadcast::channel(32);
+            let (handshake_result_tx, handshake_result_rx) = oneshot::channel();
 
             // For JEP 66 handshaking, start a registration socket that immediately binds
             // to an OS selected port
@@ -1143,7 +1143,7 @@ impl KernelSession {
     pub async fn wait_for_handshake(
         &self,
         registration_socket: RegistrationSocket,
-        mut handshake_result_rx: broadcast::Receiver<HandshakeResult>,
+        handshake_result_rx: oneshot::Receiver<HandshakeResult>,
         timeout_secs: u64,
     ) -> Result<ConnectionFile, KSError> {
         // Start listening on the registration socket in a separate thread
@@ -1160,7 +1160,7 @@ impl KernelSession {
         };
 
         tokio::spawn(async move {
-            if let Ok(result) = handshake_result_rx.recv().await {
+            if let Ok(result) = handshake_result_rx.await {
                 if result.status == HandshakeStatus::Ok {
                     // Create connection info from the handshake request
                     let info = ConnectionInfo {

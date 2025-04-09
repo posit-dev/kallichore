@@ -16,7 +16,7 @@ use kcshared::{
 };
 use log::{info, warn};
 use std::collections::HashMap;
-use tokio::sync::broadcast;
+use tokio::sync::oneshot;
 use zeromq::{RepSocket, Socket, SocketRecv, SocketSend, ZmqMessage};
 
 /// Return value from a handshake negotiation
@@ -37,7 +37,7 @@ pub struct RegistrationSocket {
     port: u16,
 
     /// Channel for broadcasting handshake results
-    handshake_result_tx: broadcast::Sender<HandshakeResult>,
+    handshake_result_tx: oneshot::Sender<HandshakeResult>,
 }
 
 impl RegistrationSocket {
@@ -45,7 +45,7 @@ impl RegistrationSocket {
     ///
     /// It is bound to a port immediately on creation. Uses an initial port of `0` to
     /// allow the OS to pick the port, avoiding race conditions.
-    pub async fn new(handshake_result_tx: broadcast::Sender<HandshakeResult>) -> Result<Self> {
+    pub async fn new(handshake_result_tx: oneshot::Sender<HandshakeResult>) -> Result<Self> {
         let address = "tcp://127.0.0.1:0";
 
         let mut socket = RepSocket::new();
@@ -70,7 +70,7 @@ impl RegistrationSocket {
     /// Handle a handshake request from a kernel
     async fn handle_handshake_request(
         socket: &mut RepSocket,
-        handshake_result_tx: broadcast::Sender<HandshakeResult>,
+        handshake_result_tx: oneshot::Sender<HandshakeResult>,
         request_data: ZmqMessage, // Updated type to match expected
         connection: KernelConnection,
     ) {
@@ -117,7 +117,7 @@ impl RegistrationSocket {
 
     async fn send_successful_handshake(
         socket: &mut RepSocket,
-        handshake_result_tx: broadcast::Sender<HandshakeResult>,
+        handshake_result_tx: oneshot::Sender<HandshakeResult>,
         message: JupyterMessage,
         request: HandshakeRequest,
         connection: KernelConnection,
@@ -126,8 +126,8 @@ impl RegistrationSocket {
             request: request.clone(),
             status: HandshakeStatus::Ok,
         };
-        if let Err(e) = handshake_result_tx.send(result) {
-            warn!("Failed to send handshake result internally: {}", e);
+        if let Err(_) = handshake_result_tx.send(result) {
+            warn!("Failed to send handshake result internally");
         }
 
         // Create a successful handshake reply
