@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2025-03-31T13:50:25.860007-07:00[America/Los_Angeles]
+- Build date: 2025-04-30T12:52:59.570614-07:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -63,6 +63,7 @@ To run a client, follow one of the following simple steps:
 
 ```
 cargo run --example client ChannelsWebsocket
+cargo run --example client ClientHeartbeat
 cargo run --example client ConnectionInfo
 cargo run --example client DeleteSession
 cargo run --example client GetSession
@@ -108,6 +109,7 @@ Method | HTTP request | Description
 ------------- | ------------- | -------------
 [**adopt-session**](docs/default_api.md#adopt-session) | **PUT** /sessions/{session_id}/adopt | Adopt an existing session
 [**channels-websocket**](docs/default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+[**client-heartbeat**](docs/default_api.md#client-heartbeat) | **POST** /client_heartbeat | Notify the server that a client is connected
 [**connection-info**](docs/default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 [**delete-session**](docs/default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 [**get-session**](docs/default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details

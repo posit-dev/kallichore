@@ -56,6 +56,12 @@ pub enum ChannelsWebsocketResponse {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum ClientHeartbeatResponse {
+    /// Heartbeat received
+    HeartbeatReceived(serde_json::Value),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub enum ConnectionInfoResponse {
     /// Connection Info
@@ -207,6 +213,9 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Notify the server that a client is connected
+    async fn client_heartbeat(&self, context: &C) -> Result<ClientHeartbeatResponse, ApiError>;
+
     /// Get Jupyter connection information for the session
     async fn connection_info(
         &self,
@@ -308,6 +317,9 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Notify the server that a client is connected
+    async fn client_heartbeat(&self) -> Result<ClientHeartbeatResponse, ApiError>;
+
     /// Get Jupyter connection information for the session
     async fn connection_info(&self, session_id: String)
         -> Result<ConnectionInfoResponse, ApiError>;
@@ -406,6 +418,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     ) -> Result<ChannelsWebsocketResponse, ApiError> {
         let context = self.context().clone();
         self.api().channels_websocket(session_id, &context).await
+    }
+
+    /// Notify the server that a client is connected
+    async fn client_heartbeat(&self) -> Result<ClientHeartbeatResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().client_heartbeat(&context).await
     }
 
     /// Get Jupyter connection information for the session

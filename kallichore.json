@@ -583,6 +583,23 @@
           }
         }
       }
+    },
+    "/client_heartbeat": {
+      "post": {
+        "operationId": "client-heartbeat",
+        "summary": "Notify the server that a client is connected",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Heartbeat received",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

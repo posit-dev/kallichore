@@ -100,10 +100,10 @@ impl<C> Server<C> {
 
 use kallichore_api::server::MakeService;
 use kallichore_api::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ConnectionInfoResponse,
-    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
-    ListSessionsResponse, NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ClientHeartbeatResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
+    ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -138,6 +138,15 @@ where
         info!(
             "channels_websocket(\"{}\") - X-Span-ID: {:?}",
             session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
+
+    /// Notify the server that a client is connected
+    async fn client_heartbeat(&self, context: &C) -> Result<ClientHeartbeatResponse, ApiError> {
+        info!(
+            "client_heartbeat() - X-Span-ID: {:?}",
             context.get().0.clone()
         );
         Err(ApiError("Generic failure".into()))

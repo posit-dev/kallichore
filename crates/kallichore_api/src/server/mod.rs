@@ -29,10 +29,10 @@ pub use crate::context;
 type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
 
 use crate::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ConnectionInfoResponse,
-    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
-    ListSessionsResponse, NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ClientHeartbeatResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
+    ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 mod paths {
@@ -40,6 +40,7 @@ mod paths {
 
     lazy_static! {
         pub static ref GLOBAL_REGEX_SET: regex::RegexSet = regex::RegexSet::new(vec![
+            r"^/client_heartbeat$",
             r"^/sessions$",
             r"^/sessions/(?P<session_id>[^/?#]*)$",
             r"^/sessions/(?P<session_id>[^/?#]*)/adopt$",
@@ -54,65 +55,66 @@ mod paths {
         ])
         .expect("Unable to create global regex set");
     }
-    pub(crate) static ID_SESSIONS: usize = 0;
-    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 1;
+    pub(crate) static ID_CLIENT_HEARTBEAT: usize = 0;
+    pub(crate) static ID_SESSIONS: usize = 1;
+    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 2;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_ADOPT: usize = 2;
+    pub(crate) static ID_SESSIONS_SESSION_ID_ADOPT: usize = 3;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_ADOPT: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/adopt$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_ADOPT");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 3;
+    pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 4;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_CHANNELS: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/channels$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CHANNELS");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_CONNECTION_INFO: usize = 4;
+    pub(crate) static ID_SESSIONS_SESSION_ID_CONNECTION_INFO: usize = 5;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_CONNECTION_INFO: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/connection_info$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CONNECTION_INFO");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 5;
+    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 6;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_INTERRUPT: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_INTERRUPT");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 6;
+    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 7;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_KILL: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/kill$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_KILL");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 7;
+    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 8;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_RESTART: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/restart$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_RESTART");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 8;
+    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 9;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_START: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/start$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_START");
     }
-    pub(crate) static ID_SHUTDOWN: usize = 9;
-    pub(crate) static ID_STATUS: usize = 10;
+    pub(crate) static ID_SHUTDOWN: usize = 10;
+    pub(crate) static ID_STATUS: usize = 11;
 }
 
 pub struct MakeService<T, C>
@@ -445,6 +447,47 @@ where
                             *response.body_mut() = Body::from("An internal error occurred");
                         }
                     } */
+
+                    Ok(response)
+                }
+
+                // ClientHeartbeat - POST /client_heartbeat
+                hyper::Method::POST if path.matched(paths::ID_CLIENT_HEARTBEAT) => {
+                    let result = api_impl.client_heartbeat(&context).await;
+                    let mut response = Response::new(Body::empty());
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            ClientHeartbeatResponse::HeartbeatReceived(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for CLIENT_HEARTBEAT_HEARTBEAT_RECEIVED"));
+                                let body_content = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = Body::from(body_content);
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = Body::from("An internal error occurred");
+                        }
+                    }
 
                     Ok(response)
                 }
@@ -1310,6 +1353,7 @@ where
                     Ok(response)
                 }
 
+                _ if path.matched(paths::ID_CLIENT_HEARTBEAT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_ADOPT) => method_not_allowed(),
@@ -1346,6 +1390,10 @@ impl<T> RequestParser<T> for ApiRequestParser {
             // ChannelsWebsocket - GET /sessions/{session_id}/channels
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                 Some("ChannelsWebsocket")
+            }
+            // ClientHeartbeat - POST /client_heartbeat
+            hyper::Method::POST if path.matched(paths::ID_CLIENT_HEARTBEAT) => {
+                Some("ClientHeartbeat")
             }
             // ConnectionInfo - GET /sessions/{session_id}/connection_info
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CONNECTION_INFO) => {
