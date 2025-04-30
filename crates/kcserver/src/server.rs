@@ -1095,10 +1095,15 @@ where
         Ok(response)
     }
 
-    async fn client_heartbeat(&self, _context: &C) -> Result<ClientHeartbeatResponse, ApiError> {
+    async fn client_heartbeat(&self, context: &C) -> Result<ClientHeartbeatResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "client_heartbeat - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
         match self.idle_nudge_tx.send(()).await {
             Ok(_) => {
-                log::debug!("Client heartbeat sent");
+                log::trace!("Client heartbeat processed successfully");
             }
             Err(e) => {
                 // This is a fire-and-forget operation, so we don't need to
