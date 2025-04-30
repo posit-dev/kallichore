@@ -379,6 +379,17 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Error
       summary: Get server status and information
+  /client_heartbeat:
+    post:
+      operationId: client-heartbeat
+      parameters: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Heartbeat received
+      summary: Notify the server that a client is connected
 components:
   responses:
     UnauthorizedError:
