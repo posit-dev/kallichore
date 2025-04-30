@@ -43,7 +43,7 @@ use tokio_tungstenite::WebSocketStream;
 
 use kallichore_api::models::ConnectionInfo;
 use kallichore_api::server::MakeService;
-use kallichore_api::{Api, ListSessionsResponse};
+use kallichore_api::{Api, ClientHeartbeatResponse, ListSessionsResponse};
 use std::error::Error;
 use swagger::ApiError;
 
@@ -1093,6 +1093,20 @@ where
             .headers_mut()
             .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
         Ok(response)
+    }
+
+    async fn client_heartbeat(&self, _context: &C) -> Result<ClientHeartbeatResponse, ApiError> {
+        match self.idle_nudge_tx.send(()).await {
+            Ok(_) => {
+                log::debug!("Client heartbeat sent");
+            }
+            Err(e) => {
+                log::error!("Failed to send client heartbeat: {}", e);
+            }
+        }
+        Ok(ClientHeartbeatResponse::HeartbeatReceived(
+            serde_json::Value::Null,
+        ))
     }
 
     async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {
