@@ -1101,6 +1101,8 @@ where
                 log::debug!("Client heartbeat sent");
             }
             Err(e) => {
+                // This is a fire-and-forget operation, so we don't need to
+                // return an error to the client.
                 log::error!("Failed to send client heartbeat: {}", e);
             }
         }
