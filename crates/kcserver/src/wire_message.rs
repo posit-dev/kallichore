@@ -81,6 +81,14 @@ impl WireMessage {
             parts.insert(0, Vec::new());
         }
 
+        // Add the buffers
+        // We do this here because we need to compute the HMAC signature first
+        // https://jupyter-client.readthedocs.io/en/latest/messaging.html#the-wire-protocol
+        for buf_str in msg.buffers.iter() {
+            let decoded_buf = base64::engine::general_purpose::STANDARD.decode(buf_str)?;
+            parts.push(decoded_buf);
+        }
+
         Ok(WireMessage {
             session_id: connection.session_id.clone(),
             channel: msg.channel,
