@@ -89,6 +89,15 @@ pub enum DeleteSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum GetServerConfigurationResponse {
+    /// The current server configuration
+    TheCurrentServerConfiguration(models::ServerConfiguration),
+    /// Failed to get configuration
+    FailedToGetConfiguration(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum GetSessionResponse {
     /// Session details
     SessionDetails(models::ActiveSession),
@@ -165,6 +174,15 @@ pub enum ServerStatusResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum SetServerConfigurationResponse {
+    /// Configuration updated
+    ConfigurationUpdated(serde_json::Value),
+    /// Error
+    Error(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum ShutdownServerResponse {
     /// Shutting down
     ShuttingDown(serde_json::Value),
@@ -230,6 +248,12 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<DeleteSessionResponse, ApiError>;
 
+    /// Get the server configuration
+    async fn get_server_configuration(
+        &self,
+        context: &C,
+    ) -> Result<GetServerConfigurationResponse, ApiError>;
+
     /// Get session details
     async fn get_session(
         &self,
@@ -271,6 +295,13 @@ pub trait Api<C: Send + Sync> {
 
     /// Get server status and information
     async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError>;
+
+    /// Change the server configuration
+    async fn set_server_configuration(
+        &self,
+        server_configuration: models::ServerConfiguration,
+        context: &C,
+    ) -> Result<SetServerConfigurationResponse, ApiError>;
 
     /// Shut down all sessions and the server itself
     async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError>;
@@ -327,6 +358,9 @@ pub trait ApiNoContext<C: Send + Sync> {
     /// Delete session
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
 
+    /// Get the server configuration
+    async fn get_server_configuration(&self) -> Result<GetServerConfigurationResponse, ApiError>;
+
     /// Get session details
     async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError>;
 
@@ -366,6 +400,12 @@ pub trait ApiNoContext<C: Send + Sync> {
 
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError>;
+
+    /// Change the server configuration
+    async fn set_server_configuration(
+        &self,
+        server_configuration: models::ServerConfiguration,
+    ) -> Result<SetServerConfigurationResponse, ApiError>;
 
     /// Shut down all sessions and the server itself
     async fn shutdown_server(&self) -> Result<ShutdownServerResponse, ApiError>;
@@ -441,6 +481,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().delete_session(session_id, &context).await
     }
 
+    /// Get the server configuration
+    async fn get_server_configuration(&self) -> Result<GetServerConfigurationResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().get_server_configuration(&context).await
+    }
+
     /// Get session details
     async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError> {
         let context = self.context().clone();
@@ -493,6 +539,17 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError> {
         let context = self.context().clone();
         self.api().server_status(&context).await
+    }
+
+    /// Change the server configuration
+    async fn set_server_configuration(
+        &self,
+        server_configuration: models::ServerConfiguration,
+    ) -> Result<SetServerConfigurationResponse, ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .set_server_configuration(server_configuration, &context)
+            .await
     }
 
     /// Shut down all sessions and the server itself

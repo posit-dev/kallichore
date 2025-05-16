@@ -390,6 +390,46 @@ paths:
               schema: {}
           description: Heartbeat received
       summary: Notify the server that a client is connected
+  /server_configuration:
+    get:
+      operationId: get-server-configuration
+      parameters: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/serverConfiguration'
+          description: The current server configuration
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Failed to get configuration
+      summary: Get the server configuration
+    post:
+      operationId: set-server-configuration
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/serverConfiguration'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Configuration updated
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Error
+      summary: Change the server configuration
 components:
   responses:
     UnauthorizedError:
@@ -818,6 +858,25 @@ components:
       required:
       - sessions
       - total
+      type: object
+    serverConfiguration:
+      example:
+        log_level: trace
+        idle_shutdown_hours: 0
+      properties:
+        idle_shutdown_hours:
+          description: The number of hours the server will wait before shutting down
+            idle sessions (-1 if idle shutdown is disabled)
+          type: integer
+        log_level:
+          description: The current log level
+          enum:
+          - trace
+          - debug
+          - info
+          - warn
+          - error
+          type: string
       type: object
     new_session_200_response:
       example:

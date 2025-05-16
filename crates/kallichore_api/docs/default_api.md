@@ -9,6 +9,7 @@ Method | HTTP request | Description
 **client-heartbeat**](default_api.md#client-heartbeat) | **POST** /client_heartbeat | Notify the server that a client is connected
 **connection-info**](default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 **delete-session**](default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
+**get-server-configuration**](default_api.md#get-server-configuration) | **GET** /server_configuration | Get the server configuration
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
 **interrupt-session**](default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
 **kill-session**](default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
@@ -16,6 +17,7 @@ Method | HTTP request | Description
 **new-session**](default_api.md#new-session) | **PUT** /sessions | Create a new session
 **restart-session**](default_api.md#restart-session) | **POST** /sessions/{session_id}/restart | Restart a session
 **server-status**](default_api.md#server-status) | **GET** /status | Get server status and information
+**set-server-configuration**](default_api.md#set-server-configuration) | **POST** /server_configuration | Change the server configuration
 **shutdown-server**](default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
 **start-session**](default_api.md#start-session) | **POST** /sessions/{session_id}/start | Start a session
 
@@ -131,6 +133,28 @@ Name | Type | Description  | Notes
 ### Return type
 
 [**serde_json::Value**](AnyType.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **get-server-configuration**
+> models::ServerConfiguration get-server-configuration()
+Get the server configuration
+
+### Required Parameters
+This endpoint does not need any parameter.
+
+### Return type
+
+[**models::ServerConfiguration**](serverConfiguration.md)
 
 ### Authorization
 
@@ -317,6 +341,31 @@ No authorization required
 ### HTTP request headers
 
  - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **set-server-configuration**
+> serde_json::Value set-server-configuration(server_configuration)
+Change the server configuration
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **server_configuration** | [**ServerConfiguration**](ServerConfiguration.md)|  | 
+
+### Return type
+
+[**serde_json::Value**](AnyType.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: application/json
  - **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)

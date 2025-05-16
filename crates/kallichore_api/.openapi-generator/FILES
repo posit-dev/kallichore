@@ -11,6 +11,7 @@ docs/InterruptMode.md
 docs/NewSession.md
 docs/NewSession200Response.md
 docs/RestartSession.md
+docs/ServerConfiguration.md
 docs/ServerStatus.md
 docs/SessionList.md
 docs/StartupError.md

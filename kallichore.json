@@ -600,6 +600,70 @@
           }
         }
       }
+    },
+    "/server_configuration": {
+      "get": {
+        "operationId": "get-server-configuration",
+        "summary": "Get the server configuration",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The current server configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/serverConfiguration"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Failed to get configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "set-server-configuration",
+        "summary": "Change the server configuration",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/serverConfiguration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuration updated",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1002,6 +1066,26 @@
           "total",
           "sessions"
         ]
+      },
+      "serverConfiguration": {
+        "type": "object",
+        "properties": {
+          "idle_shutdown_hours": {
+            "type": "integer",
+            "description": "The number of hours the server will wait before shutting down idle sessions (-1 if idle shutdown is disabled)"
+          },
+          "log_level": {
+            "type": "string",
+            "description": "The current log level",
+            "enum": [
+              "trace",
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ]
+          }
+        }
       }
     },
     "responses": {

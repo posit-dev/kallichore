@@ -7,8 +7,9 @@ use futures::{future, stream, Stream};
 use kallichore_api::{
     models, AdoptSessionResponse, Api, ApiNoContext, ChannelsWebsocketResponse, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    NewSessionResponse, RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse,
+    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
+    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
     StartSessionResponse,
 };
 
@@ -40,6 +41,7 @@ fn main() {
                     "ClientHeartbeat",
                     "ConnectionInfo",
                     "DeleteSession",
+                    "GetServerConfiguration",
                     "GetSession",
                     "InterruptSession",
                     "KillSession",
@@ -88,7 +90,12 @@ fn main() {
         XSpanIdString::default()
     );
 
-    let mut client: Box<dyn ApiNoContext<ClientContext>> = {
+    let mut client: Box<dyn ApiNoContext<ClientContext>> = if matches.is_present("https") {
+        // Using Simple HTTPS
+        let client =
+            Box::new(Client::try_new_https(&base_url).expect("Failed to create HTTPS client"));
+        Box::new(client.with_context(context))
+    } else {
         // Using HTTP
         let client =
             Box::new(Client::try_new_http(&base_url).expect("Failed to create HTTP client"));
@@ -133,6 +140,14 @@ fn main() {
         }
         Some("DeleteSession") => {
             let result = rt.block_on(client.delete_session("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
+        Some("GetServerConfiguration") => {
+            let result = rt.block_on(client.get_server_configuration());
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,
@@ -196,6 +211,14 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
+        /* Disabled because there's no example.
+        Some("SetServerConfiguration") => {
+            let result = rt.block_on(client.set_server_configuration(
+                  ???
+            ));
+            info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
+        },
+        */
         Some("ShutdownServer") => {
             let result = rt.block_on(client.shutdown_server());
             info!(
