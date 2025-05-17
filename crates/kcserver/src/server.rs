@@ -67,10 +67,24 @@ use kcshared::{
 };
 use tokio::sync::broadcast;
 
-pub async fn create(addr: &str, token: Option<String>, idle_shutdown_hours: Option<u16>) {
+pub async fn create(
+    addr: &str,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+) {
     let addr = addr.parse().expect("Failed to parse bind address");
 
-    let server = Server::new(token, idle_shutdown_hours);
+    // Get the log level from the provided parameter or environment variable if not provided
+    let effective_log_level = match log_level {
+        Some(level) => Some(level),
+        None => match env::var("RUST_LOG") {
+            Ok(level) => Some(level),
+            Err(_) => None,
+        },
+    };
+
+    let server = Server::new(token, idle_shutdown_hours, effective_log_level);
 
     let service = MakeService::new(server);
 
@@ -97,16 +111,24 @@ pub struct Server<C> {
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
     idle_nudge_tx: Sender<()>,
     reserved_ports: Arc<RwLock<Vec<i32>>>,
+    #[allow(dead_code)]
+    idle_shutdown_hours: Option<u16>,
+    #[allow(dead_code)]
+    log_level: Option<String>,
 }
 
 impl<C> Server<C> {
-    pub fn new(token: Option<String>, idle_shutdown_hours: Option<u16>) -> Self {
+    pub fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+    ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
 
         // Start the idle poll task
         let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
-        Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
+        Self::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
 
         Server {
             token,
@@ -116,6 +138,8 @@ impl<C> Server<C> {
             client_sessions: Arc::new(RwLock::new(vec![])),
             reserved_ports: Arc::new(RwLock::new(vec![])),
             idle_nudge_tx,
+            idle_shutdown_hours,
+            log_level,
         }
     }
 
@@ -1152,12 +1176,15 @@ where
             ctx_span.get().0.clone()
         );
 
-        // Return empty configuration for now
+        // Convert idle_shutdown_hours from Option<u16> to Option<i32>
+        let idle_shutdown_hours = self.idle_shutdown_hours.map(|hours| hours as i32);
+
+        // Return the server configuration
         Ok(
             kallichore_api::GetServerConfigurationResponse::TheCurrentServerConfiguration(
                 models::ServerConfiguration {
-                    idle_shutdown_hours: None,
-                    log_level: None,
+                    idle_shutdown_hours,
+                    log_level: self.log_level.clone(),
                 },
             ),
         )
