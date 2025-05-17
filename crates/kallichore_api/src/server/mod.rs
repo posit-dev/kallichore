@@ -1271,6 +1271,9 @@ where
 
                 // SetServerConfiguration - POST /server_configuration
                 hyper::Method::POST if path.matched(paths::ID_SERVER_CONFIGURATION) => {
+                    // --- Start Kallichore ---
+                    let body = request.into_body();
+                    // --- End Kallichore ---
                     // Body parameters (note that non-required body parameters will ignore garbage
                     // values, rather than causing a 400 response). Produce warning header and logs for
                     // any unused fields.

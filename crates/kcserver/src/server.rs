@@ -1141,4 +1141,44 @@ where
             Err(e) => Ok(ShutdownServerResponse::ShutdownFailed(e.to_json(None))),
         }
     }
+
+    async fn get_server_configuration(
+        &self,
+        context: &C,
+    ) -> Result<kallichore_api::GetServerConfigurationResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "get_server_configuration - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
+
+        // Return empty configuration for now
+        Ok(
+            kallichore_api::GetServerConfigurationResponse::TheCurrentServerConfiguration(
+                models::ServerConfiguration {
+                    idle_shutdown_hours: None,
+                    log_level: None,
+                },
+            ),
+        )
+    }
+
+    async fn set_server_configuration(
+        &self,
+        _configuration: models::ServerConfiguration,
+        context: &C,
+    ) -> Result<kallichore_api::SetServerConfigurationResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "set_server_configuration - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
+
+        // Return success for now
+        Ok(
+            kallichore_api::SetServerConfigurationResponse::ConfigurationUpdated(
+                serde_json::Value::Null,
+            ),
+        )
+    }
 }
