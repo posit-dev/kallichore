@@ -1279,7 +1279,6 @@ where
             };
 
             // Update the stored value by sending a message to the idle_poll_task
-            log::info!("Updating idle_shutdown_hours to {:?}", new_idle_hours);
             if let Err(e) = self.idle_config_update_tx.send(new_idle_hours).await {
                 log::error!("Failed to send idle configuration update: {:?}", e);
                 return Ok(kallichore_api::SetServerConfigurationResponse::Error(

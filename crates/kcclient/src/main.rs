@@ -18,8 +18,10 @@ use futures::{future, stream, SinkExt, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
 use kallichore_api::{
-    models::RestartSession, DeleteSessionResponse, GetServerConfigurationResponse, InterruptSessionResponse, 
+    models::{RestartSession, ServerConfiguration},
+    DeleteSessionResponse, GetServerConfigurationResponse, InterruptSessionResponse,
     NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
+    SetServerConfigurationResponse,
 };
 
 use kcshared::{
@@ -62,7 +64,7 @@ enum Commands {
 
     /// Gets server status
     Status,
-    
+
     /// Gets server configuration
     Configuration,
 
@@ -141,6 +143,14 @@ enum Commands {
         /// The session to delete.
         #[arg(short, long)]
         session_id: String,
+    },
+
+    /// Set server's idle timeout in hours
+    IdleTimeoutHours {
+        /// The number of hours before idle sessions are shut down
+        /// (-1 to disable idle shutdown)
+        #[arg(long)]
+        hours: i32,
     },
 }
 
@@ -412,10 +422,17 @@ fn main() {
                 result,
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
-            if let Ok(GetServerConfigurationResponse::TheCurrentServerConfiguration(config)) = result {
+            if let Ok(GetServerConfigurationResponse::TheCurrentServerConfiguration(config)) =
+                result
+            {
                 println!("{}", serde_json::to_string_pretty(&config).unwrap());
-            } else if let Ok(GetServerConfigurationResponse::FailedToGetConfiguration(error)) = result {
-                eprintln!("Failed to get server configuration: {}", serde_json::to_string_pretty(&error).unwrap());
+            } else if let Ok(GetServerConfigurationResponse::FailedToGetConfiguration(error)) =
+                result
+            {
+                eprintln!(
+                    "Failed to get server configuration: {}",
+                    serde_json::to_string_pretty(&error).unwrap()
+                );
             } else {
                 eprintln!("Failed to get server configuration");
             }
@@ -702,6 +719,32 @@ fn main() {
                 },
                 Err(e) => {
                     eprintln!("Failed to delete session: {:?}", e);
+                }
+            }
+        }
+        Some(Commands::IdleTimeoutHours { hours }) => {
+            log::info!("Setting idle timeout hours to {}", hours);
+            // Create the server configuration with the new idle timeout hours
+            let config = ServerConfiguration {
+                idle_shutdown_hours: Some(hours),
+                log_level: None,
+            };
+
+            // Call the API to set the server configuration
+            match rt.block_on(client.set_server_configuration(config)) {
+                Ok(resp) => match resp {
+                    SetServerConfigurationResponse::ConfigurationUpdated(_) => {
+                        println!("Idle timeout hours set to {}", hours);
+                    }
+                    SetServerConfigurationResponse::Error(error) => {
+                        println!(
+                            "Failed to set idle timeout hours: {}",
+                            serde_json::to_string_pretty(&error).unwrap()
+                        );
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to set idle timeout hours: {:?}", e);
                 }
             }
         }
