@@ -18,8 +18,8 @@ use futures::{future, stream, SinkExt, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
 use kallichore_api::{
-    models::RestartSession, DeleteSessionResponse, InterruptSessionResponse, NewSessionResponse,
-    RestartSessionResponse, ServerStatusResponse,
+    models::RestartSession, DeleteSessionResponse, GetServerConfigurationResponse, InterruptSessionResponse, 
+    NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
 };
 
 use kcshared::{
@@ -62,6 +62,9 @@ enum Commands {
 
     /// Gets server status
     Status,
+    
+    /// Gets server configuration
+    Configuration,
 
     /// Start a new session
     Start {
@@ -400,6 +403,21 @@ fn main() {
             );
             if let Ok(ServerStatusResponse::ServerStatusAndInformation(status)) = result {
                 println!("{}", serde_json::to_string_pretty(&status).unwrap());
+            }
+        }
+        Some(Commands::Configuration) => {
+            let result = rt.block_on(client.get_server_configuration());
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+            if let Ok(GetServerConfigurationResponse::TheCurrentServerConfiguration(config)) = result {
+                println!("{}", serde_json::to_string_pretty(&config).unwrap());
+            } else if let Ok(GetServerConfigurationResponse::FailedToGetConfiguration(error)) = result {
+                eprintln!("Failed to get server configuration: {}", serde_json::to_string_pretty(&error).unwrap());
+            } else {
+                eprintln!("Failed to get server configuration");
             }
         }
         Some(Commands::List) => {
