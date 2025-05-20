@@ -1137,6 +1137,11 @@ pub struct NewSession {
     #[serde(rename = "protocol_version")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<String>,
+
+    /// Whether to run the session inside a login shell; only relevant on POSIX systems
+    #[serde(rename = "run_in_shell")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_in_shell: Option<bool>,
 }
 
 impl NewSession {
@@ -1166,6 +1171,7 @@ impl NewSession {
             connection_timeout: Some(30),
             interrupt_mode,
             protocol_version: Some("5.3".to_string()),
+            run_in_shell: Some(false),
         }
     }
 }
@@ -1210,6 +1216,9 @@ impl std::string::ToString for NewSession {
             self.protocol_version.as_ref().map(|protocol_version| {
                 ["protocol_version".to_string(), protocol_version.to_string()].join(",")
             }),
+            self.run_in_shell.as_ref().map(|run_in_shell| {
+                ["run_in_shell".to_string(), run_in_shell.to_string()].join(",")
+            }),
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -1239,6 +1248,7 @@ impl std::str::FromStr for NewSession {
             pub connection_timeout: Vec<i32>,
             pub interrupt_mode: Vec<models::InterruptMode>,
             pub protocol_version: Vec<String>,
+            pub run_in_shell: Vec<bool>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -1313,6 +1323,10 @@ impl std::str::FromStr for NewSession {
                     "protocol_version" => intermediate_rep.protocol_version.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "run_in_shell" => intermediate_rep.run_in_shell.push(
+                        <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing NewSession".to_string(),
@@ -1379,6 +1393,7 @@ impl std::str::FromStr for NewSession {
                 .next()
                 .ok_or_else(|| "interrupt_mode missing in NewSession".to_string())?,
             protocol_version: intermediate_rep.protocol_version.into_iter().next(),
+            run_in_shell: intermediate_rep.run_in_shell.into_iter().next(),
         })
     }
 }

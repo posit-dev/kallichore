@@ -612,6 +612,11 @@ components:
           default: "5.3"
           description: The Jupyter protocol version supported by the underlying kernel
           type: string
+        run_in_shell:
+          default: false
+          description: Whether to run the session inside a login shell; only relevant
+            on POSIX systems
+          type: boolean
       required:
       - argv
       - continuation_prompt
