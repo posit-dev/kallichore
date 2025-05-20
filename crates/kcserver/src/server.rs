@@ -1037,6 +1037,7 @@ where
             idle_seconds,
             busy_seconds,
             sessions: sessions.len() as i32,
+            process_id: std::process::id() as i32,
             active,
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
