@@ -768,6 +768,7 @@ components:
       type: object
     serverStatus:
       example:
+        process_id: 5
         sessions: 0
         busy_seconds: 5
         busy: true
@@ -790,12 +791,17 @@ components:
             \ sessions are idle"
           type: integer
         version:
+          description: The version of the server
           type: string
+        process_id:
+          description: The server's operating system process identifier
+          type: integer
       required:
       - active
       - busy
       - busy_seconds
       - idle_seconds
+      - process_id
       - sessions
       - version
       type: object

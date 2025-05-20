@@ -1914,8 +1914,13 @@ pub struct ServerStatus {
     #[serde(rename = "busy_seconds")]
     pub busy_seconds: i32,
 
+    /// The version of the server
     #[serde(rename = "version")]
     pub version: String,
+
+    /// The server's operating system process identifier
+    #[serde(rename = "process_id")]
+    pub process_id: i32,
 }
 
 impl ServerStatus {
@@ -1927,6 +1932,7 @@ impl ServerStatus {
         idle_seconds: i32,
         busy_seconds: i32,
         version: String,
+        process_id: i32,
     ) -> ServerStatus {
         ServerStatus {
             sessions,
@@ -1935,6 +1941,7 @@ impl ServerStatus {
             idle_seconds,
             busy_seconds,
             version,
+            process_id,
         }
     }
 }
@@ -1957,6 +1964,8 @@ impl std::string::ToString for ServerStatus {
             Some(self.busy_seconds.to_string()),
             Some("version".to_string()),
             Some(self.version.to_string()),
+            Some("process_id".to_string()),
+            Some(self.process_id.to_string()),
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -1980,6 +1989,7 @@ impl std::str::FromStr for ServerStatus {
             pub idle_seconds: Vec<i32>,
             pub busy_seconds: Vec<i32>,
             pub version: Vec<String>,
+            pub process_id: Vec<i32>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -2025,6 +2035,10 @@ impl std::str::FromStr for ServerStatus {
                     "version" => intermediate_rep.version.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "process_id" => intermediate_rep.process_id.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing ServerStatus".to_string(),
@@ -2069,6 +2083,11 @@ impl std::str::FromStr for ServerStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "version missing in ServerStatus".to_string())?,
+            process_id: intermediate_rep
+                .process_id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "process_id missing in ServerStatus".to_string())?,
         })
     }
 }
