@@ -51,6 +51,7 @@ use crate::{
 /// # Returns
 ///
 /// The escaped string
+#[cfg(not(target_os = "windows"))]
 fn escape_for_shell(s: &str) -> String {
     // If the string is empty, return ''
     if s.is_empty() {
