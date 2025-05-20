@@ -36,6 +36,63 @@ use crate::{
     working_dir::expand_path, zmq_ws_proxy::ZmqWsProxy,
 };
 
+/// Escape a string for use in a shell command.
+///
+/// This function escapes a string so that it can be safely used as an argument
+/// to a shell command. It uses single quotes to wrap the string, which is the
+/// safest option in most Unix shells. If the string contains single quotes,
+/// they are escaped by replacing them with the sequence '\'' (close quote,
+/// escaped quote, open quote).
+///
+/// # Arguments
+///
+/// * `s` - The string to escape
+///
+/// # Returns
+///
+/// The escaped string
+fn escape_for_shell(s: &str) -> String {
+    // If the string is empty, return ''
+    if s.is_empty() {
+        return "''".to_string();
+    }
+
+    // If the string doesn't contain any special characters,
+    // we can return it as-is
+    if !s.chars().any(|c| "\\\"'`${}()*?! \t\n;&|<>[]".contains(c)) {
+        return s.to_string();
+    }
+
+    // Otherwise, wrap in single quotes and escape any internal single quotes
+    let mut result = String::with_capacity(s.len() + 2);
+    result.push('\'');
+
+    // Replace any single quotes in the input with '\''
+    for part in s.split('\'') {
+        if !result.ends_with('\'') {
+            result.push('\'');
+        }
+
+        result.push_str(part);
+
+        if !part.is_empty() {
+            result.push('\'');
+        }
+
+        // Add the escaped single quote sequence if this isn't the last part
+        if part.len() < s.len() {
+            result.push_str("\\'");
+        }
+    }
+
+    // Ensure the string ends with a quote
+    if !result.ends_with('\'') {
+        result.push('\'');
+    }
+
+    result
+}
+
 /// A Jupyter kernel session.
 ///
 /// This object represents an instance of Jupyter kernel. It consists of only
@@ -282,9 +339,54 @@ impl KernelSession {
             argv
         );
 
+        // Check if we should run in a login shell
+        let run_in_shell = self.model.run_in_shell.unwrap_or(false);
+
         // Create the command to start the kernel with the processed arguments
-        let mut command = tokio::process::Command::new(&argv[0]);
-        command.args(&argv[1..]);
+        let mut command = if run_in_shell {
+            #[cfg(not(target_os = "windows"))]
+            {
+                // On Unix systems, use a login shell if requested
+                // Get the shell from the environment, or use bash as fallback
+                let shell_path =
+                    std::env::var("SHELL").unwrap_or_else(|_| String::from("/bin/bash"));
+
+                log::debug!(
+                    "[session {}] Running kernel in login shell: {}",
+                    self.model.session_id,
+                    shell_path
+                );
+
+                // Create the original command as a string with proper shell escaping
+                let original_command = argv
+                    .iter()
+                    .map(|arg| escape_for_shell(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                // Create a command that uses the login shell
+                let mut cmd = tokio::process::Command::new(shell_path);
+                cmd.args(&["--login", "-c", &original_command]);
+                cmd
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                // On Windows, just use the command as is (run_in_shell has no effect)
+                log::debug!(
+                    "[session {}] run_in_shell parameter ignored on Windows",
+                    self.model.session_id
+                );
+                let mut cmd = tokio::process::Command::new(&argv[0]);
+                cmd.args(&argv[1..]);
+                cmd
+            }
+        } else {
+            // Normal execution - no login shell
+            let mut cmd = tokio::process::Command::new(&argv[0]);
+            cmd.args(&argv[1..]);
+            cmd
+        };
 
         // If a working directory was specified, test the working directory to
         // see if it exists. If it doesn't, log a warning and don't set the

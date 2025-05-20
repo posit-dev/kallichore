@@ -584,6 +584,7 @@ where
             continuation_prompt: session.continuation_prompt.clone(),
             username: session.username.clone(),
             env: session.env.clone(),
+            run_in_shell: session.run_in_shell.clone(),
             interrupt_mode: session.interrupt_mode.clone(),
             connection_timeout: session.connection_timeout.clone(),
             protocol_version: session.protocol_version.clone(),
