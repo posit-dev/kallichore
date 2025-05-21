@@ -873,7 +873,7 @@
           "run_in_shell": {
             "type": "boolean",
             "description": "Whether to run the session inside a login shell; only relevant on POSIX systems",
-            "default": "false"
+            "default": false
           }
         },
         "required": [
