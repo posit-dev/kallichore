@@ -433,6 +433,15 @@ impl KernelSession {
         let initial = std::env::vars();
         let mut resolved_env = HashMap::new();
         for (key, value) in initial {
+            // Here and elsewhere, we convert the key to uppercase on Windows
+            // since environment variables are case-insensitive on Windows to
+            // ensure that references to the same variable are consistent.
+            // The behavior of `spawn()` for multiple environment variables with
+            // the same name but different cases is undefined on Windows.
+            #[cfg(target_os = "windows")]
+            let key = key.to_uppercase();
+            #[cfg(not(target_os = "windows"))]
+            let key = key;
             resolved_env.insert(key, value);
         }
 
@@ -444,25 +453,23 @@ impl KernelSession {
 
         // Apply mutations from model
         for action in &env_var_actions {
+            #[cfg(target_os = "windows")]
+            let env_key = action.name.to_uppercase();
+            #[cfg(not(target_os = "windows"))]
+            let env_key = action.name.clone();
             match action.action {
                 models::VarActionType::Replace => {
-                    resolved_env.insert(action.name.clone(), action.value.clone())
+                    resolved_env.insert(env_key, action.value.clone())
                 }
                 models::VarActionType::Append => {
-                    let mut value = resolved_env
-                        .get(&action.name)
-                        .unwrap_or(&String::new())
-                        .clone();
+                    let mut value = resolved_env.get(&env_key).unwrap_or(&String::new()).clone();
                     value.push_str(&action.value);
-                    resolved_env.insert(action.name.clone(), value)
+                    resolved_env.insert(env_key, value)
                 }
                 models::VarActionType::Prepend => {
-                    let mut value = resolved_env
-                        .get(&action.name)
-                        .unwrap_or(&String::new())
-                        .clone();
+                    let mut value = resolved_env.get(&env_key).unwrap_or(&String::new()).clone();
                     value.insert_str(0, &action.value);
-                    resolved_env.insert(action.name.clone(), value)
+                    resolved_env.insert(env_key, value)
                 }
             };
         }
