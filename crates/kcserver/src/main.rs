@@ -253,7 +253,8 @@ async fn main() {
 
     log::info!("Starting Kallichore server at {}", addr);
 
-    server::create(&addr, token, args.idle_shutdown_hours).await;
+    // Pass the log level from command line arguments to the server
+    server::create(&addr, token, args.idle_shutdown_hours, args.log_level).await;
 }
 
 /// Write server connection details to a file

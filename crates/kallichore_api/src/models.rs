@@ -1137,6 +1137,11 @@ pub struct NewSession {
     #[serde(rename = "protocol_version")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<String>,
+
+    /// Whether to run the session inside a login shell; only relevant on POSIX systems
+    #[serde(rename = "run_in_shell")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_in_shell: Option<bool>,
 }
 
 impl NewSession {
@@ -1166,6 +1171,7 @@ impl NewSession {
             connection_timeout: Some(30),
             interrupt_mode,
             protocol_version: Some("5.3".to_string()),
+            run_in_shell: Some(false),
         }
     }
 }
@@ -1210,6 +1216,9 @@ impl std::string::ToString for NewSession {
             self.protocol_version.as_ref().map(|protocol_version| {
                 ["protocol_version".to_string(), protocol_version.to_string()].join(",")
             }),
+            self.run_in_shell.as_ref().map(|run_in_shell| {
+                ["run_in_shell".to_string(), run_in_shell.to_string()].join(",")
+            }),
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -1239,6 +1248,7 @@ impl std::str::FromStr for NewSession {
             pub connection_timeout: Vec<i32>,
             pub interrupt_mode: Vec<models::InterruptMode>,
             pub protocol_version: Vec<String>,
+            pub run_in_shell: Vec<bool>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -1313,6 +1323,10 @@ impl std::str::FromStr for NewSession {
                     "protocol_version" => intermediate_rep.protocol_version.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "run_in_shell" => intermediate_rep.run_in_shell.push(
+                        <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing NewSession".to_string(),
@@ -1379,6 +1393,7 @@ impl std::str::FromStr for NewSession {
                 .next()
                 .ok_or_else(|| "interrupt_mode missing in NewSession".to_string())?,
             protocol_version: intermediate_rep.protocol_version.into_iter().next(),
+            run_in_shell: intermediate_rep.run_in_shell.into_iter().next(),
         })
     }
 }
@@ -1721,6 +1736,166 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ServerConfiguration {
+    /// The number of hours the server will wait before shutting down idle sessions (-1 if idle shutdown is disabled)
+    #[serde(rename = "idle_shutdown_hours")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_shutdown_hours: Option<i32>,
+
+    /// The current log level
+    // Note: inline enums are not fully supported by openapi-generator
+    #[serde(rename = "log_level")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+}
+
+impl ServerConfiguration {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> ServerConfiguration {
+        ServerConfiguration {
+            idle_shutdown_hours: None,
+            log_level: None,
+        }
+    }
+}
+
+/// Converts the ServerConfiguration value to the Query Parameters representation (style=form, explode=false)
+/// specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde serializer
+impl std::string::ToString for ServerConfiguration {
+    fn to_string(&self) -> String {
+        let params: Vec<Option<String>> = vec![
+            self.idle_shutdown_hours
+                .as_ref()
+                .map(|idle_shutdown_hours| {
+                    [
+                        "idle_shutdown_hours".to_string(),
+                        idle_shutdown_hours.to_string(),
+                    ]
+                    .join(",")
+                }),
+            self.log_level
+                .as_ref()
+                .map(|log_level| ["log_level".to_string(), log_level.to_string()].join(",")),
+        ];
+
+        params.into_iter().flatten().collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ServerConfiguration value
+/// as specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ServerConfiguration {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub idle_shutdown_hours: Vec<i32>,
+            pub log_level: Vec<String>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ServerConfiguration".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "idle_shutdown_hours" => intermediate_rep.idle_shutdown_hours.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "log_level" => intermediate_rep.log_level.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ServerConfiguration".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ServerConfiguration {
+            idle_shutdown_hours: intermediate_rep.idle_shutdown_hours.into_iter().next(),
+            log_level: intermediate_rep.log_level.into_iter().next(),
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ServerConfiguration> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ServerConfiguration>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ServerConfiguration>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for ServerConfiguration - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<ServerConfiguration>
+{
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <ServerConfiguration as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into ServerConfiguration - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct ServerStatus {
     #[serde(rename = "sessions")]
     pub sessions: i32,
@@ -1739,8 +1914,13 @@ pub struct ServerStatus {
     #[serde(rename = "busy_seconds")]
     pub busy_seconds: i32,
 
+    /// The version of the server
     #[serde(rename = "version")]
     pub version: String,
+
+    /// The server's operating system process identifier
+    #[serde(rename = "process_id")]
+    pub process_id: i32,
 }
 
 impl ServerStatus {
@@ -1752,6 +1932,7 @@ impl ServerStatus {
         idle_seconds: i32,
         busy_seconds: i32,
         version: String,
+        process_id: i32,
     ) -> ServerStatus {
         ServerStatus {
             sessions,
@@ -1760,6 +1941,7 @@ impl ServerStatus {
             idle_seconds,
             busy_seconds,
             version,
+            process_id,
         }
     }
 }
@@ -1782,6 +1964,8 @@ impl std::string::ToString for ServerStatus {
             Some(self.busy_seconds.to_string()),
             Some("version".to_string()),
             Some(self.version.to_string()),
+            Some("process_id".to_string()),
+            Some(self.process_id.to_string()),
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -1805,6 +1989,7 @@ impl std::str::FromStr for ServerStatus {
             pub idle_seconds: Vec<i32>,
             pub busy_seconds: Vec<i32>,
             pub version: Vec<String>,
+            pub process_id: Vec<i32>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -1850,6 +2035,10 @@ impl std::str::FromStr for ServerStatus {
                     "version" => intermediate_rep.version.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "process_id" => intermediate_rep.process_id.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing ServerStatus".to_string(),
@@ -1894,6 +2083,11 @@ impl std::str::FromStr for ServerStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "version missing in ServerStatus".to_string())?,
+            process_id: intermediate_rep
+                .process_id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "process_id missing in ServerStatus".to_string())?,
         })
     }
 }

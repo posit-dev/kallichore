@@ -67,10 +67,24 @@ use kcshared::{
 };
 use tokio::sync::broadcast;
 
-pub async fn create(addr: &str, token: Option<String>, idle_shutdown_hours: Option<u16>) {
+pub async fn create(
+    addr: &str,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+) {
     let addr = addr.parse().expect("Failed to parse bind address");
 
-    let server = Server::new(token, idle_shutdown_hours);
+    // Get the log level from the provided parameter or environment variable if not provided
+    let effective_log_level = match log_level {
+        Some(level) => Some(level),
+        None => match env::var("RUST_LOG") {
+            Ok(level) => Some(level),
+            Err(_) => None,
+        },
+    };
+
+    let server = Server::new(token, idle_shutdown_hours, effective_log_level);
 
     let service = MakeService::new(server);
 
@@ -97,16 +111,37 @@ pub struct Server<C> {
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
     idle_nudge_tx: Sender<()>,
     reserved_ports: Arc<RwLock<Vec<i32>>>,
+    // Shared, thread-safe storage for the idle_shutdown_hours setting
+    idle_shutdown_hours: Arc<RwLock<Option<u16>>>,
+    #[allow(dead_code)]
+    log_level: Option<String>,
+    // Channel to signal changes to idle configuration
+    idle_config_update_tx: Sender<Option<u16>>,
 }
 
 impl<C> Server<C> {
-    pub fn new(token: Option<String>, idle_shutdown_hours: Option<u16>) -> Self {
+    pub fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+    ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
 
-        // Start the idle poll task
+        // Create a shared, thread-safe storage for the idle_shutdown_hours setting
+        let shared_idle_hours = Arc::new(RwLock::new(idle_shutdown_hours));
+
+        // Create channels for idle nudging and configuration updates
         let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
-        Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
+        let (idle_config_update_tx, idle_config_update_rx) = mpsc::channel(16);
+
+        // Start the idle poll task
+        Self::idle_poll_task(
+            kernel_sessions.clone(),
+            idle_nudge_rx,
+            shared_idle_hours.clone(),
+            idle_config_update_rx,
+        );
 
         Server {
             token,
@@ -116,6 +151,9 @@ impl<C> Server<C> {
             client_sessions: Arc::new(RwLock::new(vec![])),
             reserved_ports: Arc::new(RwLock::new(vec![])),
             idle_nudge_tx,
+            idle_shutdown_hours: shared_idle_hours,
+            log_level,
+            idle_config_update_tx,
         }
     }
 
@@ -134,17 +172,22 @@ impl<C> Server<C> {
     /// - `idle_shutdown_hours`: The number of hours of inactivity before the
     ///    server shuts down. If None, the server will not shut down due to
     ///    inactivity.
+    /// - `idle_config_update_rx`: A receiver for idle configuration updates.
     fn idle_poll_task(
         all_sessions: Arc<RwLock<Vec<KernelSession>>>,
         mut idle_nudge_rx: mpsc::Receiver<()>,
-        idle_shutdown_hours: Option<u16>,
+        idle_shutdown_hours: Arc<RwLock<Option<u16>>>,
+        mut idle_config_update_rx: mpsc::Receiver<Option<u16>>,
     ) {
         tokio::spawn(async move {
             // Mark the start time of the idle poll task
             let start_time = std::time::Instant::now();
 
+            // Get the initial value of idle_shutdown_hours
+            let mut current_idle_shutdown_hours = { *idle_shutdown_hours.read().unwrap() };
+
             // Create the interval for the idle poll task.
-            let duration = match idle_shutdown_hours {
+            let mut duration = match current_idle_shutdown_hours {
                 Some(hours) => match hours {
                     0 => {
                         // Zero hours would create a busy loop, so if 0 is
@@ -173,11 +216,11 @@ impl<C> Server<C> {
             interval.tick().await;
 
             loop {
-                // Wait for either the interval to expire or an idle nudge
+                // Wait for either the interval to expire, an idle nudge, or a configuration update
                 tokio::select! {
                     _ = interval.tick() => {
                         // If no idle shutdown hours are specified, skip the check
-                        if idle_shutdown_hours.is_none() {
+                        if current_idle_shutdown_hours.is_none() {
                             continue;
                         }
 
@@ -202,6 +245,26 @@ impl<C> Server<C> {
                         log::trace!("Received an idle nudge; resetting interval");
                         // Received an idle nudge; reset the interval
                         interval.reset();
+                    }
+                    Some(new_idle_hours) = idle_config_update_rx.recv() => {
+                        // Received a configuration update
+                        log::info!("Updating idle shutdown hours to {:?}", new_idle_hours);
+                        current_idle_shutdown_hours = new_idle_hours;
+
+                        // Update the interval duration
+                        duration = match current_idle_shutdown_hours {
+                            Some(hours) => match hours {
+                                0 => tokio::time::Duration::from_secs(30),
+                                _ => tokio::time::Duration::from_secs((hours as u64) * 3600),
+                            },
+                            None => tokio::time::Duration::from_secs(24 * 3600),
+                        };
+
+                        // Create a new interval with the updated duration
+                        interval = tokio::time::interval(duration);
+
+                        // Consume the first tick immediately
+                        interval.tick().await;
                     }
                 }
             }
@@ -521,6 +584,7 @@ where
             continuation_prompt: session.continuation_prompt.clone(),
             username: session.username.clone(),
             env: session.env.clone(),
+            run_in_shell: session.run_in_shell.clone(),
             interrupt_mode: session.interrupt_mode.clone(),
             connection_timeout: session.connection_timeout.clone(),
             protocol_version: session.protocol_version.clone(),
@@ -973,6 +1037,7 @@ where
             idle_seconds,
             busy_seconds,
             sessions: sessions.len() as i32,
+            process_id: std::process::id() as i32,
             active,
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
@@ -1140,5 +1205,105 @@ where
             )),
             Err(e) => Ok(ShutdownServerResponse::ShutdownFailed(e.to_json(None))),
         }
+    }
+
+    async fn get_server_configuration(
+        &self,
+        context: &C,
+    ) -> Result<kallichore_api::GetServerConfigurationResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "get_server_configuration - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
+
+        // Read the idle_shutdown_hours from the shared value
+        let idle_hours = {
+            // Get a lock on the value and read it
+            let idle_hours_guard = self.idle_shutdown_hours.read().unwrap();
+
+            // Convert Option<u16> to Option<i32>
+            idle_hours_guard.map(|hours| hours as i32)
+        };
+
+        // Return the server configuration
+        Ok(
+            kallichore_api::GetServerConfigurationResponse::TheCurrentServerConfiguration(
+                models::ServerConfiguration {
+                    idle_shutdown_hours: idle_hours,
+                    log_level: self.log_level.clone(),
+                },
+            ),
+        )
+    }
+
+    async fn set_server_configuration(
+        &self,
+        configuration: models::ServerConfiguration,
+        context: &C,
+    ) -> Result<kallichore_api::SetServerConfigurationResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "set_server_configuration - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
+
+        // Check if idle_shutdown_hours is provided in the configuration
+        if let Some(idle_hours) = configuration.idle_shutdown_hours {
+            // Convert from i32 to u16, with validation
+            if idle_hours < 0 {
+                return Ok(kallichore_api::SetServerConfigurationResponse::Error(
+                    models::Error {
+                        code: "400".to_string(),
+                        message: "idle_shutdown_hours must be a non-negative integer".to_string(),
+                        details: None,
+                    },
+                ));
+            }
+
+            let new_idle_hours = if idle_hours == 0 {
+                // Special case: 0 means disabled
+                None
+            } else {
+                // Convert to u16, handling potential overflow
+                match u16::try_from(idle_hours) {
+                    Ok(hours) => Some(hours),
+                    Err(_) => {
+                        return Ok(kallichore_api::SetServerConfigurationResponse::Error(
+                            models::Error {
+                                code: "400".to_string(),
+                                message: "idle_shutdown_hours is too large".to_string(),
+                                details: None,
+                            },
+                        ));
+                    }
+                }
+            };
+
+            // Update the stored value by sending a message to the idle_poll_task
+            if let Err(e) = self.idle_config_update_tx.send(new_idle_hours).await {
+                log::error!("Failed to send idle configuration update: {:?}", e);
+                return Ok(kallichore_api::SetServerConfigurationResponse::Error(
+                    models::Error {
+                        code: "500".to_string(),
+                        message: "Failed to update idle shutdown configuration".to_string(),
+                        details: Some(e.to_string()),
+                    },
+                ));
+            }
+
+            // Update the stored value in the Server struct using the thread-safe RwLock
+            {
+                let mut idle_hours_guard = self.idle_shutdown_hours.write().unwrap();
+                *idle_hours_guard = new_idle_hours;
+            }
+        }
+
+        // Return success
+        Ok(
+            kallichore_api::SetServerConfigurationResponse::ConfigurationUpdated(
+                serde_json::Value::Null,
+            ),
+        )
     }
 }

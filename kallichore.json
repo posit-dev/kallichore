@@ -600,6 +600,70 @@
           }
         }
       }
+    },
+    "/server_configuration": {
+      "get": {
+        "operationId": "get-server-configuration",
+        "summary": "Get the server configuration",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The current server configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/serverConfiguration"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Failed to get configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "set-server-configuration",
+        "summary": "Change the server configuration",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/serverConfiguration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuration updated",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -805,6 +869,11 @@
             "type": "string",
             "description": "The Jupyter protocol version supported by the underlying kernel",
             "default": "5.3"
+          },
+          "run_in_shell": {
+            "type": "boolean",
+            "description": "Whether to run the session inside a login shell; only relevant on POSIX systems",
+            "default": false
           }
         },
         "required": [
@@ -973,7 +1042,12 @@
             "description": "The number of seconds any session has been busy, or 0 if all sessions are idle"
           },
           "version": {
-            "type": "string"
+            "type": "string",
+            "description": "The version of the server"
+          },
+          "process_id": {
+            "type": "integer",
+            "description": "The server's operating system process identifier"
           }
         },
         "required": [
@@ -981,6 +1055,7 @@
           "busy",
           "busy_seconds",
           "idle_seconds",
+          "process_id",
           "sessions",
           "version"
         ]
@@ -1002,6 +1077,26 @@
           "total",
           "sessions"
         ]
+      },
+      "serverConfiguration": {
+        "type": "object",
+        "properties": {
+          "idle_shutdown_hours": {
+            "type": "integer",
+            "description": "The number of hours the server will wait before shutting down idle sessions (-1 if idle shutdown is disabled)"
+          },
+          "log_level": {
+            "type": "string",
+            "description": "The current log level",
+            "enum": [
+              "trace",
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ]
+          }
+        }
       }
     },
     "responses": {

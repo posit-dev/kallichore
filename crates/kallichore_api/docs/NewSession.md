@@ -15,6 +15,7 @@ Name | Type | Description | Notes
 **connection_timeout** | **i32** | The number of seconds to wait for a connection to the session's ZeroMQ sockets before timing out | [optional] [default to Some(30)]
 **interrupt_mode** | [***models::InterruptMode**](interrupt_mode.md) |  | 
 **protocol_version** | **String** | The Jupyter protocol version supported by the underlying kernel | [optional] [default to Some("5.3".to_string())]
+**run_in_shell** | **bool** | Whether to run the session inside a login shell; only relevant on POSIX systems | [optional] [default to Some(false)]
 
 [[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)
 

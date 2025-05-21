@@ -101,9 +101,10 @@ impl<C> Server<C> {
 use kallichore_api::server::MakeService;
 use kallichore_api::{
     AdoptSessionResponse, Api, ChannelsWebsocketResponse, ClientHeartbeatResponse,
-    ConnectionInfoResponse, DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, GetServerConfigurationResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
+    SetServerConfigurationResponse, ShutdownServerResponse, StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -175,6 +176,18 @@ where
         info!(
             "delete_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Generic failure".into()))
+    }
+
+    /// Get the server configuration
+    async fn get_server_configuration(
+        &self,
+        context: &C,
+    ) -> Result<GetServerConfigurationResponse, ApiError> {
+        info!(
+            "get_server_configuration() - X-Span-ID: {:?}",
             context.get().0.clone()
         );
         Err(ApiError("Generic failure".into()))
@@ -278,6 +291,20 @@ where
     /// Get server status and information
     async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError> {
         info!("server_status() - X-Span-ID: {:?}", context.get().0.clone());
+        Err(ApiError("Generic failure".into()))
+    }
+
+    /// Change the server configuration
+    async fn set_server_configuration(
+        &self,
+        server_configuration: models::ServerConfiguration,
+        context: &C,
+    ) -> Result<SetServerConfigurationResponse, ApiError> {
+        info!(
+            "set_server_configuration({:?}) - X-Span-ID: {:?}",
+            server_configuration,
+            context.get().0.clone()
+        );
         Err(ApiError("Generic failure".into()))
     }
 
