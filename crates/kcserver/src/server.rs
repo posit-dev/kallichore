@@ -205,9 +205,9 @@ impl<C> Server<C> {
                     }
                 },
                 None => {
-                    // If no idle shutdown hours are specified, default to 24 hours
+                    // If no idle shutdown hours are specified, default to a week
                     log::debug!("idle_shutdown_hours not specified; the server will not shut down due to inactivity");
-                    tokio::time::Duration::from_secs(24 * 3600)
+                    tokio::time::Duration::from_secs(168 * 3600)
                 }
             };
             let mut interval = tokio::time::interval(duration);
@@ -257,7 +257,7 @@ impl<C> Server<C> {
                                 0 => tokio::time::Duration::from_secs(30),
                                 _ => tokio::time::Duration::from_secs((hours as u64) * 3600),
                             },
-                            None => tokio::time::Duration::from_secs(24 * 3600),
+                            None => tokio::time::Duration::from_secs(168 * 3600),
                         };
 
                         // Create a new interval with the updated duration
@@ -1250,19 +1250,10 @@ where
 
         // Check if idle_shutdown_hours is provided in the configuration
         if let Some(idle_hours) = configuration.idle_shutdown_hours {
-            // Convert from i32 to u16, with validation
-            if idle_hours < 0 {
-                return Ok(kallichore_api::SetServerConfigurationResponse::Error(
-                    models::Error {
-                        code: "400".to_string(),
-                        message: "idle_shutdown_hours must be a non-negative integer".to_string(),
-                        details: None,
-                    },
-                ));
-            }
 
-            let new_idle_hours = if idle_hours == 0 {
-                // Special case: 0 means disabled
+            let new_idle_hours = if idle_hours < 0 {
+                // Special case: negative value means the server should run
+                // indefinitely
                 None
             } else {
                 // Convert to u16, handling potential overflow
