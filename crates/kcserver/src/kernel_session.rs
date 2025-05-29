@@ -365,9 +365,12 @@ impl KernelSession {
                     .collect::<Vec<_>>()
                     .join(" ");
 
-                // Create a command that uses the login shell
+                // Create a command that uses the login shell. Note that we use
+                // the short form -l rather than --login to ensure compatibility
+                // with shells that don't support the long form, such as
+                // sh/dash.
                 let mut cmd = tokio::process::Command::new(shell_path);
-                cmd.args(&["--login", "-c", &original_command]);
+                cmd.args(&["-l", "-c", &original_command]);
                 cmd
             }
 
