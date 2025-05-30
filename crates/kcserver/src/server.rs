@@ -36,6 +36,7 @@ use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Sender};
+use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
@@ -212,6 +213,12 @@ impl<C> Server<C> {
             };
             let mut interval = tokio::time::interval(duration);
 
+            // Set the missed tick behavior to delay, which ensures that each tick
+            // is at least the specified duration apart, even if the task is delayed.
+            // The default is Burst, which causes a flurry of ticks to be sent after
+            // e.g. wakeup from sleep.
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
             // Consume the first tick immediately (tokio intervals start at 0)
             interval.tick().await;
 
@@ -262,6 +269,7 @@ impl<C> Server<C> {
 
                         // Create a new interval with the updated duration
                         interval = tokio::time::interval(duration);
+                        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
                         // Consume the first tick immediately
                         interval.tick().await;
@@ -1250,7 +1258,6 @@ where
 
         // Check if idle_shutdown_hours is provided in the configuration
         if let Some(idle_hours) = configuration.idle_shutdown_hours {
-
             let new_idle_hours = if idle_hours < 0 {
                 // Special case: negative value means the server should run
                 // indefinitely
