@@ -8,7 +8,7 @@
 //! Wraps Jupyter kernel sessions.
 
 use std::collections::HashMap;
-use std::{fs, os::raw::c_void, process::Stdio, sync::Arc};
+use std::{fs, process::Stdio, sync::Arc};
 
 use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
@@ -107,7 +107,7 @@ pub struct KernelSession {
     pub model: models::NewSession,
 
     /// The interrupt event handle, if we have one. Only used on Windows.
-    pub interrupt_event_handle: Option<i64>,
+    pub interrupt_event_handle: Option<u64>,
 
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
@@ -468,16 +468,14 @@ impl KernelSession {
             let key = key;
             resolved_env.insert(key, value);
         }
-
         #[cfg(windows)]
         {
             use windows::Win32::Foundation::DuplicateHandle;
             use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
             use windows::Win32::Foundation::HANDLE;
-            use windows::Win32::System::Threading::GetCurrentProcess;
-
-            // On Windows, if we have an interrupt event, add it to the environment
-            // so we can pass it to the kernel process.
+            use windows::Win32::System::Threading::GetCurrentProcess; // On Windows, if we have an interrupt event, add it directly to the environment.
+                                                                      // The event was created with inheritable security attributes, so the child process
+                                                                      // will inherit the handle automatically.
             if let Some(handle) = self.interrupt_event_handle {
                 log::trace!(
                     "[session {}] Adding interrupt event handle to environment: {}",
@@ -485,32 +483,35 @@ impl KernelSession {
                     handle
                 );
                 resolved_env.insert("JPY_INTERRUPT_EVENT".to_string(), format!("{}", handle));
+                // Also set the legacy environment variable for backward compatibility
+                resolved_env.insert("IPY_INTERRUPT_EVENT".to_string(), format!("{}", handle));
             }
 
+            // Add the parent process handle to the environment for process monitoring
             #[allow(unsafe_code)]
             unsafe {
-                let pid = GetCurrentProcess();
-                let mut target = HANDLE::default();
+                let current_process = GetCurrentProcess();
+                let mut target_handle = HANDLE::default();
                 match DuplicateHandle(
-                    pid,                                 // Source process handle
-                    pid,                                 // Source handle to duplicate
-                    pid,                                 // Target process handle
-                    &mut target,                         // Destination handle (out)
-                    0,                                   // Desired access
+                    current_process,                     // Source process handle
+                    current_process, // Source handle to duplicate (current process)
+                    current_process, // Target process handle
+                    &mut target_handle, // Destination handle (out)
+                    0,               // Desired access
                     windows::Win32::Foundation::BOOL(1), // Inheritable
                     DUPLICATE_SAME_ACCESS,
                 ) {
                     Ok(_) => {
-                        let handle = target.0 as i64;
+                        let handle = target_handle.0 as u64;
                         log::trace!(
-                            "[session {}] Adding parent handle to environment: {}",
+                            "[session {}] Adding parent process handle to environment: {}",
                             self.connection.session_id,
                             handle
                         );
                         resolved_env.insert("JPY_PARENT_PID".to_string(), format!("{}", handle));
                     }
                     Err(e) => {
-                        log::error!("Failed to duplicate handle: {}", e);
+                        log::error!("Failed to duplicate parent process handle: {}", e);
                     }
                 }
             }
@@ -1139,17 +1140,24 @@ impl KernelSession {
                 {
                     use windows::Win32::Foundation::HANDLE;
                     use windows::Win32::System::Threading::SetEvent;
-                    if let Some(handle) = self.interrupt_event_handle {
+                    if let Some(handle_value) = self.interrupt_event_handle {
                         #[allow(unsafe_code)]
                         unsafe {
                             log::debug!(
                                 "Setting interrupt event {} for session {}",
-                                handle,
+                                handle_value,
                                 self.connection.session_id
-                            );
-                            let handle = HANDLE(std::mem::transmute::<i64, *mut c_void>(handle));
+                            ); // Convert the stored u64 back to a HANDLE
+                               // Must match the conversion in create_interrupt_event: u64 -> usize -> *mut c_void
+                            let handle = HANDLE(handle_value as usize as *mut std::ffi::c_void);
                             return match SetEvent(handle) {
-                                Ok(_) => Ok(()),
+                                Ok(_) => {
+                                    log::debug!(
+                                        "Successfully set interrupt event for session {}",
+                                        self.connection.session_id
+                                    );
+                                    Ok(())
+                                }
                                 Err(e) => Err(anyhow::anyhow!(
                                     "Failed to set interrupt event: {}, process not interrupted",
                                     e
@@ -1635,26 +1643,37 @@ impl KernelSession {
         }
         output
     }
-
     #[cfg(windows)]
-    fn create_interrupt_event() -> Result<i64, anyhow::Error> {
+    fn create_interrupt_event() -> Result<u64, anyhow::Error> {
         use windows::Win32::Security::SECURITY_ATTRIBUTES;
         use windows::Win32::System::Threading::CreateEventA;
 
         #[allow(unsafe_code)]
         unsafe {
             // Create a security attributes struct that permits inheritance of the handle by new processes
+            // This exactly matches the approach used in jupyter_client/win_interrupt.py
             let sa = SECURITY_ATTRIBUTES {
                 #[allow(unused_qualifications)]
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: std::ptr::null_mut(),
                 bInheritHandle: windows::Win32::Foundation::BOOL(1),
             };
-            let event = CreateEventA(Some(&sa), false, false, None);
+            let event = CreateEventA(
+                Some(&sa),
+                windows::Win32::Foundation::BOOL(0), // bManualReset: false (auto-reset event)
+                windows::Win32::Foundation::BOOL(0), // bInitialState: false (non-signaled)
+                windows::core::PCSTR::null(),        // lpName: unnamed event
+            );
             match event {
                 Ok(handle) => {
-                    let handle = handle.0;
-                    Ok(handle as i64)
+                    // Store the handle value as an integer, matching jupyter_client approach
+                    // Convert HANDLE pointer to u64 for storage - this must match the conversion in interrupt()
+                    let handle_value = handle.0 as usize as u64;
+                    log::debug!(
+                        "Created interrupt event with handle value: {}",
+                        handle_value
+                    );
+                    Ok(handle_value)
                 }
                 Err(e) => Err(anyhow::anyhow!("Failed to create interrupt event: {}", e)),
             }
