@@ -105,7 +105,9 @@ pub struct KernelSession {
 
     /// The session model that was used to create this session
     pub model: models::NewSession,
+
     /// The interrupt event handle, if we have one. Only used on Windows.
+    #[cfg(windows)]
     pub interrupt_event_handle: Option<isize>,
 
     /// The command line arguments used to start the kernel. The first is the
@@ -171,9 +173,6 @@ impl KernelSession {
             models::InterruptMode::Message => None,
         };
 
-        #[cfg(not(windows))]
-        let interrupt_event_handle = None;
-
         let kernel_session = KernelSession {
             argv: session.argv.clone(),
             state: kernel_state.clone(),
@@ -184,6 +183,7 @@ impl KernelSession {
             ws_zmq_rx: zmq_rx,
             connection,
             started,
+            #[cfg(windows)]
             interrupt_event_handle,
             exit_event: Arc::new(Event::new()),
             reserved_ports,
@@ -473,6 +473,7 @@ impl KernelSession {
             use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
             use windows::Win32::Foundation::HANDLE;
             use windows::Win32::System::Threading::GetCurrentProcess;
+
             // On Windows, if we have an interrupt event, add it directly to the environment.
             // The event was created with inheritable security attributes, so the child process
             // will inherit the handle automatically.
