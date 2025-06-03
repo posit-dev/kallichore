@@ -472,9 +472,10 @@ impl KernelSession {
             use windows::Win32::Foundation::DuplicateHandle;
             use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
             use windows::Win32::Foundation::HANDLE;
-            use windows::Win32::System::Threading::GetCurrentProcess; // On Windows, if we have an interrupt event, add it directly to the environment.
-                                                                      // The event was created with inheritable security attributes, so the child process
-                                                                      // will inherit the handle automatically.
+            use windows::Win32::System::Threading::GetCurrentProcess;
+            // On Windows, if we have an interrupt event, add it directly to the environment.
+            // The event was created with inheritable security attributes, so the child process
+            // will inherit the handle automatically.
             if let Some(handle) = self.interrupt_event_handle {
                 log::trace!(
                     "[session {}] Adding interrupt event handle to environment: {}",
@@ -1650,8 +1651,8 @@ impl KernelSession {
 
         #[allow(unsafe_code)]
         unsafe {
-            // Create a security attributes struct that permits inheritance of the handle by new processes
-            // This exactly matches the approach used in jupyter_client/win_interrupt.py
+            // Create a security attributes struct that permits inheritance of
+            // the handle by new processes.
             let sa = SECURITY_ATTRIBUTES {
                 #[allow(unused_qualifications)]
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -1666,8 +1667,6 @@ impl KernelSession {
             );
             match event {
                 Ok(handle) => {
-                    // Store the handle value as an isize to preserve pointer semantics
-                    // HANDLE is defined as *mut c_void, so we need to preserve the full pointer value
                     let handle_value = handle.0 as isize;
                     log::debug!(
                         "Created interrupt event with handle value: {}",
