@@ -105,9 +105,8 @@ pub struct KernelSession {
 
     /// The session model that was used to create this session
     pub model: models::NewSession,
-
     /// The interrupt event handle, if we have one. Only used on Windows.
-    pub interrupt_event_handle: Option<u64>,
+    pub interrupt_event_handle: Option<isize>,
 
     /// The command line arguments used to start the kernel. The first is the
     /// path to the kernel itself.
@@ -1147,9 +1146,10 @@ impl KernelSession {
                                 "Setting interrupt event {} for session {}",
                                 handle_value,
                                 self.connection.session_id
-                            ); // Convert the stored u64 back to a HANDLE
-                               // Must match the conversion in create_interrupt_event: u64 -> usize -> *mut c_void
-                            let handle = HANDLE(handle_value as usize as *mut std::ffi::c_void);
+                            );
+                            // Convert the stored isize back to a HANDLE
+                            // HANDLE is *mut c_void, so we preserve pointer semantics
+                            let handle = HANDLE(handle_value as *mut std::ffi::c_void);
                             return match SetEvent(handle) {
                                 Ok(_) => {
                                     log::debug!(
@@ -1644,7 +1644,7 @@ impl KernelSession {
         output
     }
     #[cfg(windows)]
-    fn create_interrupt_event() -> Result<u64, anyhow::Error> {
+    fn create_interrupt_event() -> Result<isize, anyhow::Error> {
         use windows::Win32::Security::SECURITY_ATTRIBUTES;
         use windows::Win32::System::Threading::CreateEventA;
 
@@ -1666,9 +1666,9 @@ impl KernelSession {
             );
             match event {
                 Ok(handle) => {
-                    // Store the handle value as an integer, matching jupyter_client approach
-                    // Convert HANDLE pointer to u64 for storage - this must match the conversion in interrupt()
-                    let handle_value = handle.0 as usize as u64;
+                    // Store the handle value as an isize to preserve pointer semantics
+                    // HANDLE is defined as *mut c_void, so we need to preserve the full pointer value
+                    let handle_value = handle.0 as isize;
                     log::debug!(
                         "Created interrupt event with handle value: {}",
                         handle_value
