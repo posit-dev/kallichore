@@ -56,6 +56,12 @@ pub enum ChannelsWebsocketResponse {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub enum ClientHeartbeatResponse {
+    /// Heartbeat received
+    HeartbeatReceived(serde_json::Value),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
 pub enum ConnectionInfoResponse {
     /// Connection Info
@@ -79,6 +85,15 @@ pub enum DeleteSessionResponse {
     Unauthorized,
     /// Session not found
     SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum GetServerConfigurationResponse {
+    /// The current server configuration
+    TheCurrentServerConfiguration(models::ServerConfiguration),
+    /// Failed to get configuration
+    FailedToGetConfiguration(models::Error),
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -159,6 +174,15 @@ pub enum ServerStatusResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum SetServerConfigurationResponse {
+    /// Configuration updated
+    ConfigurationUpdated(serde_json::Value),
+    /// Error
+    Error(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum ShutdownServerResponse {
     /// Shutting down
     ShuttingDown(serde_json::Value),
@@ -207,6 +231,9 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Notify the server that a client is connected
+    async fn client_heartbeat(&self, context: &C) -> Result<ClientHeartbeatResponse, ApiError>;
+
     /// Get Jupyter connection information for the session
     async fn connection_info(
         &self,
@@ -220,6 +247,12 @@ pub trait Api<C: Send + Sync> {
         session_id: String,
         context: &C,
     ) -> Result<DeleteSessionResponse, ApiError>;
+
+    /// Get the server configuration
+    async fn get_server_configuration(
+        &self,
+        context: &C,
+    ) -> Result<GetServerConfigurationResponse, ApiError>;
 
     /// Get session details
     async fn get_session(
@@ -256,11 +289,19 @@ pub trait Api<C: Send + Sync> {
     async fn restart_session(
         &self,
         session_id: String,
+        restart_session: Option<models::RestartSession>,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError>;
 
     /// Get server status and information
     async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError>;
+
+    /// Change the server configuration
+    async fn set_server_configuration(
+        &self,
+        server_configuration: models::ServerConfiguration,
+        context: &C,
+    ) -> Result<SetServerConfigurationResponse, ApiError>;
 
     /// Shut down all sessions and the server itself
     async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError>;
@@ -307,12 +348,18 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
 
+    /// Notify the server that a client is connected
+    async fn client_heartbeat(&self) -> Result<ClientHeartbeatResponse, ApiError>;
+
     /// Get Jupyter connection information for the session
     async fn connection_info(&self, session_id: String)
         -> Result<ConnectionInfoResponse, ApiError>;
 
     /// Delete session
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
+
+    /// Get the server configuration
+    async fn get_server_configuration(&self) -> Result<GetServerConfigurationResponse, ApiError>;
 
     /// Get session details
     async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError>;
@@ -335,7 +382,6 @@ pub trait ApiNoContext<C: Send + Sync> {
         new_session: models::NewSession,
     ) -> Result<NewSessionResponse, ApiError>;
 
-
     // --- Start Kallichore ---
     /// Upgrade a websocket request for channel communication
     async fn channels_websocket_request(
@@ -344,12 +390,22 @@ pub trait ApiNoContext<C: Send + Sync> {
         session_id: String,
     ) -> Result<Response<Body>, ApiError>;
     // --- End Kallichore ---
+
     /// Restart a session
-    async fn restart_session(&self, session_id: String)
-        -> Result<RestartSessionResponse, ApiError>;
+    async fn restart_session(
+        &self,
+        session_id: String,
+        restart_session: Option<models::RestartSession>,
+    ) -> Result<RestartSessionResponse, ApiError>;
 
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError>;
+
+    /// Change the server configuration
+    async fn set_server_configuration(
+        &self,
+        server_configuration: models::ServerConfiguration,
+    ) -> Result<SetServerConfigurationResponse, ApiError>;
 
     /// Shut down all sessions and the server itself
     async fn shutdown_server(&self) -> Result<ShutdownServerResponse, ApiError>;
@@ -404,6 +460,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().channels_websocket(session_id, &context).await
     }
 
+    /// Notify the server that a client is connected
+    async fn client_heartbeat(&self) -> Result<ClientHeartbeatResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().client_heartbeat(&context).await
+    }
+
     /// Get Jupyter connection information for the session
     async fn connection_info(
         &self,
@@ -417,6 +479,12 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError> {
         let context = self.context().clone();
         self.api().delete_session(session_id, &context).await
+    }
+
+    /// Get the server configuration
+    async fn get_server_configuration(&self) -> Result<GetServerConfigurationResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().get_server_configuration(&context).await
     }
 
     /// Get session details
@@ -459,15 +527,29 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn restart_session(
         &self,
         session_id: String,
+        restart_session: Option<models::RestartSession>,
     ) -> Result<RestartSessionResponse, ApiError> {
         let context = self.context().clone();
-        self.api().restart_session(session_id, &context).await
+        self.api()
+            .restart_session(session_id, restart_session, &context)
+            .await
     }
 
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError> {
         let context = self.context().clone();
         self.api().server_status(&context).await
+    }
+
+    /// Change the server configuration
+    async fn set_server_configuration(
+        &self,
+        server_configuration: models::ServerConfiguration,
+    ) -> Result<SetServerConfigurationResponse, ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .set_server_configuration(server_configuration, &context)
+            .await
     }
 
     /// Shut down all sessions and the server itself

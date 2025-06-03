@@ -14,6 +14,7 @@ use futures::SinkExt;
 use futures::StreamExt;
 use hyper::upgrade::Upgraded;
 use kcshared::jupyter_message::JupyterMessage;
+use kcshared::kernel_message::KernelMessage;
 use kcshared::websocket_message::WebsocketMessage;
 use once_cell::sync::Lazy;
 use tokio::select;
@@ -235,7 +236,20 @@ impl ClientSession {
                     }
                 },
                 _ = self.disconnect.listen() => {
+                    // This event is fired when we need to disconnect the
+                    // session because another client is connecting to the same
+                    // kernel. We need to send a message to the client and close
+                    // the websocket.
                     log::info!("[client {}] Disconnecting", self.client_id);
+
+                    // Create a message to send to the client
+                    let close_msg = WebsocketMessage::Kernel(KernelMessage::ClientDisconnected("Another client is connecting to this session.".to_string()));
+                    let close_msg = serde_json::to_string(&close_msg).unwrap();
+                    ws_stream.send(Message::Text(close_msg)).await.unwrap();
+
+                    // Send a close message to the websocket
+                    ws_stream.send(Message::Close(None)).await.unwrap();
+
                     break;
                 }
             }

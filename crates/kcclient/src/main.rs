@@ -10,7 +10,7 @@
 //! Kallichore Client
 #![allow(missing_docs, unused_variables, trivial_casts)]
 
-use std::path::PathBuf;
+use std::{path::PathBuf, vec};
 
 use directories::BaseDirs;
 #[allow(unused_imports)]
@@ -18,8 +18,10 @@ use futures::{future, stream, SinkExt, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
 use kallichore_api::{
-    DeleteSessionResponse, InterruptSessionResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse,
+    models::{RestartSession, ServerConfiguration},
+    DeleteSessionResponse, GetServerConfigurationResponse, InterruptSessionResponse,
+    NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
+    SetServerConfigurationResponse,
 };
 
 use kcshared::{
@@ -62,6 +64,9 @@ enum Commands {
 
     /// Gets server status
     Status,
+
+    /// Gets server configuration
+    Configuration,
 
     /// Start a new session
     Start {
@@ -138,6 +143,14 @@ enum Commands {
         /// The session to delete.
         #[arg(short, long)]
         session_id: String,
+    },
+
+    /// Set server's idle timeout in hours
+    IdleTimeoutHours {
+        /// The number of hours before idle sessions are shut down
+        /// (-1 to disable idle shutdown)
+        #[arg(long)]
+        hours: i32,
     },
 }
 
@@ -361,7 +374,7 @@ fn jupyter_dir() -> PathBuf {
 
 #[cfg(not(target_os = "macos"))]
 fn jupyter_dir() -> PathBuf {
-    let dir = directories::ProjectDirs::from("Jupyter", "", "").unwrap();
+    let dir = directories::ProjectDirs::from("", "", "jupyter").unwrap();
     dir.data_dir().to_path_buf()
 }
 
@@ -402,6 +415,28 @@ fn main() {
                 println!("{}", serde_json::to_string_pretty(&status).unwrap());
             }
         }
+        Some(Commands::Configuration) => {
+            let result = rt.block_on(client.get_server_configuration());
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+            if let Ok(GetServerConfigurationResponse::TheCurrentServerConfiguration(config)) =
+                result
+            {
+                println!("{}", serde_json::to_string_pretty(&config).unwrap());
+            } else if let Ok(GetServerConfigurationResponse::FailedToGetConfiguration(error)) =
+                result
+            {
+                eprintln!(
+                    "Failed to get server configuration: {}",
+                    serde_json::to_string_pretty(&error).unwrap()
+                );
+            } else {
+                eprintln!("Failed to get server configuration");
+            }
+        }
         Some(Commands::List) => {
             let result = rt.block_on(client.list_sessions());
             info!(
@@ -422,14 +457,15 @@ fn main() {
                 .join(kernel.clone())
                 .join("kernel.json");
 
+            log::debug!("Looking for kernel.json in {:?}", kernel_spec_json);
+
             // Parse the kernel spec from the JSON file using the serde json library
             let kernel_spec: kernel_spec::KernelSpec =
                 serde_json::from_reader(std::fs::File::open(kernel_spec_json).unwrap())
                     .expect("Failed to parse kernel spec");
 
-            // Convert the environment variables from the kernel spec to a
-            // HashMap for use in the session
-            let mut env = std::collections::HashMap::new();
+            // Convert the environment variables from the kernel spec to a set of actions
+            let mut env = vec![];
             if kernel_spec.env.is_some() {
                 let kernel_env = kernel_spec.env.as_ref().unwrap();
                 for (key, value) in kernel_env.iter() {
@@ -441,7 +477,12 @@ fn main() {
                     );
                     if value.is_string() {
                         let value = value.as_str().unwrap();
-                        env.insert(key.clone(), value.to_string());
+                        let env_var = models::VarAction {
+                            action: models::VarActionType::Replace,
+                            name: key.clone(),
+                            value: value.to_string(),
+                        };
+                        env.push(env_var);
                     }
                 }
             }
@@ -456,6 +497,8 @@ fn main() {
                 continuation_prompt: String::from("..."),
                 working_directory: working_directory.to_string_lossy().to_string(),
                 connection_timeout: Some(30),
+                protocol_version: Some("5.3".to_string()),
+                run_in_shell: Some(false),
                 env,
                 interrupt_mode: models::InterruptMode::Message,
             };
@@ -634,7 +677,11 @@ fn main() {
                 }
             };
             log::info!("Restarting session '{}'", session_id.clone());
-            match rt.block_on(client.restart_session(session_id.clone())) {
+            let restart = RestartSession {
+                working_directory: None,
+                env: None,
+            };
+            match rt.block_on(client.restart_session(session_id.clone(), Some(restart))) {
                 Ok(resp) => match resp {
                     RestartSessionResponse::Restarted(_) => {
                         println!("Session {} restarted", session_id);
@@ -673,6 +720,32 @@ fn main() {
                 },
                 Err(e) => {
                     eprintln!("Failed to delete session: {:?}", e);
+                }
+            }
+        }
+        Some(Commands::IdleTimeoutHours { hours }) => {
+            log::info!("Setting idle timeout hours to {}", hours);
+            // Create the server configuration with the new idle timeout hours
+            let config = ServerConfiguration {
+                idle_shutdown_hours: Some(hours),
+                log_level: None,
+            };
+
+            // Call the API to set the server configuration
+            match rt.block_on(client.set_server_configuration(config)) {
+                Ok(resp) => match resp {
+                    SetServerConfigurationResponse::ConfigurationUpdated(_) => {
+                        println!("Idle timeout hours set to {}", hours);
+                    }
+                    SetServerConfigurationResponse::Error(error) => {
+                        println!(
+                            "Failed to set idle timeout hours: {}",
+                            serde_json::to_string_pretty(&error).unwrap()
+                        );
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to set idle timeout hours: {:?}", e);
                 }
             }
         }

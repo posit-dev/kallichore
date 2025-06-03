@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2024-12-19T16:20:32.173635-08:00[America/Los_Angeles]
+- Build date: 2025-05-20T11:59:20.620003-07:00[America/Los_Angeles]
 - Generator version: 7.6.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -63,8 +63,10 @@ To run a client, follow one of the following simple steps:
 
 ```
 cargo run --example client ChannelsWebsocket
+cargo run --example client ClientHeartbeat
 cargo run --example client ConnectionInfo
 cargo run --example client DeleteSession
+cargo run --example client GetServerConfiguration
 cargo run --example client GetSession
 cargo run --example client InterruptSession
 cargo run --example client KillSession
@@ -108,8 +110,10 @@ Method | HTTP request | Description
 ------------- | ------------- | -------------
 [**adopt-session**](docs/default_api.md#adopt-session) | **PUT** /sessions/{session_id}/adopt | Adopt an existing session
 [**channels-websocket**](docs/default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+[**client-heartbeat**](docs/default_api.md#client-heartbeat) | **POST** /client_heartbeat | Notify the server that a client is connected
 [**connection-info**](docs/default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 [**delete-session**](docs/default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
+[**get-server-configuration**](docs/default_api.md#get-server-configuration) | **GET** /server_configuration | Get the server configuration
 [**get-session**](docs/default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
 [**interrupt-session**](docs/default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
 [**kill-session**](docs/default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
@@ -117,6 +121,7 @@ Method | HTTP request | Description
 [**new-session**](docs/default_api.md#new-session) | **PUT** /sessions | Create a new session
 [**restart-session**](docs/default_api.md#restart-session) | **POST** /sessions/{session_id}/restart | Restart a session
 [**server-status**](docs/default_api.md#server-status) | **GET** /status | Get server status and information
+[**set-server-configuration**](docs/default_api.md#set-server-configuration) | **POST** /server_configuration | Change the server configuration
 [**shutdown-server**](docs/default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
 [**start-session**](docs/default_api.md#start-session) | **POST** /sessions/{session_id}/start | Start a session
 
@@ -130,10 +135,14 @@ Method | HTTP request | Description
  - [InterruptMode](docs/InterruptMode.md)
  - [NewSession](docs/NewSession.md)
  - [NewSession200Response](docs/NewSession200Response.md)
+ - [RestartSession](docs/RestartSession.md)
+ - [ServerConfiguration](docs/ServerConfiguration.md)
  - [ServerStatus](docs/ServerStatus.md)
  - [SessionList](docs/SessionList.md)
  - [StartupError](docs/StartupError.md)
  - [Status](docs/Status.md)
+ - [VarAction](docs/VarAction.md)
+ - [VarActionType](docs/VarActionType.md)
 
 
 ## Documentation For Authorization

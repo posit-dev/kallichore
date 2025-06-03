@@ -5,6 +5,8 @@
 //
 //
 
+use std::collections::HashMap;
+
 use async_channel::Sender;
 use kallichore_api::models;
 use kcshared::{
@@ -12,7 +14,11 @@ use kcshared::{
     websocket_message::WebsocketMessage,
 };
 
+use crate::connection_file::ConnectionFile;
 use crate::execution_queue::ExecutionQueue;
+
+#[cfg(not(target_os = "windows"))]
+use crate::working_dir::get_process_cwd;
 
 /// The mutable state of the kernel.
 ///
@@ -35,6 +41,12 @@ pub struct KernelState {
 
     /// The current working directory of the kernel.
     pub working_directory: String,
+
+    /// The set of environment variable actions for startup.
+    pub env_vars: Vec<models::VarAction>,
+
+    /// The resolved environment variables for the kernel.
+    pub resolved_env: HashMap<String, String>,
 
     /// The current process ID of the kernel, or None if the kernel is not running.
     pub process_id: Option<u32>,
@@ -59,6 +71,9 @@ pub struct KernelState {
 
     /// A channel to publish status updates to the websocket
     ws_json_tx: Sender<WebsocketMessage>,
+
+    /// The connection file for the kernel, or None if not set.
+    pub connection_file: Option<ConnectionFile>,
 }
 
 impl KernelState {
@@ -77,12 +92,15 @@ impl KernelState {
             restarting: false,
             process_id: None,
             execution_queue: ExecutionQueue::new(),
+            env_vars: session.env.clone(),
+            resolved_env: HashMap::new(),
             input_prompt: session.input_prompt.clone(),
             continuation_prompt: session.continuation_prompt.clone(),
             ws_json_tx,
             idle_nudge_tx,
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,
+            connection_file: None,
         }
     }
 
@@ -99,6 +117,44 @@ impl KernelState {
     pub async fn set_connected(&mut self, connected: bool) {
         self.connected = connected;
         self.nudge_idle().await;
+    }
+
+    /// Polls the working directory to see if it's changed.
+    ///
+    /// If it has, updates state and sends a message to the client. Only supported
+    /// on non-Windows platforms.
+    #[cfg(not(target_os = "windows"))]
+    pub async fn poll_working_dir(&mut self) {
+        if self.process_id.is_none() {
+            return;
+        }
+
+        let working_dir = match get_process_cwd(self.process_id.unwrap()) {
+            Ok(dir) => dir,
+            Err(err) => {
+                log::error!(
+                    "[session {}] Failed to get working directory: {}",
+                    self.session_id,
+                    err
+                );
+                return;
+            }
+        };
+
+        let working_dir = working_dir.to_string_lossy().to_string();
+
+        if working_dir != self.working_directory {
+            log::debug!(
+                "[session {}] Working directory changed: '{}' => '{}'",
+                self.session_id,
+                self.working_directory,
+                working_dir
+            );
+            let msg =
+                WebsocketMessage::Kernel(KernelMessage::WorkingDirChanged(working_dir.clone()));
+            self.ws_json_tx.send(msg).await.unwrap();
+            self.working_directory = working_dir;
+        }
     }
 
     /// Set the kernel's status.
@@ -155,5 +211,16 @@ impl KernelState {
 
         let status_message = WebsocketMessage::Kernel(KernelMessage::Status(update.clone()));
         self.ws_json_tx.send(status_message).await.unwrap();
+
+        // When the kernel becomes idle after executing code, poll the working
+        // directory to see if it's changed.
+        #[cfg(not(target_os = "windows"))]
+        if status == models::Status::Idle {
+            if let Some(reason) = update.reason {
+                if reason == "execute_request" {
+                    self.poll_working_dir().await;
+                }
+            }
+        }
     }
 }

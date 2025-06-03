@@ -6,9 +6,11 @@ use futures::{future, stream, Stream};
 #[allow(unused_imports)]
 use kallichore_api::{
     models, AdoptSessionResponse, Api, ApiNoContext, ChannelsWebsocketResponse, Client,
-    ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
-    RestartSessionResponse, ServerStatusResponse, ShutdownServerResponse, StartSessionResponse,
+    ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
+    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
+    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
+    StartSessionResponse,
 };
 
 #[allow(unused_imports)]
@@ -36,8 +38,10 @@ fn main() {
                 .help("Sets the operation to run")
                 .possible_values(&[
                     "ChannelsWebsocket",
+                    "ClientHeartbeat",
                     "ConnectionInfo",
                     "DeleteSession",
+                    "GetServerConfiguration",
                     "GetSession",
                     "InterruptSession",
                     "KillSession",
@@ -86,12 +90,7 @@ fn main() {
         XSpanIdString::default()
     );
 
-    let mut client: Box<dyn ApiNoContext<ClientContext>> = if matches.is_present("https") {
-        // Using Simple HTTPS
-        let client =
-            Box::new(Client::try_new_https(&base_url).expect("Failed to create HTTPS client"));
-        Box::new(client.with_context(context))
-    } else {
+    let mut client: Box<dyn ApiNoContext<ClientContext>> = {
         // Using HTTP
         let client =
             Box::new(Client::try_new_http(&base_url).expect("Failed to create HTTP client"));
@@ -118,6 +117,14 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
+        Some("ClientHeartbeat") => {
+            let result = rt.block_on(client.client_heartbeat());
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
         Some("ConnectionInfo") => {
             let result = rt.block_on(client.connection_info("session_id_example".to_string()));
             info!(
@@ -128,6 +135,14 @@ fn main() {
         }
         Some("DeleteSession") => {
             let result = rt.block_on(client.delete_session("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
+        Some("GetServerConfiguration") => {
+            let result = rt.block_on(client.get_server_configuration());
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,
@@ -175,7 +190,8 @@ fn main() {
         },
         */
         Some("RestartSession") => {
-            let result = rt.block_on(client.restart_session("session_id_example".to_string()));
+            let result =
+                rt.block_on(client.restart_session("session_id_example".to_string(), None));
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,
@@ -190,6 +206,14 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
+        /* Disabled because there's no example.
+        Some("SetServerConfiguration") => {
+            let result = rt.block_on(client.set_server_configuration(
+                  ???
+            ));
+            info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
+        },
+        */
         Some("ShutdownServer") => {
             let result = rt.block_on(client.shutdown_server());
             info!(

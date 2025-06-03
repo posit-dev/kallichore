@@ -12,6 +12,7 @@
 use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use hyper::client::connect;
 use hyper::header::{HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
 use hyper::server::conn::Http;
 use hyper::service::Service;
@@ -34,22 +35,57 @@ use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
+use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use kallichore_api::models::ConnectionInfo;
+use kallichore_api::server::MakeService;
+use kallichore_api::{Api, ClientHeartbeatResponse, ListSessionsResponse};
+use std::error::Error;
+use swagger::ApiError;
+
+use crate::client_session::ClientSession;
+use crate::connection_file::{self, ConnectionFile};
+use crate::error::KSError;
+use crate::kernel_session::{self, KernelSession};
+use crate::registration_file::RegistrationFile;
+use crate::registration_socket::HandshakeResult;
+use crate::working_dir;
+use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
     DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
     NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
+use kcshared::{
+    handshake_protocol::{HandshakeStatus, HandshakeVersion},
+    kernel_message::KernelMessage,
+    websocket_message::WebsocketMessage,
+};
+use tokio::sync::broadcast;
 
-pub async fn create(addr: &str, token: Option<String>, idle_shutdown_hours: Option<u16>) {
+pub async fn create(
+    addr: &str,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+) {
     let addr = addr.parse().expect("Failed to parse bind address");
 
-    let server = Server::new(token, idle_shutdown_hours);
+    // Get the log level from the provided parameter or environment variable if not provided
+    let effective_log_level = match log_level {
+        Some(level) => Some(level),
+        None => match env::var("RUST_LOG") {
+            Ok(level) => Some(level),
+            Err(_) => None,
+        },
+    };
+
+    let server = Server::new(token, idle_shutdown_hours, effective_log_level);
 
     let service = MakeService::new(server);
 
@@ -76,16 +112,37 @@ pub struct Server<C> {
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
     idle_nudge_tx: Sender<()>,
     reserved_ports: Arc<RwLock<Vec<i32>>>,
+    // Shared, thread-safe storage for the idle_shutdown_hours setting
+    idle_shutdown_hours: Arc<RwLock<Option<u16>>>,
+    #[allow(dead_code)]
+    log_level: Option<String>,
+    // Channel to signal changes to idle configuration
+    idle_config_update_tx: Sender<Option<u16>>,
 }
 
 impl<C> Server<C> {
-    pub fn new(token: Option<String>, idle_shutdown_hours: Option<u16>) -> Self {
+    pub fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+    ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
 
+        // Create a shared, thread-safe storage for the idle_shutdown_hours setting
+        let shared_idle_hours = Arc::new(RwLock::new(idle_shutdown_hours));
+
+        // Create channels for idle nudging and configuration updates
+        let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
+        let (idle_config_update_tx, idle_config_update_rx) = mpsc::channel(16);
+
         // Start the idle poll task
-        let (idle_nudge_tx, idle_nudge_rx) = tokio::sync::mpsc::channel(256);
-        Server::<C>::idle_poll_task(kernel_sessions.clone(), idle_nudge_rx, idle_shutdown_hours);
+        Self::idle_poll_task(
+            kernel_sessions.clone(),
+            idle_nudge_rx,
+            shared_idle_hours.clone(),
+            idle_config_update_rx,
+        );
 
         Server {
             token,
@@ -95,6 +152,9 @@ impl<C> Server<C> {
             client_sessions: Arc::new(RwLock::new(vec![])),
             reserved_ports: Arc::new(RwLock::new(vec![])),
             idle_nudge_tx,
+            idle_shutdown_hours: shared_idle_hours,
+            log_level,
+            idle_config_update_tx,
         }
     }
 
@@ -113,17 +173,22 @@ impl<C> Server<C> {
     /// - `idle_shutdown_hours`: The number of hours of inactivity before the
     ///    server shuts down. If None, the server will not shut down due to
     ///    inactivity.
+    /// - `idle_config_update_rx`: A receiver for idle configuration updates.
     fn idle_poll_task(
         all_sessions: Arc<RwLock<Vec<KernelSession>>>,
-        mut idle_nudge_rx: tokio::sync::mpsc::Receiver<()>,
-        idle_shutdown_hours: Option<u16>,
+        mut idle_nudge_rx: mpsc::Receiver<()>,
+        idle_shutdown_hours: Arc<RwLock<Option<u16>>>,
+        mut idle_config_update_rx: mpsc::Receiver<Option<u16>>,
     ) {
         tokio::spawn(async move {
             // Mark the start time of the idle poll task
             let start_time = std::time::Instant::now();
 
+            // Get the initial value of idle_shutdown_hours
+            let mut current_idle_shutdown_hours = { *idle_shutdown_hours.read().unwrap() };
+
             // Create the interval for the idle poll task.
-            let duration = match idle_shutdown_hours {
+            let mut duration = match current_idle_shutdown_hours {
                 Some(hours) => match hours {
                     0 => {
                         // Zero hours would create a busy loop, so if 0 is
@@ -141,22 +206,28 @@ impl<C> Server<C> {
                     }
                 },
                 None => {
-                    // If no idle shutdown hours are specified, default to 24 hours
+                    // If no idle shutdown hours are specified, default to a week
                     log::debug!("idle_shutdown_hours not specified; the server will not shut down due to inactivity");
-                    tokio::time::Duration::from_secs(24 * 3600)
+                    tokio::time::Duration::from_secs(168 * 3600)
                 }
             };
             let mut interval = tokio::time::interval(duration);
+
+            // Set the missed tick behavior to delay, which ensures that each tick
+            // is at least the specified duration apart, even if the task is delayed.
+            // The default is Burst, which causes a flurry of ticks to be sent after
+            // e.g. wakeup from sleep.
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
             // Consume the first tick immediately (tokio intervals start at 0)
             interval.tick().await;
 
             loop {
-                // Wait for either the interval to expire or an idle nudge
+                // Wait for either the interval to expire, an idle nudge, or a configuration update
                 tokio::select! {
                     _ = interval.tick() => {
                         // If no idle shutdown hours are specified, skip the check
-                        if idle_shutdown_hours.is_none() {
+                        if current_idle_shutdown_hours.is_none() {
                             continue;
                         }
 
@@ -181,6 +252,27 @@ impl<C> Server<C> {
                         log::trace!("Received an idle nudge; resetting interval");
                         // Received an idle nudge; reset the interval
                         interval.reset();
+                    }
+                    Some(new_idle_hours) = idle_config_update_rx.recv() => {
+                        // Received a configuration update
+                        log::info!("Updating idle shutdown hours to {:?}", new_idle_hours);
+                        current_idle_shutdown_hours = new_idle_hours;
+
+                        // Update the interval duration
+                        duration = match current_idle_shutdown_hours {
+                            Some(hours) => match hours {
+                                0 => tokio::time::Duration::from_secs(30),
+                                _ => tokio::time::Duration::from_secs((hours as u64) * 3600),
+                            },
+                            None => tokio::time::Duration::from_secs(168 * 3600),
+                        };
+
+                        // Create a new interval with the updated duration
+                        interval = tokio::time::interval(duration);
+                        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+                        // Consume the first tick immediately
+                        interval.tick().await;
                     }
                 }
             }
@@ -385,19 +477,6 @@ impl<C> Server<C> {
     }
 }
 
-use kallichore_api::server::MakeService;
-use kallichore_api::{Api, ListSessionsResponse};
-use std::error::Error;
-use swagger::ApiError;
-
-use crate::client_session::ClientSession;
-use crate::connection_file::{self, ConnectionFile};
-use crate::error::KSError;
-use crate::kernel_session::{self, KernelSession};
-use crate::zmq_ws_proxy::{self, ZmqWsProxy};
-
-impl<C> Server<C> {}
-
 #[async_trait]
 impl<C> Api<C> for Server<C>
 where
@@ -485,50 +564,13 @@ where
         let session_id = NewSession200Response {
             session_id: new_session_id.clone(),
         };
-        let args = session.argv.clone();
 
-        // Create a connection file for the session in a temporary directory
-        let connection_file = match ConnectionFile::generate(
-            String::from("127.0.0.1"),
-            self.reserved_ports.clone(),
-        ) {
-            Ok(connection_file) => connection_file,
-            Err(e) => {
-                let error = KSError::SessionCreateFailed(
-                    new_session_id.clone(),
-                    anyhow!("Couldn't create connection file: {}", e),
-                );
-                error.log();
-                return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
-            }
-        };
+        // Generate a key for the session
+        let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
+        let key = hex::encode(key_bytes);
 
+        // Create log file path which may be needed in argv
         let temp_dir = env::temp_dir();
-        let mut connection_file_name = std::ffi::OsString::from("connection_");
-        connection_file_name.push(new_session_id.clone());
-        connection_file_name.push(".json");
-
-        // Combine the temporary directory with the file name to get the full path
-        let connection_path: PathBuf = temp_dir.join(connection_file_name);
-        if let Err(err) = connection_file.to_file(connection_path.clone()) {
-            let error = KSError::SessionCreateFailed(
-                new_session_id.clone(),
-                anyhow!(
-                    "Failed to write connection file {}: {}",
-                    connection_path.to_string_lossy(),
-                    err
-                ),
-            );
-            error.log();
-            return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
-        }
-
-        log::debug!(
-            "Created connection file for session {} at {:?}",
-            new_session_id.clone(),
-            connection_path
-        );
-
         let mut log_file_name = std::ffi::OsString::from("kernel_log_");
         log_file_name.push(new_session_id.clone());
         log_file_name.push(".txt");
@@ -540,23 +582,9 @@ where
             log_path
         );
 
-        // Loop through the arguments; if any is the special string "{connection_file}", replace it with the session id
-        let args: Vec<String> = args
-            .iter()
-            .map(|arg| {
-                if arg == "{connection_file}" {
-                    connection_path.to_string_lossy().to_string()
-                } else if arg == "{log_file}" {
-                    log_path.to_string_lossy().to_string()
-                } else {
-                    arg.clone()
-                }
-            })
-            .collect();
-
         let session = models::NewSession {
             session_id: session_id.session_id.clone(),
-            argv: args,
+            argv: session.argv,
             display_name: session.display_name.clone(),
             language: session.language.clone(),
             working_directory: session.working_directory.clone(),
@@ -564,17 +592,22 @@ where
             continuation_prompt: session.continuation_prompt.clone(),
             username: session.username.clone(),
             env: session.env.clone(),
+            run_in_shell: session.run_in_shell.clone(),
             interrupt_mode: session.interrupt_mode.clone(),
             connection_timeout: session.connection_timeout.clone(),
+            protocol_version: session.protocol_version.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
+
         let kernel_session = match KernelSession::new(
             session,
-            connection_file.clone(),
+            key,
             self.idle_nudge_tx.clone(),
             self.reserved_ports.clone(),
-        ) {
+        )
+        .await
+        {
             Ok(kernel_session) => kernel_session,
             Err(e) => {
                 let error = KSError::SessionCreateFailed(
@@ -594,7 +627,7 @@ where
     async fn adopt_session(
         &self,
         session_id: String,
-        connection_info: models::ConnectionInfo,
+        connection_info: ConnectionInfo,
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
@@ -729,9 +762,16 @@ where
         };
 
         // Return the connection info
-        Ok(ConnectionInfoResponse::ConnectionInfo(
-            kernel_session.connection_file.info.clone(),
-        ))
+        match kernel_session.ensure_connection_file().await {
+            Ok(conn_file) => Ok(ConnectionInfoResponse::ConnectionInfo(
+                conn_file.info.clone(),
+            )),
+            Err(e) => {
+                let error = KSError::NoConnectionInfo(session_id.clone(), e);
+                error.log();
+                Ok(ConnectionInfoResponse::Failed(error.to_json(None)))
+            }
+        }
     }
 
     async fn kill_session(
@@ -881,6 +921,7 @@ where
     async fn restart_session(
         &self,
         session_id: String,
+        restart_session: Option<models::RestartSession>,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
@@ -901,7 +942,20 @@ where
                 return Ok(RestartSessionResponse::SessionNotFound);
             }
         };
-        match session.restart().await {
+
+        let working_dir = restart_session
+            .as_ref()
+            .and_then(|rs| rs.working_directory.as_ref())
+            .filter(|dir| !dir.is_empty())
+            .cloned();
+
+        let env_vars = restart_session
+            .as_ref()
+            .and_then(|rs| rs.env.as_ref())
+            .filter(|env| !env.is_empty())
+            .cloned();
+
+        match session.restart(working_dir, env_vars).await {
             Ok(_) => Ok(RestartSessionResponse::Restarted(serde_json::Value::Null)),
             Err(e) => Ok(RestartSessionResponse::RestartFailed(e)),
         }
@@ -991,6 +1045,7 @@ where
             idle_seconds,
             busy_seconds,
             sessions: sessions.len() as i32,
+            process_id: std::process::id() as i32,
             active,
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
@@ -1113,6 +1168,27 @@ where
         Ok(response)
     }
 
+    async fn client_heartbeat(&self, context: &C) -> Result<ClientHeartbeatResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "client_heartbeat - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
+        match self.idle_nudge_tx.send(()).await {
+            Ok(_) => {
+                log::trace!("Client heartbeat processed successfully");
+            }
+            Err(e) => {
+                // This is a fire-and-forget operation, so we don't need to
+                // return an error to the client.
+                log::error!("Failed to send client heartbeat: {}", e);
+            }
+        }
+        Ok(ClientHeartbeatResponse::HeartbeatReceived(
+            serde_json::Value::Null,
+        ))
+    }
+
     async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
         info!(
@@ -1137,5 +1213,95 @@ where
             )),
             Err(e) => Ok(ShutdownServerResponse::ShutdownFailed(e.to_json(None))),
         }
+    }
+
+    async fn get_server_configuration(
+        &self,
+        context: &C,
+    ) -> Result<kallichore_api::GetServerConfigurationResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "get_server_configuration - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
+
+        // Read the idle_shutdown_hours from the shared value
+        let idle_hours = {
+            // Get a lock on the value and read it
+            let idle_hours_guard = self.idle_shutdown_hours.read().unwrap();
+
+            // Convert Option<u16> to Option<i32>
+            idle_hours_guard.map(|hours| hours as i32)
+        };
+
+        // Return the server configuration
+        Ok(
+            kallichore_api::GetServerConfigurationResponse::TheCurrentServerConfiguration(
+                models::ServerConfiguration {
+                    idle_shutdown_hours: idle_hours,
+                    log_level: self.log_level.clone(),
+                },
+            ),
+        )
+    }
+
+    async fn set_server_configuration(
+        &self,
+        configuration: models::ServerConfiguration,
+        context: &C,
+    ) -> Result<kallichore_api::SetServerConfigurationResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "set_server_configuration - X-Span-ID: {:?}",
+            ctx_span.get().0.clone()
+        );
+
+        // Check if idle_shutdown_hours is provided in the configuration
+        if let Some(idle_hours) = configuration.idle_shutdown_hours {
+            let new_idle_hours = if idle_hours < 0 {
+                // Special case: negative value means the server should run
+                // indefinitely
+                None
+            } else {
+                // Convert to u16, handling potential overflow
+                match u16::try_from(idle_hours) {
+                    Ok(hours) => Some(hours),
+                    Err(_) => {
+                        return Ok(kallichore_api::SetServerConfigurationResponse::Error(
+                            models::Error {
+                                code: "400".to_string(),
+                                message: "idle_shutdown_hours is too large".to_string(),
+                                details: None,
+                            },
+                        ));
+                    }
+                }
+            };
+
+            // Update the stored value by sending a message to the idle_poll_task
+            if let Err(e) = self.idle_config_update_tx.send(new_idle_hours).await {
+                log::error!("Failed to send idle configuration update: {:?}", e);
+                return Ok(kallichore_api::SetServerConfigurationResponse::Error(
+                    models::Error {
+                        code: "500".to_string(),
+                        message: "Failed to update idle shutdown configuration".to_string(),
+                        details: Some(e.to_string()),
+                    },
+                ));
+            }
+
+            // Update the stored value in the Server struct using the thread-safe RwLock
+            {
+                let mut idle_hours_guard = self.idle_shutdown_hours.write().unwrap();
+                *idle_hours_guard = new_idle_hours;
+            }
+        }
+
+        // Return success
+        Ok(
+            kallichore_api::SetServerConfigurationResponse::ConfigurationUpdated(
+                serde_json::Value::Null,
+            ),
+        )
     }
 }

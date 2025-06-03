@@ -150,6 +150,12 @@ paths:
         schema:
           type: string
         style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/restartSession'
+        required: false
       responses:
         "200":
           content:
@@ -373,6 +379,57 @@ paths:
                 $ref: '#/components/schemas/error'
           description: Error
       summary: Get server status and information
+  /client_heartbeat:
+    post:
+      operationId: client-heartbeat
+      parameters: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Heartbeat received
+      summary: Notify the server that a client is connected
+  /server_configuration:
+    get:
+      operationId: get-server-configuration
+      parameters: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/serverConfiguration'
+          description: The current server configuration
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Failed to get configuration
+      summary: Get the server configuration
+    post:
+      operationId: set-server-configuration
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/serverConfiguration'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: {}
+          description: Configuration updated
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/error'
+          description: Error
+      summary: Change the server configuration
 components:
   responses:
     UnauthorizedError:
@@ -394,6 +451,33 @@ components:
       required:
       - code
       - message
+      type: object
+    envVarActions:
+      description: A list of environment variable actions to perform
+      items:
+        $ref: '#/components/schemas/varAction'
+      type: array
+    varActionType:
+      description: The type of action to perform on the environment variable
+      enum:
+      - replace
+      - append
+      - prepend
+      type: string
+    varAction:
+      properties:
+        action:
+          $ref: '#/components/schemas/varActionType'
+        name:
+          description: The name of the variable to act on
+          type: string
+        value:
+          description: "The value to replace, append, or prepend"
+          type: string
+      required:
+      - action
+      - name
+      - value
       type: object
     connectionInfo:
       description: Connection information for an existing session
@@ -513,10 +597,10 @@ components:
           description: The working directory in which to start the session.
           type: string
         env:
-          additionalProperties:
-            type: string
-          description: Environment variables to set for the session
-          type: object
+          description: A list of environment variable actions to perform
+          items:
+            $ref: '#/components/schemas/varAction'
+          type: array
         connection_timeout:
           default: 30
           description: The number of seconds to wait for a connection to the session's
@@ -524,6 +608,15 @@ components:
           type: integer
         interrupt_mode:
           $ref: '#/components/schemas/interrupt_mode'
+        protocol_version:
+          default: "5.3"
+          description: The Jupyter protocol version supported by the underlying kernel
+          type: string
+        run_in_shell:
+          default: false
+          description: Whether to run the session inside a login shell; only relevant
+            on POSIX systems
+          type: boolean
       required:
       - argv
       - continuation_prompt
@@ -535,6 +628,18 @@ components:
       - session_id
       - username
       - working_directory
+      type: object
+    restartSession:
+      properties:
+        working_directory:
+          description: "The desired working directory for the session after restart,\
+            \ if different from the session's working directory at startup"
+          type: string
+        env:
+          description: A list of environment variable actions to perform
+          items:
+            $ref: '#/components/schemas/varAction'
+          type: array
       type: object
     execution_queue:
       description: The execution queue for a session
@@ -663,6 +768,7 @@ components:
       type: object
     serverStatus:
       example:
+        process_id: 5
         sessions: 0
         busy_seconds: 5
         busy: true
@@ -685,12 +791,17 @@ components:
             \ sessions are idle"
           type: integer
         version:
+          description: The version of the server
           type: string
+        process_id:
+          description: The server's operating system process identifier
+          type: integer
       required:
       - active
       - busy
       - busy_seconds
       - idle_seconds
+      - process_id
       - sessions
       - version
       type: object
@@ -758,6 +869,25 @@ components:
       required:
       - sessions
       - total
+      type: object
+    serverConfiguration:
+      example:
+        log_level: trace
+        idle_shutdown_hours: 0
+      properties:
+        idle_shutdown_hours:
+          description: The number of hours the server will wait before shutting down
+            idle sessions (-1 if idle shutdown is disabled)
+          type: integer
+        log_level:
+          description: The current log level
+          enum:
+          - trace
+          - debug
+          - info
+          - warn
+          - error
+          type: string
       type: object
     new_session_200_response:
       example:

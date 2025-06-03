@@ -1,7 +1,7 @@
 //
 // zmq_ws_proxy.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -46,6 +46,7 @@ pub struct ZmqWsProxy {
     pub exit_event: Arc<Event>,
     pub disconnected_event: Arc<Event>,
     pub state: Arc<RwLock<KernelState>>,
+    pub pending_iopub_messages: Vec<ZmqMessage>,
 }
 
 impl ZmqWsProxy {
@@ -73,10 +74,6 @@ impl ZmqWsProxy {
         exit_event: Arc<Event>,
     ) -> Self {
         let session_id = connection.session_id.clone();
-        let hb_address = format!(
-            "tcp://{}:{}",
-            connection_file.info.ip, connection_file.info.hb_port
-        );
         let disconnected_event = Arc::new(Event::new());
 
         Self {
@@ -93,7 +90,10 @@ impl ZmqWsProxy {
             heartbeat: HeartbeatMonitor::new(
                 state.clone(),
                 session_id.clone(),
-                hb_address,
+                format!(
+                    "tcp://{}:{}",
+                    connection_file.info.ip, connection_file.info.hb_port
+                ),
                 disconnected_event.clone(),
             ),
             connection_file,
@@ -105,6 +105,7 @@ impl ZmqWsProxy {
             state,
             session_id: session_id.clone(),
             closed: false,
+            pending_iopub_messages: Vec::new(),
         }
     }
 
@@ -124,8 +125,9 @@ impl ZmqWsProxy {
             anyhow::bail!("Cannot connect; proxy is closed.");
         }
 
+        // Ensure we have a connection file before connecting
         log::trace!(
-            "[session {}] Connecting to sockets on ip ${} (shell = {}, iopub = {}, control = {}, stdin = {})",
+            "[session {}] Connecting to sockets on ip {} (shell = {}, iopub = {}, control = {}, stdin = {})",
             self.connection.session_id,
             self.connection_file.info.ip,
             self.connection_file.info.shell_port,
@@ -237,6 +239,8 @@ impl ZmqWsProxy {
             "[session {}] Sending initial kernel_info_request message to kernel",
             self.connection.session_id
         );
+
+        // Use the protocol version for the initial message
         let wire_message = WireMessage::from_jupyter(request, self.connection.clone())?;
         let zmq_message: ZmqMessage = wire_message.into();
         self.shell_socket
@@ -288,16 +292,41 @@ impl ZmqWsProxy {
                         },
                     }
                 },
+                // While waiting for the kernel info reply, we need to discard
+                // the iopub busy/idle status messages that are emitted while
+                // processing the kernel info request; since the client did not
+                // initiate the request and can't see the reply, it may be
+                // confused by the status messages. All other outgoing iopub
+                // messages are queued and delivered later.
                 iopub_msg = self.iopub_socket.as_mut().unwrap().recv() => {
                     match iopub_msg {
                         Ok(msg) => {
-                            log::trace!("[session {}] Ignoring iopub message {:?}", session_id, msg);
+                            // Parse into a Jupyter message
+                            let wire_message = WireMessage::from_zmq(self.session_id.clone(), JupyterChannel::IOPub, msg.clone());
+                            let jupyter_message = wire_message.to_jupyter(JupyterChannel::IOPub)?;
+                            if let Some(ref parent_header) =  jupyter_message.parent_header {
+                                // If the message's parent header matches the msg_id we
+                                // are waiting for, we need to check if it is a status
+                                // message. If it is, we need to discard it.
+                                if parent_header.msg_id == msg_id {
+                                    if let JupyterMsg::Status(_) = JupyterMsg::from(jupyter_message.clone()) {
+                                            log::trace!(
+                                                "[session {}] Received kernel status message",
+                                                session_id,
+                                            );
+                                            continue;
+                                        }
+                                }
+                            };
+
+                            // If we got here, save the message for later delivery.
+                            self.pending_iopub_messages.push(msg);
                         },
                         Err(e) => {
                             return Err(anyhow::anyhow!("Failed to receive message from iopub socket: {}", e));
-                        },
+                        }
                     }
-                },
+                }
             }
         }
     }
@@ -308,6 +337,26 @@ impl ZmqWsProxy {
             "[session {}] Starting ZeroMQ-WebSocket proxy",
             self.connection.session_id
         );
+
+        // Start by flushing the queue of pending iopub messages and sending
+        // them to the WebSocket.
+        let pending_messages = self.pending_iopub_messages.drain(..).collect::<Vec<_>>();
+        if !pending_messages.is_empty() {
+            log::debug!(
+                "[session {}] Forwarding {} pending iopub messages to WebSocket",
+                session_id,
+                pending_messages.len()
+            );
+        }
+        for message in pending_messages {
+            if let Err(err) = self.forward_zmq(JupyterChannel::IOPub, message).await {
+                log::error!(
+                    "[session {}] Failed to forward pending iopub message to WebSocket: {}",
+                    session_id,
+                    err
+                );
+            }
+        }
 
         // Create monitors for each socket.
         //
@@ -470,9 +519,11 @@ impl ZmqWsProxy {
                 // Do nothing for other message types
             }
         }
-        // Convert the message to a wire message
+
+        // Convert the message to a wire message using the protocol version
         let channel = msg.channel.clone();
         let wire_message = WireMessage::from_jupyter(msg, self.connection.clone())?;
+
         let zmq_message: ZmqMessage = wire_message.into();
         match channel {
             JupyterChannel::Shell => {
@@ -579,13 +630,14 @@ impl ZmqWsProxy {
                         let mut state = self.state.write().await;
                         match state.execution_queue.next_request() {
                             Some(request) => {
-                                // Send the next request to the kernel
-                                let message =
+                                // Send the next request to the kernel with the protocol version
+                                let wire_message =
                                     WireMessage::from_jupyter(request, self.connection.clone())?;
+
                                 self.shell_socket
                                     .as_mut()
                                     .unwrap()
-                                    .send(message.into())
+                                    .send(wire_message.into())
                                     .await?;
                             }
                             None => {

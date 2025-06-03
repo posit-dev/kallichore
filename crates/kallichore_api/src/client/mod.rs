@@ -42,10 +42,11 @@ const FRAGMENT_ENCODE_SET: &AsciiSet = &percent_encoding::CONTROLS
 const ID_ENCODE_SET: &AsciiSet = &FRAGMENT_ENCODE_SET.add(b'|');
 
 use crate::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ConnectionInfoResponse,
-    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
-    ListSessionsResponse, NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ClientHeartbeatResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, GetServerConfigurationResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
+    SetServerConfigurationResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 /// Convert input into a base path, e.g. "http://example:123". Also checks the scheme as it goes.
@@ -163,7 +164,6 @@ where
 #[derive(Debug, Clone)]
 pub enum HyperClient {
     Http(hyper::client::Client<hyper::client::HttpConnector, Body>),
-    Https(hyper::client::Client<HttpsConnector, Body>),
 }
 
 impl Service<Request<Body>> for HyperClient {
@@ -174,14 +174,12 @@ impl Service<Request<Body>> for HyperClient {
     fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         match self {
             HyperClient::Http(client) => client.poll_ready(cx),
-            HyperClient::Https(client) => client.poll_ready(cx),
         }
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         match self {
             HyperClient::Http(client) => client.call(req),
-            HyperClient::Https(client) => client.call(req),
         }
     }
 }
@@ -204,13 +202,6 @@ where
 
         let client_service = match scheme.as_str() {
             "http" => HyperClient::Http(hyper::client::Client::builder().build(connector.build())),
-            "https" => {
-                let connector = connector
-                    .https()
-                    .build()
-                    .map_err(ClientInitError::SslError)?;
-                HyperClient::Https(hyper::client::Client::builder().build(connector))
-            }
             _ => {
                 return Err(ClientInitError::InvalidScheme);
             }
@@ -238,78 +229,6 @@ where
         let http_connector = Connector::builder().build();
 
         Self::try_new_with_connector(base_path, Some("http"), http_connector)
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "ios"))]
-type HttpsConnector = hyper_tls::HttpsConnector<hyper::client::HttpConnector>;
-
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-type HttpsConnector = hyper_openssl::HttpsConnector<hyper::client::HttpConnector>;
-
-impl<C> Client<DropContextService<hyper::client::Client<HttpsConnector, Body>, C>, C>
-where
-    C: Clone + Send + Sync + 'static,
-{
-    /// Create a client with a TLS connection to the server
-    ///
-    /// # Arguments
-    /// * `base_path` - base path of the client API, i.e. "https://www.my-api-implementation.com"
-    pub fn try_new_https(base_path: &str) -> Result<Self, ClientInitError> {
-        let https_connector = Connector::builder()
-            .https()
-            .build()
-            .map_err(ClientInitError::SslError)?;
-        Self::try_new_with_connector(base_path, Some("https"), https_connector)
-    }
-
-    /// Create a client with a TLS connection to the server using a pinned certificate
-    ///
-    /// # Arguments
-    /// * `base_path` - base path of the client API, i.e. "https://www.my-api-implementation.com"
-    /// * `ca_certificate` - Path to CA certificate used to authenticate the server
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    pub fn try_new_https_pinned<CA>(
-        base_path: &str,
-        ca_certificate: CA,
-    ) -> Result<Self, ClientInitError>
-    where
-        CA: AsRef<Path>,
-    {
-        let https_connector = Connector::builder()
-            .https()
-            .pin_server_certificate(ca_certificate)
-            .build()
-            .map_err(ClientInitError::SslError)?;
-        Self::try_new_with_connector(base_path, Some("https"), https_connector)
-    }
-
-    /// Create a client with a mutually authenticated TLS connection to the server.
-    ///
-    /// # Arguments
-    /// * `base_path` - base path of the client API, i.e. "https://www.my-api-implementation.com"
-    /// * `ca_certificate` - Path to CA certificate used to authenticate the server
-    /// * `client_key` - Path to the client private key
-    /// * `client_certificate` - Path to the client's public certificate associated with the private key
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    pub fn try_new_https_mutual<CA, K, D>(
-        base_path: &str,
-        ca_certificate: CA,
-        client_key: K,
-        client_certificate: D,
-    ) -> Result<Self, ClientInitError>
-    where
-        CA: AsRef<Path>,
-        K: AsRef<Path>,
-        D: AsRef<Path>,
-    {
-        let https_connector = Connector::builder()
-            .https()
-            .pin_server_certificate(ca_certificate)
-            .client_authentication(client_key, client_certificate)
-            .build()
-            .map_err(ClientInitError::SslError)?;
-        Self::try_new_with_connector(base_path, Some("https"), https_connector)
     }
 }
 
@@ -347,14 +266,6 @@ pub enum ClientInitError {
 
     /// Missing Hostname
     MissingHost,
-
-    /// SSL Connection Error
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "ios"))]
-    SslError(native_tls::Error),
-
-    /// SSL Connection Error
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    SslError(openssl::error::ErrorStack),
 }
 
 impl From<hyper::http::uri::InvalidUri> for ClientInitError {
@@ -605,6 +516,86 @@ where
         }
     }
 
+    async fn client_heartbeat(&self, context: &C) -> Result<ClientHeartbeatResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        let mut uri = format!("{}/client_heartbeat", self.base_path);
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {}", err))),
+        };
+
+        let mut request = match Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(Body::empty())
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {}", e))),
+        };
+
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {}",
+                        e
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {}", e)))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<serde_json::Value>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(ClientHeartbeatResponse::HeartbeatReceived(body))
+            }
+            code => {
+                let headers = response.headers().clone();
+                let body = response.into_body().take(100).into_raw().await;
+                Err(ApiError(format!(
+                    "Unexpected response code {}:\n{:?}\n\n{}",
+                    code,
+                    headers,
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {:?}>", e),
+                        },
+                        Err(e) => format!("<Failed to read body: {}>", e),
+                    }
+                )))
+            }
+        }
+    }
+
     async fn connection_info(
         &self,
         param_session_id: String,
@@ -792,6 +783,105 @@ where
             }
             401 => Ok(DeleteSessionResponse::Unauthorized),
             404 => Ok(DeleteSessionResponse::SessionNotFound),
+            code => {
+                let headers = response.headers().clone();
+                let body = response.into_body().take(100).into_raw().await;
+                Err(ApiError(format!(
+                    "Unexpected response code {}:\n{:?}\n\n{}",
+                    code,
+                    headers,
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {:?}>", e),
+                        },
+                        Err(e) => format!("<Failed to read body: {}>", e),
+                    }
+                )))
+            }
+        }
+    }
+
+    async fn get_server_configuration(
+        &self,
+        context: &C,
+    ) -> Result<GetServerConfigurationResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        let mut uri = format!("{}/server_configuration", self.base_path);
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {}", err))),
+        };
+
+        let mut request = match Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {}", e))),
+        };
+
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {}",
+                        e
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {}", e)))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body =
+                    serde_json::from_str::<models::ServerConfiguration>(body).map_err(|e| {
+                        ApiError(format!("Response body did not match the schema: {}", e))
+                    })?;
+                Ok(GetServerConfigurationResponse::TheCurrentServerConfiguration(body))
+            }
+            400 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(GetServerConfigurationResponse::FailedToGetConfiguration(
+                    body,
+                ))
+            }
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;
@@ -1318,6 +1408,7 @@ where
     async fn restart_session(
         &self,
         param_session_id: String,
+        param_restart_session: Option<models::RestartSession>,
         context: &C,
     ) -> Result<RestartSessionResponse, ApiError> {
         let mut client_service = self.client_service.clone();
@@ -1351,6 +1442,25 @@ where
             Err(e) => return Err(ApiError(format!("Unable to create request: {}", e))),
         };
 
+        let body = param_restart_session
+            .map(|ref body| serde_json::to_string(body).expect("impossible to fail to serialize"));
+        if let Some(body) = body {
+            *request.body_mut() = Body::from(body);
+        }
+
+        let header = "application/json";
+        request.headers_mut().insert(
+            CONTENT_TYPE,
+            match HeaderValue::from_str(header) {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create header: {} - {}",
+                        header, e
+                    )))
+                }
+            },
+        );
         let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
         request.headers_mut().insert(
             HeaderName::from_static("x-span-id"),
@@ -1502,6 +1612,120 @@ where
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
                 Ok(ServerStatusResponse::Error(body))
+            }
+            code => {
+                let headers = response.headers().clone();
+                let body = response.into_body().take(100).into_raw().await;
+                Err(ApiError(format!(
+                    "Unexpected response code {}:\n{:?}\n\n{}",
+                    code,
+                    headers,
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {:?}>", e),
+                        },
+                        Err(e) => format!("<Failed to read body: {}>", e),
+                    }
+                )))
+            }
+        }
+    }
+
+    async fn set_server_configuration(
+        &self,
+        param_server_configuration: models::ServerConfiguration,
+        context: &C,
+    ) -> Result<SetServerConfigurationResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        let mut uri = format!("{}/server_configuration", self.base_path);
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {}", err))),
+        };
+
+        let mut request = match Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(Body::empty())
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {}", e))),
+        };
+
+        let body = serde_json::to_string(&param_server_configuration)
+            .expect("impossible to fail to serialize");
+        *request.body_mut() = Body::from(body);
+
+        let header = "application/json";
+        request.headers_mut().insert(
+            CONTENT_TYPE,
+            match HeaderValue::from_str(header) {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create header: {} - {}",
+                        header, e
+                    )))
+                }
+            },
+        );
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {}",
+                        e
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {}", e)))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<serde_json::Value>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(SetServerConfigurationResponse::ConfigurationUpdated(body))
+            }
+            400 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+                Ok(SetServerConfigurationResponse::Error(body))
             }
             code => {
                 let headers = response.headers().clone();

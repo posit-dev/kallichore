@@ -1,11 +1,11 @@
 //
 // kernel_message.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
-use kallichore_api::models;
+use kallichore_api::models::{self, ConnectionInfo};
 use serde::{Deserialize, Serialize};
 
 /// Kernel output streams
@@ -48,6 +48,18 @@ pub enum KernelMessage {
     /// to execute code, but the kernel is busy executing other code.
     ExecutionQueued(String),
 
+    /// The kernel's working directory has changed. The parameter is the new
+    /// working directory.
+    WorkingDirChanged(String),
+
+    /// The websocket connection to the client is about to be closed. The
+    /// parameter is the reason for the disconnection.
+    ClientDisconnected(String),
+
     /// The kernel has exited
     Exited(i32),
+
+    /// The kernel has completed the JEP 66 handshake. The parameters are the session
+    /// ID and connection info.
+    HandshakeCompleted(String, ConnectionInfo),
 }

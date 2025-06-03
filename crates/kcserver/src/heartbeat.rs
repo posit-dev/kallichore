@@ -121,23 +121,14 @@ impl HeartbeatMonitor {
                                 .await;
                         }
 
-                        // If this is the first heartbeat, mark the kernel as
-                        // ready if it was starting
+                        // If this is the first heartbeat, log that.
+                        // It is not our job to mark the kernel as `Status::Ready`.
                         if initial {
                             initial = false;
-                            log::trace!(
-                                "[session {}] Received initial heartbeat, marking kernel as ready",
+                            log::info!(
+                                "[session {}] Received initial heartbeat from kernel",
                                 session_id
                             );
-                            let mut state = state.write().await;
-                            if state.status == Status::Starting {
-                                state
-                                    .set_status(
-                                        Status::Ready,
-                                        Some(String::from("initial heartbeat received")),
-                                    )
-                                    .await;
-                            }
                         }
                     }
                     Ok(Err(e)) => {

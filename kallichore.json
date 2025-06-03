@@ -235,6 +235,16 @@
             }
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/restartSession"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Restarted",
@@ -573,6 +583,87 @@
           }
         }
       }
+    },
+    "/client_heartbeat": {
+      "post": {
+        "operationId": "client-heartbeat",
+        "summary": "Notify the server that a client is connected",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Heartbeat received",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/server_configuration": {
+      "get": {
+        "operationId": "get-server-configuration",
+        "summary": "Get the server configuration",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The current server configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/serverConfiguration"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Failed to get configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "set-server-configuration",
+        "summary": "Change the server configuration",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/serverConfiguration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuration updated",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -593,6 +684,43 @@
         "required": [
           "code",
           "message"
+        ]
+      },
+      "envVarActions": {
+        "type": "array",
+        "description": "A list of environment variable actions to perform",
+        "items": {
+          "$ref": "#/components/schemas/varAction"
+        }
+      },
+      "varActionType": {
+        "type": "string",
+        "description": "The type of action to perform on the environment variable",
+        "enum": [
+          "replace",
+          "append",
+          "prepend"
+        ]
+      },
+      "varAction": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/varActionType"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of the variable to act on"
+          },
+          "value": {
+            "description": "The value to replace, append, or prepend",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "name",
+          "value"
         ]
       },
       "connectionInfo": {
@@ -727,11 +855,7 @@
             "description": "The working directory in which to start the session."
           },
           "env": {
-            "type": "object",
-            "description": "Environment variables to set for the session",
-            "additionalProperties": {
-              "type": "string"
-            }
+            "$ref": "#/components/schemas/envVarActions"
           },
           "connection_timeout": {
             "type": "integer",
@@ -740,6 +864,16 @@
           },
           "interrupt_mode": {
             "$ref": "#/components/schemas/interrupt_mode"
+          },
+          "protocol_version": {
+            "type": "string",
+            "description": "The Jupyter protocol version supported by the underlying kernel",
+            "default": "5.3"
+          },
+          "run_in_shell": {
+            "type": "boolean",
+            "description": "Whether to run the session inside a login shell; only relevant on POSIX systems",
+            "default": false
           }
         },
         "required": [
@@ -754,6 +888,19 @@
           "username",
           "working_directory"
         ]
+      },
+      "restartSession": {
+        "type": "object",
+        "properties": {
+          "working_directory": {
+            "type": "string",
+            "description": "The desired working directory for the session after restart, if different from the session's working directory at startup"
+          },
+          "env": {
+            "$ref": "#/components/schemas/envVarActions"
+          }
+        },
+        "required": []
       },
       "execution_queue": {
         "type": "object",
@@ -895,7 +1042,12 @@
             "description": "The number of seconds any session has been busy, or 0 if all sessions are idle"
           },
           "version": {
-            "type": "string"
+            "type": "string",
+            "description": "The version of the server"
+          },
+          "process_id": {
+            "type": "integer",
+            "description": "The server's operating system process identifier"
           }
         },
         "required": [
@@ -903,6 +1055,7 @@
           "busy",
           "busy_seconds",
           "idle_seconds",
+          "process_id",
           "sessions",
           "version"
         ]
@@ -924,6 +1077,26 @@
           "total",
           "sessions"
         ]
+      },
+      "serverConfiguration": {
+        "type": "object",
+        "properties": {
+          "idle_shutdown_hours": {
+            "type": "integer",
+            "description": "The number of hours the server will wait before shutting down idle sessions (-1 if idle shutdown is disabled)"
+          },
+          "log_level": {
+            "type": "string",
+            "description": "The current log level",
+            "enum": [
+              "trace",
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ]
+          }
+        }
       }
     },
     "responses": {

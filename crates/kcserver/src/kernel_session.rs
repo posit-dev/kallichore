@@ -1,19 +1,22 @@
 //
 // kernel_session.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
 //! Wraps Jupyter kernel sessions.
 
+use std::collections::HashMap;
 use std::{fs, os::raw::c_void, process::Stdio, sync::Arc};
 
 use async_channel::{Receiver, SendError, Sender};
 use chrono::{DateTime, Utc};
 use event_listener::Event;
 use kallichore_api::models::{self, StartupError};
+use kallichore_api::models::{ConnectionInfo, VarAction};
 use kcshared::{
+    handshake_protocol::HandshakeStatus,
     jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_info::KernelInfoReply,
     kernel_message::{KernelMessage, OutputStream},
@@ -22,12 +25,73 @@ use kcshared::{
 use rand::Rng;
 use std::iter;
 use tokio::io::{AsyncBufReadExt, AsyncRead};
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 
+use crate::registration_socket::HandshakeResult;
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_connection::KernelConnection,
-    kernel_state::KernelState, startup_status::StartupStatus, zmq_ws_proxy::ZmqWsProxy,
+    kernel_state::KernelState, registration_file::RegistrationFile,
+    registration_socket::RegistrationSocket, startup_status::StartupStatus,
+    working_dir::expand_path, zmq_ws_proxy::ZmqWsProxy,
 };
+
+/// Escape a string for use in a shell command.
+///
+/// This function escapes a string so that it can be safely used as an argument
+/// to a shell command. It uses single quotes to wrap the string, which is the
+/// safest option in most Unix shells. If the string contains single quotes,
+/// they are escaped by replacing them with the sequence '\'' (close quote,
+/// escaped quote, open quote).
+///
+/// # Arguments
+///
+/// * `s` - The string to escape
+///
+/// # Returns
+///
+/// The escaped string
+#[cfg(not(target_os = "windows"))]
+fn escape_for_shell(s: &str) -> String {
+    // If the string is empty, return ''
+    if s.is_empty() {
+        return "''".to_string();
+    }
+
+    // If the string doesn't contain any special characters,
+    // we can return it as-is
+    if !s.chars().any(|c| "\\\"'`${}()*?! \t\n;&|<>[]".contains(c)) {
+        return s.to_string();
+    }
+
+    // Otherwise, wrap in single quotes and escape any internal single quotes
+    let mut result = String::with_capacity(s.len() + 2);
+    result.push('\'');
+
+    // Replace any single quotes in the input with '\''
+    for part in s.split('\'') {
+        if !result.ends_with('\'') {
+            result.push('\'');
+        }
+
+        result.push_str(part);
+
+        if !part.is_empty() {
+            result.push('\'');
+        }
+
+        // Add the escaped single quote sequence if this isn't the last part
+        if part.len() < s.len() {
+            result.push_str("\\'");
+        }
+    }
+
+    // Ensure the string ends with a quote
+    if !result.ends_with('\'') {
+        result.push('\'');
+    }
+
+    result
+}
 
 /// A Jupyter kernel session.
 ///
@@ -38,9 +102,6 @@ use crate::{
 pub struct KernelSession {
     /// Metadata about the session
     pub connection: KernelConnection,
-
-    /// The connection file for the kernel
-    pub connection_file: ConnectionFile,
 
     /// The session model that was used to create this session
     pub model: models::NewSession,
@@ -79,9 +140,9 @@ pub struct KernelSession {
 
 impl KernelSession {
     /// Create a new kernel session.
-    pub fn new(
+    pub async fn new(
         session: models::NewSession,
-        connection_file: ConnectionFile,
+        key: String,
         idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
@@ -93,8 +154,8 @@ impl KernelSession {
             idle_nudge_tx,
             json_tx.clone(),
         )));
-        let connection =
-            KernelConnection::from_session(&session, connection_file.info.key.clone())?;
+
+        let connection = KernelConnection::from_session(&session, key.clone())?;
         let started = Utc::now();
 
         // On Windows, if the interrupt mode is Signal, create an event for
@@ -126,7 +187,6 @@ impl KernelSession {
             started,
             interrupt_event_handle,
             exit_event: Arc::new(Event::new()),
-            connection_file,
             reserved_ports,
         };
         Ok(kernel_session)
@@ -150,8 +210,8 @@ impl KernelSession {
             });
         }
 
-        // Mark the kernel as starting
-        {
+        let working_directory = {
+            // Mark the kernel as starting
             let mut state = self.state.write().await;
             state
                 .set_status(
@@ -159,22 +219,203 @@ impl KernelSession {
                     Some(String::from("start API called")),
                 )
                 .await;
+            // Get the working directory
+            state.working_directory.clone()
+        };
+
+        // First, check if we expect JEP 66 handshaking based on protocol version
+        let jep66_enabled =
+            ConnectionFile::requires_handshaking(&self.connection.protocol_version.clone());
+
+        // Create a copy of argv where we substitute the connection file path. This needs to be done
+        // before we start the kernel process.
+        let mut argv = self.argv.clone();
+
+        // Write the appropriate connection or registration file and get its path for substitution
+        // in the kernel arguments
+        let (connection_file_path, registration_socket, handshake_result_rx) = if jep66_enabled {
+            log::info!(
+                "[session {}] Kernel supports JEP 66 (protocol version {}) - creating registration socket for handshake",
+                self.connection.session_id,
+                self.connection.protocol_version
+            );
+
+            let (handshake_result_tx, handshake_result_rx) = oneshot::channel();
+
+            // For JEP 66 handshaking, start a registration socket that immediately binds
+            // to an OS selected port
+            let registration_socket = match RegistrationSocket::new(handshake_result_tx).await {
+                Ok(socket) => socket,
+                Err(e) => {
+                    return Err(StartupError {
+                        exit_code: None,
+                        output: None,
+                        error: KSError::HandshakeFailed(
+                            self.connection.session_id.clone(),
+                            anyhow::anyhow!("Failed to create registration socket: {e}"),
+                        )
+                        .to_json(None),
+                    })
+                }
+            };
+
+            let registration_port = registration_socket.port();
+
+            log::debug!(
+                "Started registration socket for session {} with port {}",
+                self.connection.session_id.clone(),
+                registration_port
+            );
+
+            // Create the registration file name and path
+            let mut registration_file_name = std::ffi::OsString::from("registration_");
+            registration_file_name.push(self.connection.session_id.clone());
+            registration_file_name.push(".json");
+            let registration_path = std::env::temp_dir().join(registration_file_name);
+
+            // Create the registration file
+            let registration_file = RegistrationFile::new(
+                "127.0.0.1".to_string(),
+                registration_port,
+                self.connection.key.clone(),
+            );
+            registration_file
+                .to_file(registration_path.clone())
+                .map_err(|e| StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Failed to write registration file: {}",
+                        e
+                    ))
+                    .to_json(None),
+                })?;
+
+            log::debug!(
+                "Wrote registration file for session {} at {:?} with port {}",
+                self.connection.session_id.clone(),
+                registration_path,
+                registration_port
+            );
+
+            (
+                registration_path,
+                Some(registration_socket),
+                Some(handshake_result_rx),
+            )
+        } else {
+            // For traditional kernels, generate a new connection file with allocated ports first
+            let connection_file = ConnectionFile::generate(
+                "127.0.0.1".to_string(),
+                self.reserved_ports.clone(),
+                self.connection.key.clone(),
+            )
+            .map_err(|e| StartupError {
+                exit_code: None,
+                output: None,
+                error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                    "Failed to generate connection file: {}",
+                    e
+                ))
+                .to_json(None),
+            })?;
+
+            // Store the generated connection file in our state
+            self.update_connection_file(connection_file.clone()).await;
+
+            // Write the connection file to disk
+            let mut connection_file_name = std::ffi::OsString::from("connection_");
+            connection_file_name.push(self.connection.session_id.clone());
+            connection_file_name.push(".json");
+            let connection_path = std::env::temp_dir().join(connection_file_name);
+
+            connection_file
+                .to_file(connection_path.clone())
+                .map_err(|e| StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Failed to write connection file: {}",
+                        e
+                    ))
+                    .to_json(None),
+                })?;
+            log::debug!(
+                "Wrote connection file for session {} at {:?}",
+                self.connection.session_id.clone(),
+                connection_path
+            );
+            (connection_path, None, None)
+        };
+
+        // Substitute the connection file path in the arguments
+        for arg in argv.iter_mut() {
+            if arg.contains("{connection_file}") {
+                *arg = arg.replace("{connection_file}", connection_file_path.to_str().unwrap());
+            }
         }
 
         log::debug!(
             "Starting kernel for session {}: {:?}",
             self.model.session_id,
-            self.argv
+            argv
         );
 
-        // Create the command to start the kernel
-        let mut command = tokio::process::Command::new(&self.argv[0]);
-        command.args(&self.argv[1..]);
+        // Check if we should run in a login shell
+        let run_in_shell = self.model.run_in_shell.unwrap_or(false);
+
+        // Create the command to start the kernel with the processed arguments
+        let mut command = if run_in_shell {
+            #[cfg(not(target_os = "windows"))]
+            {
+                // On Unix systems, use a login shell if requested
+                // Get the shell from the environment, or use bash as fallback
+                let shell_path =
+                    std::env::var("SHELL").unwrap_or_else(|_| String::from("/bin/bash"));
+
+                log::debug!(
+                    "[session {}] Running kernel in login shell: {}",
+                    self.model.session_id,
+                    shell_path
+                );
+
+                // Create the original command as a string with proper shell escaping
+                let original_command = argv
+                    .iter()
+                    .map(|arg| escape_for_shell(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                // Create a command that uses the login shell. Note that we use
+                // the short form -l rather than --login to ensure compatibility
+                // with shells that don't support the long form, such as
+                // sh/dash.
+                let mut cmd = tokio::process::Command::new(shell_path);
+                cmd.args(&["-l", "-c", &original_command]);
+                cmd
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                // On Windows, just use the command as is (run_in_shell has no effect)
+                log::debug!(
+                    "[session {}] run_in_shell parameter ignored on Windows",
+                    self.model.session_id
+                );
+                let mut cmd = tokio::process::Command::new(&argv[0]);
+                cmd.args(&argv[1..]);
+                cmd
+            }
+        } else {
+            // Normal execution - no login shell
+            let mut cmd = tokio::process::Command::new(&argv[0]);
+            cmd.args(&argv[1..]);
+            cmd
+        };
 
         // If a working directory was specified, test the working directory to
         // see if it exists. If it doesn't, log a warning and don't set the
         // process's working directory.
-        let working_directory = self.model.working_directory.clone();
         if working_directory != "" {
             match fs::metadata(&working_directory) {
                 Ok(metadata) => {
@@ -212,14 +453,28 @@ impl KernelSession {
             }
         }
 
-        let mut initial_env = self.model.env.clone();
+        // Start with a copy of the process environment
+        let initial = std::env::vars();
+        let mut resolved_env = HashMap::new();
+        for (key, value) in initial {
+            // Here and elsewhere, we convert the key to uppercase on Windows
+            // since environment variables are case-insensitive on Windows to
+            // ensure that references to the same variable are consistent.
+            // The behavior of `spawn()` for multiple environment variables with
+            // the same name but different cases is undefined on Windows.
+            #[cfg(target_os = "windows")]
+            let key = key.to_uppercase();
+            #[cfg(not(target_os = "windows"))]
+            let key = key;
+            resolved_env.insert(key, value);
+        }
 
         #[cfg(windows)]
         {
-            use windows::Win32::System::Threading::GetCurrentProcess;
             use windows::Win32::Foundation::DuplicateHandle;
             use windows::Win32::Foundation::DUPLICATE_SAME_ACCESS;
             use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::System::Threading::GetCurrentProcess;
 
             // On Windows, if we have an interrupt event, add it to the environment
             // so we can pass it to the kernel process.
@@ -229,7 +484,7 @@ impl KernelSession {
                     self.connection.session_id,
                     handle
                 );
-                initial_env.insert("JPY_INTERRUPT_EVENT".to_string(), format!("{}", handle));
+                resolved_env.insert("JPY_INTERRUPT_EVENT".to_string(), format!("{}", handle));
             }
 
             #[allow(unsafe_code)]
@@ -237,22 +492,23 @@ impl KernelSession {
                 let pid = GetCurrentProcess();
                 let mut target = HANDLE::default();
                 match DuplicateHandle(
-                    pid, // Source process handle
-                    pid, // Source handle to duplicate
-                    pid, // Target process handle
-                    &mut target, // Destination handle (out)
-                    0, // Desired access
+                    pid,                                 // Source process handle
+                    pid,                                 // Source handle to duplicate
+                    pid,                                 // Target process handle
+                    &mut target,                         // Destination handle (out)
+                    0,                                   // Desired access
                     windows::Win32::Foundation::BOOL(1), // Inheritable
-                    DUPLICATE_SAME_ACCESS) {
+                    DUPLICATE_SAME_ACCESS,
+                ) {
                     Ok(_) => {
-                       let handle = target.0 as i64; 
-                       log::trace!(
+                        let handle = target.0 as i64;
+                        log::trace!(
                             "[session {}] Adding parent handle to environment: {}",
                             self.connection.session_id,
                             handle
                         );
-                        initial_env.insert("JPY_PARENT_PID".to_string(), format!("{}", handle));
-                    },
+                        resolved_env.insert("JPY_PARENT_PID".to_string(), format!("{}", handle));
+                    }
                     Err(e) => {
                         log::error!("Failed to duplicate handle: {}", e);
                     }
@@ -260,9 +516,45 @@ impl KernelSession {
             }
         }
 
+        // Read the set of environment variable actions from the state
+        let env_var_actions = {
+            let state = self.state.read().await;
+            state.env_vars.clone()
+        };
+
+        // Apply mutations from model
+        for action in &env_var_actions {
+            #[cfg(target_os = "windows")]
+            let env_key = action.name.to_uppercase();
+            #[cfg(not(target_os = "windows"))]
+            let env_key = action.name.clone();
+            match action.action {
+                models::VarActionType::Replace => {
+                    resolved_env.insert(env_key, action.value.clone())
+                }
+                models::VarActionType::Append => {
+                    let mut value = resolved_env.get(&env_key).unwrap_or(&String::new()).clone();
+                    value.push_str(&action.value);
+                    resolved_env.insert(env_key, value)
+                }
+                models::VarActionType::Prepend => {
+                    let mut value = resolved_env.get(&env_key).unwrap_or(&String::new()).clone();
+                    value.insert_str(0, &action.value);
+                    resolved_env.insert(env_key, value)
+                }
+            };
+        }
+
+        // Store the resolved environment back in the kernel state so it can be
+        // queried later
+        {
+            let mut state = self.state.write().await;
+            state.resolved_env = resolved_env.clone();
+        }
+
         // Attempt to actually start the kernel process
         let mut child = match command
-            .envs(&initial_env)
+            .envs(&resolved_env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -321,21 +613,86 @@ impl KernelSession {
         // Create a channel to receive startup status from the kernel
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
-        // Spawn the ZeroMQ proxy thread
-        let kernel = self.clone();
-        let connection_file = self.connection_file.clone();
-        let startup_proxy_tx = startup_tx.clone();
-        tokio::spawn(async move {
-            kernel
-                .start_zmq_proxy(connection_file, startup_proxy_tx)
-                .await;
-        });
-
         // Spawn a task to wait for the child process to exit
         let kernel = self.clone();
         let startup_child_tx = startup_tx.clone();
         tokio::spawn(async move {
             kernel.run_child(child, startup_child_tx).await;
+        });
+
+        if jep66_enabled {
+            log::info!(
+                "[session {}] Waiting for JEP 66 handshake",
+                self.connection.session_id
+            );
+
+            // We unconditionally created these earlier in the other `jep66_enabled` path
+            let registration_socket = registration_socket.unwrap();
+            let handshake_result_rx = handshake_result_rx.unwrap();
+
+            // Get the connection timeout from the model, defaulting to 30 seconds
+            let connection_timeout = match self.model.connection_timeout {
+                Some(timeout) => timeout as u64,
+                None => 30,
+            };
+
+            // Wait for the handshake to complete
+            match self
+                .wait_for_handshake(registration_socket, handshake_result_rx, connection_timeout)
+                .await
+            {
+                Ok(connection_file) => {
+                    log::info!(
+                        "[session {}] JEP 66 handshake completed successfully",
+                        self.connection.session_id
+                    );
+
+                    // Update the connection file with the negotiated ports
+                    self.update_connection_file(connection_file).await;
+                }
+                Err(e) => {
+                    log::error!(
+                        "[session {}] JEP 66 handshake failed: {}",
+                        self.connection.session_id,
+                        e
+                    );
+                    return Err(StartupError {
+                        exit_code: None,
+                        output: None,
+                        error: KSError::SessionConnectionFailed(anyhow::anyhow!(
+                            "Failed to complete JEP 66 handshake: {}",
+                            e
+                        ))
+                        .to_json(None),
+                    });
+                }
+            }
+        }
+
+        // Spawn the ZeroMQ proxy thread
+        let kernel = self.clone();
+        let connection_file = match self.get_connection_file().await {
+            Some(connection_file) => connection_file,
+            None => {
+                log::error!(
+                    "[session {}] Failed to get connection information!",
+                    self.connection.session_id
+                );
+                return Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Failed to get connection file for ZeroMQ proxy"
+                    ))
+                    .to_json(None),
+                });
+            }
+        };
+        let startup_proxy_tx = startup_tx.clone();
+        tokio::spawn(async move {
+            kernel
+                .start_zmq_proxy(connection_file.clone(), startup_proxy_tx)
+                .await;
         });
 
         // Wait for either the session to connect to its sockets or for
@@ -533,7 +890,75 @@ impl KernelSession {
         self.ws_zmq_tx.send(msg).await
     }
 
-    pub async fn restart(&self) -> Result<(), StartupError> {
+    /// Restart the kernel.
+    ///
+    /// # Arguments
+    ///
+    /// * `working_directory` - The working directory to use after restart.
+    /// Optional; if not supplied, the working directory supplied when the
+    /// kernel was started will be used (Windows) or the kernel's current
+    /// working directory will be used (non-Windows).
+    ///
+    /// * `env` - The new set of environment variable actions to apply to
+    /// the kernel's environment.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the kernel was restarted successfully, or an error if the
+    /// kernel could not be restarted.
+    pub async fn restart(
+        &self,
+        working_directory: Option<String>,
+        env: Option<Vec<VarAction>>,
+    ) -> Result<(), StartupError> {
+        // Expand the working directory if it was supplied
+        let working_directory = match working_directory {
+            Some(dir) => match expand_path(dir.clone()) {
+                Ok(dir) => Some(dir.to_string_lossy().to_string()),
+                Err(e) => {
+                    log::warn!(
+                        "[session {}] Requested working directory '{}' could not be expanded: {} (ignoring)",
+                        self.connection.session_id,
+                        dir,
+                        e
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
+        // Validate the working directory if it was supplied.
+        let working_directory = match working_directory {
+            Some(dir) => {
+                // Test the working directory to see if it exists.
+                match fs::metadata(dir.clone()) {
+                    Ok(metadata) => {
+                        if !metadata.is_dir() {
+                            log::warn!(
+                                "[session {}] Requested working directory '{}' is not a directory; ignoring",
+                                self.connection.session_id,
+                                dir
+                            );
+                            None
+                        } else {
+                            Some(dir)
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[session {}] Requested working directory '{}' could not be read: {} (ignoring)",
+                            self.connection.session_id,
+                            dir,
+                            e
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
         // Enter the restarting state.
         {
             let mut state = self.state.write().await;
@@ -546,6 +971,50 @@ impl KernelSession {
                     error: err.to_json(None),
                 });
             }
+
+            // Set the working directory.
+            match working_directory {
+                Some(dir) => {
+                    log::debug!(
+                        "[session {}] Will restart in working directory '{}' (supplied by client)",
+                        self.connection.session_id,
+                        dir
+                    );
+                    state.working_directory = dir
+                }
+                None => {
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        state.poll_working_dir().await;
+                        log::debug!(
+                            "[session {}] Will restart in working directory '{}' (read from OS)",
+                            self.connection.session_id,
+                            state.working_directory
+                        );
+                    }
+
+                    #[cfg(target_os = "windows")]
+                    {
+                        state.working_directory = self.model.working_directory.clone();
+                        log::debug!(
+                            "[session {}] Will restart in working directory '{}' (original)",
+                            self.connection.session_id,
+                            state.working_directory
+                        );
+                    }
+                }
+            }
+
+            // Set the environment variables, if supplied
+            if let Some(env) = env {
+                log::debug!(
+                    "[session {}] Will restart with environment variables: {:?}",
+                    self.connection.session_id,
+                    env
+                );
+                state.env_vars = env;
+            }
+
             state.restarting = true;
         }
 
@@ -640,7 +1109,7 @@ impl KernelSession {
             display_name: self.model.display_name.clone(),
             language: self.model.language.clone(),
             interrupt_mode: self.model.interrupt_mode.clone(),
-            initial_env: Some(self.model.env.clone()),
+            initial_env: Some(state.resolved_env.clone()),
             argv: self.argv.clone(),
             process_id: match state.process_id {
                 Some(pid) => Some(pid as i32),
@@ -662,7 +1131,7 @@ impl KernelSession {
         match self.model.interrupt_mode {
             models::InterruptMode::Signal => {
                 // On Windows, interrupts are signaled by setting a kernel event.
-                // 
+                //
                 // Note that this requires coordination with the kernel to check
                 // the event and interrupt itself. Currently, only ipykernel
                 // supports this.
@@ -781,6 +1250,10 @@ impl KernelSession {
         &self,
         connection_file: ConnectionFile,
     ) -> Result<serde_json::Value, KSError> {
+        // Store the connection file
+        // Since we're adopting an existing kernel, we always have a full connection file
+        self.update_connection_file(connection_file.clone()).await;
+
         // Create a channel to receive startup status from the kernel.
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
@@ -868,7 +1341,142 @@ impl KernelSession {
         result
     }
 
-    pub async fn start_zmq_proxy(
+    /**
+     * Update the connection file for this kernel session
+     * Used when connection details become available after handshaking
+     */
+    pub async fn update_connection_file(&self, connection_file: ConnectionFile) {
+        let mut state = self.state.write().await;
+        state.connection_file = Some(connection_file);
+    }
+
+    /**
+     * Wait for a handshake to be completed. This is used when starting a kernel that supports
+     * JEP 66 handshaking.
+     *
+     * @param registration_socket The socket to use for the handshake procedure
+     * @param handshake_result_rx The channel to receive the handshake result over
+     * @param timeout_secs Time to wait for the handshake in seconds
+     */
+    pub async fn wait_for_handshake(
+        &self,
+        registration_socket: RegistrationSocket,
+        handshake_result_rx: oneshot::Receiver<HandshakeResult>,
+        timeout_secs: u64,
+    ) -> Result<ConnectionFile, KSError> {
+        // Start listening on the registration socket in a separate thread
+        registration_socket.listen(self.connection.clone());
+
+        // Create a channel to listen for the handshake completed event
+        let (handshake_tx, result_rx) = async_channel::bounded::<ConnectionFile>(1);
+
+        // Monitor for handshake results from the registration socket
+        let session_id = self.connection.session_id.clone();
+        let connection_key = match &self.connection.key {
+            Some(key) => key.clone(),
+            None => String::new(),
+        };
+
+        tokio::spawn(async move {
+            if let Ok(result) = handshake_result_rx.await {
+                if result.status == HandshakeStatus::Ok {
+                    // Create connection info from the handshake request
+                    let info = ConnectionInfo {
+                        shell_port: result.request.shell_port as i32,
+                        iopub_port: result.request.iopub_port as i32,
+                        stdin_port: result.request.stdin_port as i32,
+                        control_port: result.request.control_port as i32,
+                        hb_port: result.request.hb_port as i32,
+                        transport: "tcp".to_string(),
+                        signature_scheme: "hmac-sha256".to_string(),
+                        key: connection_key,
+                        ip: "127.0.0.1".to_string(),
+                    };
+
+                    // Create a connection file from the connection info
+                    let connection_file = ConnectionFile::from_info(info);
+
+                    // Send the connection file to the waiting thread
+                    if let Err(e) = handshake_tx.send(connection_file).await {
+                        log::warn!(
+                            "[session {}] Failed to send handshake result: {}",
+                            session_id,
+                            e
+                        );
+                    }
+                } else {
+                    log::warn!("[session {}] Received failed handshake result", session_id);
+                }
+            }
+        });
+
+        // Wait for the handshake to complete or for a timeout
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            result_rx.recv(),
+        )
+        .await
+        {
+            Ok(Ok(connection_file)) => {
+                // Handshake completed successfully
+                log::info!(
+                    "[session {}] Handshake completed successfully",
+                    self.connection.session_id
+                );
+
+                // Create a new connection file with the key included
+                let mut connection_file = connection_file;
+                connection_file.info.key = match &self.connection.key {
+                    Some(key) => key.clone(),
+                    None => String::new(),
+                };
+
+                // Create an event message to send through the websocket
+                let msg = WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(
+                    self.connection.session_id.clone(),
+                    connection_file.info.clone(),
+                ));
+
+                // Send the event through the websocket channel
+                if let Err(e) = self.ws_json_tx.send(msg).await {
+                    log::warn!(
+                        "[session {}] Failed to send handshake completed message: {}",
+                        self.connection.session_id,
+                        e
+                    );
+                }
+
+                Ok(connection_file)
+            }
+            Ok(Err(e)) => {
+                // Error receiving from channel
+                log::error!(
+                    "[session {}] Error waiting for handshake: {}",
+                    self.connection.session_id,
+                    e
+                );
+                Err(KSError::HandshakeFailed(
+                    self.connection.session_id.clone(),
+                    anyhow::anyhow!("Channel error: {}", e),
+                ))
+            }
+            Err(_) => {
+                // Timeout waiting for handshake
+                log::error!(
+                    "[session {}] Timeout waiting for handshake",
+                    self.connection.session_id
+                );
+                Err(KSError::HandshakeFailed(
+                    self.connection.session_id.clone(),
+                    anyhow::anyhow!("Timeout waiting for handshake"),
+                ))
+            }
+        };
+
+        result
+    }
+
+    async fn start_zmq_proxy(
         &self,
         connection_file: ConnectionFile,
         status_tx: Sender<StartupStatus>,
@@ -931,6 +1539,17 @@ impl KernelSession {
                             self.connection.session_id,
                             info
                         );
+
+                        // JEP 66 handshaking is done through the registration socket, not directly here.
+                        // The kernel would have connected to the registration socket before starting.
+                        // At this point, we're just confirming we have a successful connection
+                        // through the traditional Jupyter protocol sockets.
+
+                        log::debug!(
+                            "[session {}] Successfully connected to kernel using traditional Jupyter protocol",
+                            self.connection.session_id
+                        );
+
                         status_tx
                             .send(StartupStatus::Connected(info))
                             .await
@@ -1038,6 +1657,29 @@ impl KernelSession {
                     Ok(handle as i64)
                 }
                 Err(e) => Err(anyhow::anyhow!("Failed to create interrupt event: {}", e)),
+            }
+        }
+    }
+
+    async fn get_connection_file(&self) -> Option<ConnectionFile> {
+        let state = self.state.read().await;
+        state.connection_file.clone()
+    }
+
+    pub async fn ensure_connection_file(&self) -> Result<ConnectionFile, anyhow::Error> {
+        match self.get_connection_file().await {
+            Some(connection_file) => {
+                // We have a connection file; return it
+                Ok(connection_file)
+            }
+            None => {
+                let connection_file = ConnectionFile::generate(
+                    "127.0.0.1".to_string(),
+                    self.reserved_ports.clone(),
+                    self.connection.key.clone(),
+                )?;
+                self.update_connection_file(connection_file.clone()).await;
+                Ok(connection_file)
             }
         }
     }
