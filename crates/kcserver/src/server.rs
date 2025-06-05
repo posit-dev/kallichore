@@ -88,6 +88,8 @@ pub async fn create(
     };
 
     let server = Server::new(token, idle_shutdown_hours, effective_log_level);
+
+    #[cfg(unix)]
     let server_clone = server.clone();
 
     let service = MakeService::new(server);
