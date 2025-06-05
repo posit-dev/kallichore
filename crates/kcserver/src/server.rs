@@ -1337,6 +1337,7 @@ where
 }
 
 /// Handle shutdown signal by gracefully shutting down all sessions and exiting
+#[cfg(unix)]
 async fn handle_shutdown_signal<C>(server: Server<C>) {
     // Get all running sessions
     let running_sessions = {
