@@ -21,9 +21,10 @@ jobs:
             - name: Determine Version
               id: extract_version
               run: |
-                  VERSION=$(cat crates/kcserver/Cargo.toml | grep '^version' | sed -e "s/[^.0-9]//g")
+                  VERSION=$(cat crates/kcserver/Cargo.toml | grep '^version' | head -1 | sed -e "s/[^.0-9]//g")
                   echo "Kallichore version: ${VERSION}"
-                  echo "result=${VERSION}" >> $GITHUB_OUTPUT
+                  echo "Found version ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+                  echo "result=${VERSION}" >> "$GITHUB_OUTPUT"
 
     # Check to see whether we have already released this version. If we have, we will skip the
     # release process later on.
