@@ -37,6 +37,8 @@ use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::MissedTickBehavior;
+#[cfg(unix)]
+use tokio::signal::unix::{signal, SignalKind};
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
@@ -86,6 +88,7 @@ pub async fn create(
     };
 
     let server = Server::new(token, idle_shutdown_hours, effective_log_level);
+    let server_clone = server.clone();
 
     let service = MakeService::new(server);
 
@@ -95,11 +98,36 @@ pub async fn create(
     let mut service =
         kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
 
-    // Using HTTP
-    hyper::server::Server::bind(&addr)
-        .serve(service)
-        .await
-        .unwrap()
+    // Create the HTTP server
+    let server_future = hyper::server::Server::bind(&addr).serve(service);
+
+    // Set up signal handling for graceful shutdown on SIGTERM (Unix only)
+    #[cfg(unix)]
+    {
+        let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+
+        // Wait for either the server to complete or a SIGTERM signal
+        tokio::select! {
+            result = server_future => {
+                // Server completed normally (unlikely in this case)
+                if let Err(e) = result {
+                    log::error!("Server error: {}", e);
+                }
+            }
+            _ = sigterm.recv() => {
+                log::info!("Received SIGTERM signal, initiating graceful shutdown");
+                handle_shutdown_signal(server_clone).await;
+            }
+        }
+    }
+
+    // On non-Unix systems, just run the server without signal handling
+    #[cfg(not(unix))]
+    {
+        if let Err(e) = server_future.await {
+            log::error!("Server error: {}", e);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1303,5 +1331,34 @@ where
                 serde_json::Value::Null,
             ),
         )
+    }
+}
+
+/// Handle shutdown signal by gracefully shutting down all sessions and exiting
+async fn handle_shutdown_signal<C>(server: Server<C>) {
+    // Get all running sessions
+    let running_sessions = {
+        let kernel_sessions = server.kernel_sessions.read().unwrap().clone();
+        Server::<C>::running_sessions(&kernel_sessions).await
+    };
+
+    // Use the existing shutdown mechanism
+    match Server::<C>::shutdown_sessions_and_exit(&running_sessions).await {
+        Ok(_) => {
+            log::info!("Server shutdown is underway...");
+
+            // Sleep up to 30 seconds to allow graceful shutdown. When we return
+            // from the function, the server will exit.
+            //
+            // Note that when shutdown_sessions_and_exit completes
+            // successfully, it ends the process, so this sleep is just a safety
+            // net.
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        }
+        Err(e) => {
+            log::error!("Error during shutdown: {}", e);
+            // Force exit if graceful shutdown fails
+            std::process::exit(1);
+        }
     }
 }
