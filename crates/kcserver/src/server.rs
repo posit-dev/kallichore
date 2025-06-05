@@ -1350,7 +1350,7 @@ async fn handle_shutdown_signal<C>(server: Server<C>) {
             // Sleep up to 30 seconds to allow graceful shutdown. When we return
             // from the function, the server will exit.
             //
-            // /Note that when shutdown_sessions_and_exit completes
+            // Note that when shutdown_sessions_and_exit completes
             // successfully, it ends the process, so this sleep is just a safety
             // net.
             tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
