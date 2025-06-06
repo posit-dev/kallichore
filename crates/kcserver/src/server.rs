@@ -103,12 +103,13 @@ pub async fn create(
     // Create the HTTP server
     let server_future = hyper::server::Server::bind(&addr).serve(service);
 
-    // Set up signal handling for graceful shutdown on SIGTERM (Unix only)
+    // Set up signal handling for graceful shutdown on SIGTERM and SIGINT (Unix only)
     #[cfg(unix)]
     {
         let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
 
-        // Wait for either the server to complete or a SIGTERM signal
+        // Wait for either the server to complete or a SIGTERM/SIGINT signal
         tokio::select! {
             result = server_future => {
                 // Server completed normally (unlikely in this case)
@@ -118,6 +119,10 @@ pub async fn create(
             }
             _ = sigterm.recv() => {
                 log::info!("Received SIGTERM signal, initiating graceful shutdown");
+                handle_shutdown_signal(server_clone).await;
+            }
+            _ = sigint.recv() => {
+                log::info!("Received SIGINT signal, initiating graceful shutdown");
                 handle_shutdown_signal(server_clone).await;
             }
         }
