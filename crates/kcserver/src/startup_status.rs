@@ -8,6 +8,7 @@
 use crate::error::KSError;
 
 /// The status of the kernel startup.
+#[derive(Debug)]
 pub enum StartupStatus {
     /// The kernel exited abnormally before it finished starting up or
     /// connecting. The first value is the exit code, the second is the output,
