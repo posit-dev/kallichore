@@ -1358,6 +1358,17 @@ impl KernelSession {
     }
 
     /**
+     * Helper method to convert a KSError to a StartupError
+     */
+    fn ks_error_to_startup_error(&self, error: KSError) -> StartupError {
+        StartupError {
+            exit_code: None,
+            output: None,
+            error: error.to_json(None),
+        }
+    }
+
+    /**
      * Wait for a handshake to be completed. This is used when starting a kernel that supports
      * JEP 66 handshaking.
      *
@@ -1461,14 +1472,10 @@ impl KernelSession {
                             self.connection.session_id,
                             e
                         );
-                        Err(StartupError {
-                            exit_code: None,
-                            output: None,
-                            error: KSError::HandshakeFailed(
-                                self.connection.session_id.clone(),
-                                anyhow::anyhow!("Channel error: {}", e),
-                            ).to_json(None),
-                        })
+                        Err(self.ks_error_to_startup_error(KSError::HandshakeFailed(
+                            self.connection.session_id.clone(),
+                            anyhow::anyhow!("Channel error: {}", e),
+                        )))
                     }
                 }
             }
@@ -1495,14 +1502,10 @@ impl KernelSession {
                             self.connection.session_id,
                             status
                         );
-                        Err(StartupError {
-                            exit_code: None,
-                            output: None,
-                            error: KSError::HandshakeFailed(
-                                self.connection.session_id.clone(),
-                                anyhow::anyhow!("Unexpected startup status"),
-                            ).to_json(None),
-                        })
+                        Err(self.ks_error_to_startup_error(KSError::HandshakeFailed(
+                            self.connection.session_id.clone(),
+                            anyhow::anyhow!("Unexpected startup status"),
+                        )))
                     }
                     Err(e) => {
                         // Error receiving from startup channel
@@ -1511,14 +1514,10 @@ impl KernelSession {
                             self.connection.session_id,
                             e
                         );
-                        Err(StartupError {
-                            exit_code: None,
-                            output: None,
-                            error: KSError::HandshakeFailed(
-                                self.connection.session_id.clone(),
-                                anyhow::anyhow!("Startup channel error: {}", e),
-                            ).to_json(None),
-                        })
+                        Err(self.ks_error_to_startup_error(KSError::HandshakeFailed(
+                            self.connection.session_id.clone(),
+                            anyhow::anyhow!("Startup channel error: {}", e),
+                        )))
                     }
                 }
             }
@@ -1528,14 +1527,10 @@ impl KernelSession {
                     "[session {}] Timeout waiting for handshake",
                     self.connection.session_id
                 );
-                Err(StartupError {
-                    exit_code: None,
-                    output: None,
-                    error: KSError::HandshakeFailed(
-                        self.connection.session_id.clone(),
-                        anyhow::anyhow!("Timeout waiting for handshake"),
-                    ).to_json(None),
-                })
+                Err(self.ks_error_to_startup_error(KSError::HandshakeFailed(
+                    self.connection.session_id.clone(),
+                    anyhow::anyhow!("Timeout waiting for handshake"),
+                )))
             }
         };
 
