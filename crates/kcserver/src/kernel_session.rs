@@ -640,7 +640,12 @@ impl KernelSession {
 
             // Wait for the handshake to complete
             match self
-                .wait_for_handshake(registration_socket, handshake_result_rx, connection_timeout)
+                .wait_for_handshake(
+                    registration_socket,
+                    handshake_result_rx,
+                    startup_rx.clone(),
+                    connection_timeout,
+                )
                 .await
             {
                 Ok(connection_file) => {
@@ -652,21 +657,13 @@ impl KernelSession {
                     // Update the connection file with the negotiated ports
                     self.update_connection_file(connection_file).await;
                 }
-                Err(e) => {
+                Err(startup_error) => {
                     log::error!(
-                        "[session {}] JEP 66 handshake failed: {}",
+                        "[session {}] JEP 66 handshake failed: {:?}",
                         self.connection.session_id,
-                        e
+                        startup_error
                     );
-                    return Err(StartupError {
-                        exit_code: None,
-                        output: None,
-                        error: KSError::SessionConnectionFailed(anyhow::anyhow!(
-                            "Failed to complete JEP 66 handshake: {}",
-                            e
-                        ))
-                        .to_json(None),
-                    });
+                    return Err(startup_error);
                 }
             }
         }
@@ -1366,14 +1363,16 @@ impl KernelSession {
      *
      * @param registration_socket The socket to use for the handshake procedure
      * @param handshake_result_rx The channel to receive the handshake result over
+     * @param startup_rx The channel to receive startup status messages (including kernel exits)
      * @param timeout_secs Time to wait for the handshake in seconds
      */
     pub async fn wait_for_handshake(
         &self,
         registration_socket: RegistrationSocket,
         handshake_result_rx: oneshot::Receiver<HandshakeResult>,
+        startup_rx: Receiver<StartupStatus>,
         timeout_secs: u64,
-    ) -> Result<ConnectionFile, KSError> {
+    ) -> Result<ConnectionFile, StartupError> {
         // Start listening on the registration socket in a separate thread
         registration_socket.listen(self.connection.clone());
 
@@ -1420,66 +1419,123 @@ impl KernelSession {
             }
         });
 
-        // Wait for the handshake to complete or for a timeout
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            result_rx.recv(),
-        )
-        .await
-        {
-            Ok(Ok(connection_file)) => {
-                // Handshake completed successfully
-                log::info!(
-                    "[session {}] Handshake completed successfully",
-                    self.connection.session_id
-                );
+        // Wait for the handshake to complete, kernel exit, or timeout
+        let result = tokio::select! {
+            handshake_result = result_rx.recv() => {
+                match handshake_result {
+                    Ok(connection_file) => {
+                        // Handshake completed successfully
+                        log::info!(
+                            "[session {}] Handshake completed successfully",
+                            self.connection.session_id
+                        );
 
-                // Create a new connection file with the key included
-                let mut connection_file = connection_file;
-                connection_file.info.key = match &self.connection.key {
-                    Some(key) => key.clone(),
-                    None => String::new(),
-                };
+                        // Create a new connection file with the key included
+                        let mut connection_file = connection_file;
+                        connection_file.info.key = match &self.connection.key {
+                            Some(key) => key.clone(),
+                            None => String::new(),
+                        };
 
-                // Create an event message to send through the websocket
-                let msg = WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(
-                    self.connection.session_id.clone(),
-                    connection_file.info.clone(),
-                ));
+                        // Create an event message to send through the websocket
+                        let msg = WebsocketMessage::Kernel(KernelMessage::HandshakeCompleted(
+                            self.connection.session_id.clone(),
+                            connection_file.info.clone(),
+                        ));
 
-                // Send the event through the websocket channel
-                if let Err(e) = self.ws_json_tx.send(msg).await {
-                    log::warn!(
-                        "[session {}] Failed to send handshake completed message: {}",
-                        self.connection.session_id,
-                        e
-                    );
+                        // Send the event through the websocket channel
+                        if let Err(e) = self.ws_json_tx.send(msg).await {
+                            log::warn!(
+                                "[session {}] Failed to send handshake completed message: {}",
+                                self.connection.session_id,
+                                e
+                            );
+                        }
+
+                        Ok(connection_file)
+                    }
+                    Err(e) => {
+                        // Error receiving from channel
+                        log::error!(
+                            "[session {}] Error waiting for handshake: {}",
+                            self.connection.session_id,
+                            e
+                        );
+                        Err(StartupError {
+                            exit_code: None,
+                            output: None,
+                            error: KSError::HandshakeFailed(
+                                self.connection.session_id.clone(),
+                                anyhow::anyhow!("Channel error: {}", e),
+                            ).to_json(None),
+                        })
+                    }
                 }
-
-                Ok(connection_file)
             }
-            Ok(Err(e)) => {
-                // Error receiving from channel
-                log::error!(
-                    "[session {}] Error waiting for handshake: {}",
-                    self.connection.session_id,
-                    e
-                );
-                Err(KSError::HandshakeFailed(
-                    self.connection.session_id.clone(),
-                    anyhow::anyhow!("Channel error: {}", e),
-                ))
+            startup_status = startup_rx.recv() => {
+                match startup_status {
+                    Ok(StartupStatus::AbnormalExit(exit_code, output, error)) => {
+                        // The kernel exited before the handshake could complete
+                        log::error!(
+                            "[session {}] Kernel exited during handshake with code {}: {}",
+                            self.connection.session_id,
+                            exit_code,
+                            error
+                        );
+                        Err(StartupError {
+                            exit_code: Some(exit_code),
+                            output: Some(output),
+                            error: KSError::ExitedBeforeConnection.to_json(None),
+                        })
+                    }
+                    Ok(status) => {
+                        // Other startup status (shouldn't happen during handshake)
+                        log::warn!(
+                            "[session {}] Unexpected startup status during handshake: {:?}",
+                            self.connection.session_id,
+                            status
+                        );
+                        Err(StartupError {
+                            exit_code: None,
+                            output: None,
+                            error: KSError::HandshakeFailed(
+                                self.connection.session_id.clone(),
+                                anyhow::anyhow!("Unexpected startup status"),
+                            ).to_json(None),
+                        })
+                    }
+                    Err(e) => {
+                        // Error receiving from startup channel
+                        log::error!(
+                            "[session {}] Error receiving startup status during handshake: {}",
+                            self.connection.session_id,
+                            e
+                        );
+                        Err(StartupError {
+                            exit_code: None,
+                            output: None,
+                            error: KSError::HandshakeFailed(
+                                self.connection.session_id.clone(),
+                                anyhow::anyhow!("Startup channel error: {}", e),
+                            ).to_json(None),
+                        })
+                    }
+                }
             }
-            Err(_) => {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => {
                 // Timeout waiting for handshake
                 log::error!(
                     "[session {}] Timeout waiting for handshake",
                     self.connection.session_id
                 );
-                Err(KSError::HandshakeFailed(
-                    self.connection.session_id.clone(),
-                    anyhow::anyhow!("Timeout waiting for handshake"),
-                ))
+                Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: KSError::HandshakeFailed(
+                        self.connection.session_id.clone(),
+                        anyhow::anyhow!("Timeout waiting for handshake"),
+                    ).to_json(None),
+                })
             }
         };
 

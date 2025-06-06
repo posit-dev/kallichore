@@ -15,6 +15,7 @@ use log::error;
 /// Important: do not remove or reorder variants from this enum, as the discriminant
 /// of each variant is used as an error code and we'd like to keep the error codes
 /// stable across versions.
+#[derive(Debug)]
 pub enum KSError {
     SessionExists(String),
     SessionNotFound(String),
