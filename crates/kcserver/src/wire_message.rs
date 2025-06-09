@@ -16,6 +16,7 @@ use crate::{kernel_connection::KernelConnection, wire_message_header::WireMessag
 
 use base64::engine::Engine;
 use hmac::Mac;
+use sha2::Sha256;
 
 pub struct WireMessage {
     /// The session ID the message is destined for
@@ -98,6 +99,15 @@ impl WireMessage {
 
     /// Convert the wire message to a Jupyter message.
     pub fn to_jupyter(&self, channel: JupyterChannel) -> Result<JupyterMessage, anyhow::Error> {
+        self.to_jupyter_with_key(channel, None)
+    }
+
+    /// Convert the wire message to a Jupyter message with optional HMAC validation.
+    pub fn to_jupyter_with_key(
+        &self,
+        channel: JupyterChannel,
+        hmac_key: Option<&hmac::Hmac<Sha256>>,
+    ) -> Result<JupyterMessage, anyhow::Error> {
         let mut parts = self.parts.clone();
         let mut iter = self.parts.iter();
         let pos = match iter.position(|buf| &buf[..] == MSG_DELIM) {
@@ -106,7 +116,30 @@ impl WireMessage {
         };
         let parts = parts.drain(pos + 1..).collect::<Vec<_>>();
 
-        // TODO: validate HMAC signature
+        // Validate HMAC signature if a key is provided
+        if let Some(key) = hmac_key {
+            if parts.is_empty() {
+                return Err(anyhow::anyhow!("Message has no signature part"));
+            }
+
+            // The signature is in parts[0], and it should be validated against parts[1-4]
+            let signature_bytes = &parts[0];
+            if !signature_bytes.is_empty() {
+                let signature_str = std::str::from_utf8(signature_bytes)
+                    .map_err(|_| anyhow::anyhow!("Invalid signature encoding"))?;
+
+                // Compute expected signature over parts 1-4 (header, parent_header, metadata, content)
+                let mut expected_mac = key.clone();
+                for part in parts.iter().skip(1).take(4) {
+                    expected_mac.update(part);
+                }
+                let expected_signature = hex::encode(expected_mac.finalize().into_bytes());
+
+                if signature_str != expected_signature {
+                    return Err(anyhow::anyhow!("HMAC signature validation failed"));
+                }
+            }
+        }
         let header: WireMessageHeader = serde_json::from_value(Self::parse_buffer(&parts[1])?)?;
         let jupyter_header: JupyterMessageHeader = header.into();
         let parent_header: Option<JupyterMessageHeader> = if parts[2].len() < 5 {

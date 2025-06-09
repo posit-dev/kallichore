@@ -1413,7 +1413,7 @@ where
         // Clone the data we need since we're moving into the future
         let server = self.clone();
         let context = context.clone();
-        
+
         Box::pin(async move {
             // Call the actual implementation method and convert ApiError to swagger::ApiError
             match server.handle_channels_websocket_request(request, session_id, &context).await {

@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 
 use futures::future::BoxFuture;
 use hyper::{Body, Request, Response};
-use swagger::{Has, XSpanIdString, Authorization, ApiError};
+use swagger::{ApiError, Authorization, Has, XSpanIdString};
 
 use kallichore_api::Api;
 
@@ -94,7 +94,10 @@ where
 
                 Box::pin(async move {
                     // Call our custom websocket request handler with raw request access
-                    match api_impl.channels_websocket_request(request, session_id, &context).await {
+                    match api_impl
+                        .channels_websocket_request(request, session_id, &context)
+                        .await
+                    {
                         Ok(response) => Ok(response),
                         Err(e) => {
                             log::error!("Websocket request handler error: {:?}", e);
@@ -109,16 +112,12 @@ where
             } else {
                 // If we can't extract session_id, fall back to the normal service
                 let mut inner_service = self.inner_service.clone();
-                Box::pin(async move {
-                    inner_service.call((request, context)).await
-                })
+                Box::pin(async move { inner_service.call((request, context)).await })
             }
         } else {
             // For all other requests, delegate to the generated service
             let mut inner_service = self.inner_service.clone();
-            Box::pin(async move {
-                inner_service.call((request, context)).await
-            })
+            Box::pin(async move { inner_service.call((request, context)).await })
         }
     }
 }
@@ -130,9 +129,8 @@ fn is_websocket_channels_path(path: &str) -> bool {
     use std::sync::OnceLock;
 
     static WEBSOCKET_REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = WEBSOCKET_REGEX.get_or_init(|| {
-        Regex::new(r"^/sessions/[^/?#]+/channels$").expect("Invalid regex")
-    });
+    let regex = WEBSOCKET_REGEX
+        .get_or_init(|| Regex::new(r"^/sessions/[^/?#]+/channels$").expect("Invalid regex"));
 
     regex.is_match(path)
 }
@@ -143,11 +141,11 @@ fn extract_session_id_from_path(path: &str) -> Option<String> {
     use std::sync::OnceLock;
 
     static EXTRACT_REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = EXTRACT_REGEX.get_or_init(|| {
-        Regex::new(r"^/sessions/([^/?#]+)/channels$").expect("Invalid regex")
-    });
+    let regex = EXTRACT_REGEX
+        .get_or_init(|| Regex::new(r"^/sessions/([^/?#]+)/channels$").expect("Invalid regex"));
 
-    regex.captures(path)
+    regex
+        .captures(path)
         .and_then(|caps| caps.get(1))
         .map(|m| {
             // URL decode the session_id
