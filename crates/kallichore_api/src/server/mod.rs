@@ -1,10 +1,5 @@
 use futures::{future, future::BoxFuture, future::FutureExt, stream, stream::TryStreamExt, Stream};
-// --- Start Kallichore ---
-use hyper::header::{
-    HeaderName, HeaderValue, CONNECTION, CONTENT_TYPE, SEC_WEBSOCKET_KEY, UPGRADE,
-};
-use regex;
-// --- End Kallichore ---
+use hyper::header::{HeaderName, HeaderValue, CONTENT_TYPE};
 use hyper::{Body, HeaderMap, Request, Response, StatusCode};
 use log::warn;
 #[allow(unused_imports)]
@@ -222,54 +217,10 @@ where
             req: (Request<Body>, C),
         ) -> Result<Response<Body>, crate::ServiceError>
         where
-            T: Api<C> + Clone + Send + Sync + 'static,
+            T: Api<C> + Clone + Send + 'static,
             C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
         {
             let (request, context) = req;
-
-            // Check if this is a websocket upgrade request for channels before destructuring
-            let is_websocket_channels = request.method() == hyper::Method::GET
-                && request.uri().path().starts_with("/sessions/")
-                && request.uri().path().ends_with("/channels")
-                && request.headers().get(CONNECTION).map_or(false, |h| {
-                    h.to_str()
-                        .map_or(false, |s| s.to_lowercase().contains("upgrade"))
-                })
-                && request.headers().get(UPGRADE).map_or(false, |h| {
-                    h.to_str()
-                        .map_or(false, |s| s.to_lowercase().contains("websocket"))
-                })
-                && request.headers().contains_key(SEC_WEBSOCKET_KEY);
-
-            if is_websocket_channels {
-                // Extract session_id from path
-                let path = request.uri().path();
-                if let Some(captures) = regex::Regex::new(r"^/sessions/([^/]+)/channels$")
-                    .unwrap()
-                    .captures(path)
-                {
-                    let param_session_id = captures.get(1).unwrap().as_str().to_string();
-                    match api_impl
-                        .channels_websocket_request(request, param_session_id, &context)
-                        .await
-                    {
-                        Ok(response) => return Ok(response),
-                        Err(e) => {
-                            log::error!("WebSocket upgrade error: {:?}", e);
-                            return Ok(Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(Body::from("WebSocket upgrade failed"))
-                                .expect("Unable to create error response"));
-                        }
-                    }
-                } else {
-                    return Ok(Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(Body::from("Invalid session ID"))
-                        .expect("Unable to create error response"));
-                }
-            }
-
             let (parts, body) = request.into_parts();
             let (method, uri, headers) = (parts.method, parts.uri, parts.headers);
             let path = paths::GLOBAL_REGEX_SET.matches(uri.path());

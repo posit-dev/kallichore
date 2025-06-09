@@ -13,7 +13,6 @@
 use crate::server::Authorization;
 use async_trait::async_trait;
 use futures::Stream;
-use hyper;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -265,20 +264,6 @@ pub trait Api<C: Send + Sync> {
         session_id: String,
         context: &C,
     ) -> Result<ChannelsWebsocketResponse, ApiError>;
-
-    /// Handle raw WebSocket upgrade request (optional override for websocket implementations)
-    async fn channels_websocket_request(
-        &self,
-        request: hyper::Request<hyper::Body>,
-        session_id: String,
-        context: &C,
-    ) -> Result<hyper::Response<hyper::Body>, ApiError> {
-        // Default implementation: just return 501 Not Implemented
-        Ok(hyper::Response::builder()
-            .status(hyper::StatusCode::NOT_IMPLEMENTED)
-            .body(hyper::Body::from("WebSocket upgrade not implemented"))
-            .unwrap())
-    }
 
     /// Get Jupyter connection information for the session
     async fn connection_info(
