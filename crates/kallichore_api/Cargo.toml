@@ -26,7 +26,7 @@ conversion = ["frunk", "frunk_derives", "frunk_core", "frunk-enum-core", "frunk-
 async-trait = "0.1.24"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-swagger = { version = "6.1", features = ["serdejson", "server", "client", "tls", "tcp"] }
+swagger = { version = "6.1", features = ["serdejson", "server", "client", "tcp"] }
 log = "0.4.0"
 mime = "0.3"
 
