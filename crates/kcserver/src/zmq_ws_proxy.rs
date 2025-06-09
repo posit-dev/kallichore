@@ -94,6 +94,7 @@ impl ZmqWsProxy {
                     "tcp://{}:{}",
                     connection_file.info.ip, connection_file.info.hb_port
                 ),
+                exit_event.clone(),
                 disconnected_event.clone(),
             ),
             connection_file,
