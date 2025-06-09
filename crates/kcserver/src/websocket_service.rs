@@ -1,7 +1,7 @@
 //
 // websocket_service.rs
 //
-// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2025 Posit Software, PBC. All rights reserved.
 //
 //
 

@@ -144,7 +144,7 @@ impl KernelSession {
     pub async fn new(
         session: models::NewSession,
         key: String,
-        idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
+        idle_nudge_tx: tokio::sync::mpsc::Sender<Option<u32>>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();

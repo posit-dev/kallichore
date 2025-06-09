@@ -9,10 +9,11 @@
 
 #![allow(unused_imports)]
 
+use crate::websocket_service::ApiWebsocketExt;
 use anyhow::anyhow;
 use async_trait::async_trait;
-use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use futures::future::BoxFuture;
+use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use hyper::client::connect;
 use hyper::header::{HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
 use hyper::server::conn::Http;
@@ -23,7 +24,6 @@ use hyper_util::rt::TokioIo;
 use kallichore_api::models::{NewSession200Response, ServerConfigurationLogLevel, ServerStatus};
 use log::info;
 use serde_json::json;
-use crate::websocket_service::ApiWebsocketExt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -58,9 +58,9 @@ use crate::error::KSError;
 use crate::kernel_session::{self, KernelSession};
 use crate::registration_file::RegistrationFile;
 use crate::registration_socket::HandshakeResult;
+use crate::websocket_service::WebsocketInterceptorMakeService;
 use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
-use crate::websocket_service::WebsocketInterceptorMakeService;
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
     DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
@@ -150,7 +150,7 @@ pub struct Server<C> {
     started_time: std::time::Instant,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
-    idle_nudge_tx: Sender<()>,
+    idle_nudge_tx: Sender<Option<u32>>,
     reserved_ports: Arc<RwLock<Vec<i32>>>,
     // Shared, thread-safe storage for the idle_shutdown_hours setting
     idle_shutdown_hours: Arc<RwLock<Option<u16>>>,
@@ -209,14 +209,15 @@ impl<C> Server<C> {
     /// # Arguments
     ///
     /// - `all_sessions`: A reference to the list of all kernel sessions.
-    /// - `idle_nudge_rx`: A receiver for idle nudges.
+    /// - `idle_nudge_rx`: A receiver for idle nudges. A nudge can optionally
+    ///    include the process ID of the client that is sending the nudge.
     /// - `idle_shutdown_hours`: The number of hours of inactivity before the
     ///    server shuts down. If None, the server will not shut down due to
     ///    inactivity.
     /// - `idle_config_update_rx`: A receiver for idle configuration updates.
     fn idle_poll_task(
         all_sessions: Arc<RwLock<Vec<KernelSession>>>,
-        mut idle_nudge_rx: mpsc::Receiver<()>,
+        mut idle_nudge_rx: mpsc::Receiver<Option<u32>>,
         idle_shutdown_hours: Arc<RwLock<Option<u16>>>,
         mut idle_config_update_rx: mpsc::Receiver<Option<u16>>,
     ) {
@@ -262,6 +263,8 @@ impl<C> Server<C> {
             // Consume the first tick immediately (tokio intervals start at 0)
             interval.tick().await;
 
+            let mut client_pid = 0;
+
             loop {
                 // Wait for either the interval to expire, an idle nudge, or a configuration update
                 tokio::select! {
@@ -286,10 +289,35 @@ impl<C> Server<C> {
                         let sessions = {
                             all_sessions.read().unwrap().clone()
                         };
+
+                        // If we have a nonzero client PID, check to see if the
+                        // process is still running.
+                        if client_pid != 0 {
+                            let system = System::new_all();
+                            if system.process(Pid::from_u32(client_pid)).is_some() {
+                                log::info!("Skipping idle check; client process {} still running.", client_pid);
+                                return;
+                            }
+                            else {
+                                log::info!("Client process {} is no longer running.", client_pid);
+                                client_pid = 0;
+                            }
+                        }
                         Server::<C>::check_idle_sessions(&sessions).await;
                     }
-                    _ = idle_nudge_rx.recv() => {
+                    new_client_pid = idle_nudge_rx.recv() => {
                         log::trace!("Received an idle nudge; resetting interval");
+                        if let Some(Some(pid)) = new_client_pid {
+                            // If a client PID is provided, update the client PID
+                            if pid != client_pid {
+                                if client_pid == 0 {
+                                    log::info!("Heartbeat now tracking client: {}", pid);
+                                } else {
+                                    log::info!("Heartbeat tracking switched to new client: {} => {}", client_pid, pid);
+                                }
+                                client_pid = pid;
+                            }
+                        }
                         // Received an idle nudge; reset the interval
                         interval.reset();
                     }
@@ -1127,7 +1155,7 @@ where
 
     async fn client_heartbeat(
         &self,
-        _client_heartbeat: models::ClientHeartbeat,
+        client_heartbeat: models::ClientHeartbeat,
         context: &C,
     ) -> Result<ClientHeartbeatResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
@@ -1135,7 +1163,11 @@ where
             "client_heartbeat - X-Span-ID: {:?}",
             ctx_span.get().0.clone()
         );
-        match self.idle_nudge_tx.send(()).await {
+        let process_id = match client_heartbeat.process_id {
+            Some(pid) => Some(pid as u32),
+            None => None,
+        };
+        match self.idle_nudge_tx.send(process_id).await {
             Ok(_) => {
                 log::trace!("Client heartbeat processed successfully");
             }
@@ -1416,7 +1448,10 @@ where
 
         Box::pin(async move {
             // Call the actual implementation method and convert ApiError to swagger::ApiError
-            match server.handle_channels_websocket_request(request, session_id, &context).await {
+            match server
+                .handle_channels_websocket_request(request, session_id, &context)
+                .await
+            {
                 Ok(response) => Ok(response),
                 Err(api_error) => Err(ApiError(format!("Websocket error: {}", api_error))),
             }
