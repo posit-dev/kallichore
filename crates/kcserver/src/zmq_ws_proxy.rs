@@ -274,7 +274,7 @@ impl ZmqWsProxy {
                     match shell_msg {
                         Ok(msg) => {
                             let wire_message = WireMessage::from_zmq(self.session_id.clone(), JupyterChannel::Shell, msg);
-                            let jupyter_message = wire_message.to_jupyter(JupyterChannel::Shell)?;
+                            let jupyter_message = wire_message.to_jupyter(JupyterChannel::Shell, self.connection.hmac_key.clone())?;
                             let parent = match jupyter_message.parent_header {
                                 None => {
                                     log::warn!("[session {}] Discarding message with no parent header: {}", session_id, jupyter_message.header.msg_id);
@@ -304,7 +304,7 @@ impl ZmqWsProxy {
                         Ok(msg) => {
                             // Parse into a Jupyter message
                             let wire_message = WireMessage::from_zmq(self.session_id.clone(), JupyterChannel::IOPub, msg.clone());
-                            let jupyter_message = wire_message.to_jupyter(JupyterChannel::IOPub)?;
+                            let jupyter_message = wire_message.to_jupyter(JupyterChannel::IOPub, self.connection.hmac_key.clone())?;
                             if let Some(ref parent_header) =  jupyter_message.parent_header {
                                 // If the message's parent header matches the msg_id we
                                 // are waiting for, we need to check if it is a status
@@ -583,7 +583,7 @@ impl ZmqWsProxy {
 
         // (2) convert it into a Jupyter message; this can fail if the message is
         // not a valid Jupyter message, in which case we will discard it.
-        let message = match message.to_jupyter(channel) {
+        let message = match message.to_jupyter(channel, self.connection.hmac_key.clone()) {
             Ok(msg) => msg,
             Err(e) => {
                 log::warn!(

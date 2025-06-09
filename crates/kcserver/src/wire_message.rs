@@ -97,16 +97,11 @@ impl WireMessage {
         })
     }
 
-    /// Convert the wire message to a Jupyter message.
-    pub fn to_jupyter(&self, channel: JupyterChannel) -> Result<JupyterMessage, anyhow::Error> {
-        self.to_jupyter_with_key(channel, None)
-    }
-
     /// Convert the wire message to a Jupyter message with optional HMAC validation.
-    pub fn to_jupyter_with_key(
+    pub fn to_jupyter(
         &self,
         channel: JupyterChannel,
-        hmac_key: Option<&hmac::Hmac<Sha256>>,
+        hmac_key: Option<hmac::Hmac<Sha256>>,
     ) -> Result<JupyterMessage, anyhow::Error> {
         let mut parts = self.parts.clone();
         let mut iter = self.parts.iter();

@@ -23,6 +23,7 @@ use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use kallichore_api::models::{NewSession200Response, ServerConfigurationLogLevel, ServerStatus};
 use log::info;
+use log::trace;
 use serde_json::json;
 use std::future::Future;
 use std::marker::PhantomData;

@@ -80,7 +80,7 @@ impl RegistrationSocket {
             JupyterChannel::Registration,
             request_data.clone(),
         );
-        match wire_message.to_jupyter(JupyterChannel::Registration) {
+        match wire_message.to_jupyter(JupyterChannel::Registration, connection.hmac_key.clone()) {
             Ok(jupyter_message) => match JupyterMsg::from(jupyter_message.clone()) {
                 JupyterMsg::HandshakeRequest(request) => {
                     Self::send_successful_handshake(
