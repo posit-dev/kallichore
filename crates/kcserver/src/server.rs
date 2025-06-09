@@ -1159,7 +1159,7 @@ where
         context: &C,
     ) -> Result<ClientHeartbeatResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
-        info!(
+        trace!(
             "client_heartbeat - X-Span-ID: {:?}",
             ctx_span.get().0.clone()
         );
