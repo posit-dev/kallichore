@@ -1,7 +1,8 @@
-use crate::Api;
+use crate::{Api, AuthenticationApi};
 use futures::future::BoxFuture;
 use hyper::header::HeaderName;
 use hyper::{service::Service, Error, Request, Response, StatusCode};
+use log::error;
 use std::default::Default;
 use std::io;
 use std::marker::PhantomData;
@@ -86,7 +87,7 @@ where
     B: Push<Option<AuthData>, Result = C>,
     C: Push<Option<Authorization>, Result = D>,
     D: Send + 'static,
-    T: Service<(Request<ReqBody>, D)>,
+    T: Service<(Request<ReqBody>, D)> + AuthenticationApi,
 {
     type Error = T::Error;
     type Future = T::Future;
@@ -104,9 +105,17 @@ where
             use std::ops::Deref;
             use swagger::auth::Bearer;
             if let Some(bearer) = swagger::auth::from_headers::<Bearer>(headers) {
+                let authorization = self.inner.bearer_authorization(&bearer);
                 let auth_data = AuthData::Bearer(bearer);
+
                 let context = context.push(Some(auth_data));
-                let context = context.push(None::<Authorization>);
+                let context = match authorization {
+                    Ok(auth) => context.push(Some(auth)),
+                    Err(err) => {
+                        error!("Error during Authorization: {err:?}");
+                        context.push(None::<Authorization>)
+                    }
+                };
 
                 return self.inner.call((request, context));
             }

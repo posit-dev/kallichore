@@ -589,6 +589,16 @@
         "operationId": "client-heartbeat",
         "summary": "Notify the server that a client is connected",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/clientHeartbeat"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Heartbeat received",
@@ -815,6 +825,15 @@
           "signal",
           "message"
         ]
+      },
+      "clientHeartbeat": {
+        "type": "object",
+        "properties": {
+          "process_id": {
+            "type": "integer",
+            "description": "The process ID of the client sending the heartbeat"
+          }
+        }
       },
       "newSession": {
         "type": "object",

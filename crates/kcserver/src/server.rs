@@ -19,7 +19,7 @@ use hyper::service::Service;
 use hyper::upgrade::Upgraded;
 use hyper::{Body, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use kallichore_api::models::{NewSession200Response, ServerStatus};
+use kallichore_api::models::{NewSession200Response, ServerConfigurationLogLevel, ServerStatus};
 use log::info;
 use serde_json::json;
 use std::future::Future;
@@ -1237,7 +1237,11 @@ where
         Ok(response)
     }
 
-    async fn client_heartbeat(&self, context: &C) -> Result<ClientHeartbeatResponse, ApiError> {
+    async fn client_heartbeat(
+        &self,
+        _client_heartbeat: models::ClientHeartbeat,
+        context: &C,
+    ) -> Result<ClientHeartbeatResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
         info!(
             "client_heartbeat - X-Span-ID: {:?}",
@@ -1303,12 +1307,25 @@ where
             idle_hours_guard.map(|hours| hours as i32)
         };
 
+        // Convert log_level from String to ServerConfigurationLogLevel
+        let log_level_enum =
+            self.log_level
+                .as_ref()
+                .and_then(|level_str| match level_str.as_str() {
+                    "trace" => Some(ServerConfigurationLogLevel::Trace),
+                    "debug" => Some(ServerConfigurationLogLevel::Debug),
+                    "info" => Some(ServerConfigurationLogLevel::Info),
+                    "warn" => Some(ServerConfigurationLogLevel::Warn),
+                    "error" => Some(ServerConfigurationLogLevel::Error),
+                    _ => None,
+                });
+
         // Return the server configuration
         Ok(
             kallichore_api::GetServerConfigurationResponse::TheCurrentServerConfiguration(
                 models::ServerConfiguration {
                     idle_shutdown_hours: idle_hours,
-                    log_level: self.log_level.clone(),
+                    log_level: log_level_enum,
                 },
             ),
         )

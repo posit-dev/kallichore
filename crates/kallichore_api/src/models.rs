@@ -143,21 +143,19 @@ impl std::string::ToString for ActiveSession {
             Some(self.display_name.to_string()),
             Some("language".to_string()),
             Some(self.language.to_string()),
-            // Skipping interrupt_mode in query parameter serialization
-
-            // Skipping initial_env in query parameter serialization
+            // Skipping non-primitive type interrupt_mode in query parameter serialization
+            // Skipping map initial_env in query parameter serialization
             Some("connected".to_string()),
             Some(self.connected.to_string()),
-            // Skipping started in query parameter serialization
+            // Skipping non-primitive type started in query parameter serialization
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
             Some("input_prompt".to_string()),
             Some(self.input_prompt.to_string()),
             Some("continuation_prompt".to_string()),
             Some(self.continuation_prompt.to_string()),
-            // Skipping execution_queue in query parameter serialization
-
-            // Skipping status in query parameter serialization
+            // Skipping non-primitive type execution_queue in query parameter serialization
+            // Skipping non-primitive type status in query parameter serialization
             Some("idle_seconds".to_string()),
             Some(self.idle_seconds.to_string()),
             Some("busy_seconds".to_string()),
@@ -428,6 +426,261 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
             std::result::Result::Err(e) => std::result::Result::Err(format!(
                 "Unable to convert header: {:?} to string: {}",
                 hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ActiveSession>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ActiveSession>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ActiveSession>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<ActiveSession> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <ActiveSession as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into ActiveSession - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ClientHeartbeat {
+    /// The process ID of the client sending the heartbeat
+    #[serde(rename = "process_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<i32>,
+}
+
+impl ClientHeartbeat {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> ClientHeartbeat {
+        ClientHeartbeat { process_id: None }
+    }
+}
+
+/// Converts the ClientHeartbeat value to the Query Parameters representation (style=form, explode=false)
+/// specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde serializer
+impl std::string::ToString for ClientHeartbeat {
+    fn to_string(&self) -> String {
+        let params: Vec<Option<String>> = vec![self
+            .process_id
+            .as_ref()
+            .map(|process_id| ["process_id".to_string(), process_id.to_string()].join(","))];
+
+        params.into_iter().flatten().collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ClientHeartbeat value
+/// as specified in https://swagger.io/docs/specification/serialization/
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ClientHeartbeat {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub process_id: Vec<i32>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ClientHeartbeat".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "process_id" => intermediate_rep.process_id.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ClientHeartbeat".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ClientHeartbeat {
+            process_id: intermediate_rep.process_id.into_iter().next(),
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ClientHeartbeat> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ClientHeartbeat>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ClientHeartbeat>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for ClientHeartbeat - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<ClientHeartbeat>
+{
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <ClientHeartbeat as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into ClientHeartbeat - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ClientHeartbeat>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ClientHeartbeat>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ClientHeartbeat>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<ClientHeartbeat> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <ClientHeartbeat as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into ClientHeartbeat - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
             )),
         }
     }
@@ -716,6 +969,66 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ConnectionInfo>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ConnectionInfo>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ConnectionInfo>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<ConnectionInfo> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <ConnectionInfo as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into ConnectionInfo - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct Error {
@@ -879,6 +1192,62 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<Error>>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<Error>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<Vec<Error>> {
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<Error> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <Error as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into Error - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 /// The execution queue for a session
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
@@ -914,10 +1283,10 @@ impl ExecutionQueue {
 impl std::string::ToString for ExecutionQueue {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
-            // Skipping active in query parameter serialization
+            // Skipping non-primitive type active in query parameter serialization
             Some("length".to_string()),
             Some(self.length.to_string()),
-            // Skipping pending in query parameter serialization
+            // Skipping non-primitive type pending in query parameter serialization
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -1048,6 +1417,66 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ExecutionQueue>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ExecutionQueue>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ExecutionQueue>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<ExecutionQueue> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <ExecutionQueue as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into ExecutionQueue - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 /// The mechansim for interrupting the session
 /// Enumeration of values.
 /// Since this enum's variants do not hold data, we can easily define them as `#[repr(C)]`
@@ -1055,7 +1484,7 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 #[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, Hash,
 )]
 #[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
 pub enum InterruptMode {
@@ -1082,6 +1511,111 @@ impl std::str::FromStr for InterruptMode {
             "signal" => std::result::Result::Ok(InterruptMode::Signal),
             "message" => std::result::Result::Ok(InterruptMode::Message),
             _ => std::result::Result::Err(format!("Value not valid: {}", s)),
+        }
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<InterruptMode> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<InterruptMode>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<InterruptMode>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for InterruptMode - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<InterruptMode> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <InterruptMode as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into InterruptMode - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<InterruptMode>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<InterruptMode>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<InterruptMode>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<InterruptMode> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <InterruptMode as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into InterruptMode - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
         }
     }
 }
@@ -1204,7 +1738,7 @@ impl std::string::ToString for NewSession {
             ),
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
-            // Skipping env in query parameter serialization
+            // Skipping non-primitive type env in query parameter serialization
             self.connection_timeout.as_ref().map(|connection_timeout| {
                 [
                     "connection_timeout".to_string(),
@@ -1212,7 +1746,7 @@ impl std::string::ToString for NewSession {
                 ]
                 .join(",")
             }),
-            // Skipping interrupt_mode in query parameter serialization
+            // Skipping non-primitive type interrupt_mode in query parameter serialization
             self.protocol_version.as_ref().map(|protocol_version| {
                 ["protocol_version".to_string(), protocol_version.to_string()].join(",")
             }),
@@ -1443,6 +1977,66 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<NewSession>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<NewSession>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<NewSession>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<NewSession> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <NewSession as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into NewSession - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct NewSession200Response {
@@ -1581,6 +2175,64 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<NewSession200Response>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<NewSession200Response>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<NewSession200Response>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<NewSession200Response> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <NewSession200Response as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{}' into NewSession200Response - {}",
+                                    hdr_value, err))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct RestartSession {
@@ -1618,7 +2270,7 @@ impl std::string::ToString for RestartSession {
                 ]
                 .join(",")
             }),
-            // Skipping env in query parameter serialization
+            // Skipping non-primitive type env in query parameter serialization
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -1734,6 +2386,66 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<RestartSession>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<RestartSession>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<RestartSession>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<RestartSession> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <RestartSession as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into RestartSession - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct ServerConfiguration {
@@ -1742,11 +2454,9 @@ pub struct ServerConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_shutdown_hours: Option<i32>,
 
-    /// The current log level
-    // Note: inline enums are not fully supported by openapi-generator
     #[serde(rename = "log_level")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub log_level: Option<String>,
+    pub log_level: Option<models::ServerConfigurationLogLevel>,
 }
 
 impl ServerConfiguration {
@@ -1774,9 +2484,7 @@ impl std::string::ToString for ServerConfiguration {
                     ]
                     .join(",")
                 }),
-            self.log_level
-                .as_ref()
-                .map(|log_level| ["log_level".to_string(), log_level.to_string()].join(",")),
+            // Skipping non-primitive type log_level in query parameter serialization
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -1795,7 +2503,7 @@ impl std::str::FromStr for ServerConfiguration {
         #[allow(dead_code)]
         struct IntermediateRep {
             pub idle_shutdown_hours: Vec<i32>,
-            pub log_level: Vec<String>,
+            pub log_level: Vec<models::ServerConfigurationLogLevel>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -1823,7 +2531,8 @@ impl std::str::FromStr for ServerConfiguration {
                     ),
                     #[allow(clippy::redundant_clone)]
                     "log_level" => intermediate_rep.log_level.push(
-                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                        <models::ServerConfigurationLogLevel as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
                     ),
                     _ => {
                         return std::result::Result::Err(
@@ -1889,6 +2598,221 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
             std::result::Result::Err(e) => std::result::Result::Err(format!(
                 "Unable to convert header: {:?} to string: {}",
                 hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ServerConfiguration>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ServerConfiguration>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ServerConfiguration>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<ServerConfiguration> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <ServerConfiguration as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{}' into ServerConfiguration - {}",
+                                    hdr_value, err))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+/// The current log level
+/// Enumeration of values.
+/// Since this enum's variants do not hold data, we can easily define them as `#[repr(C)]`
+/// which helps with FFI.
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, Hash,
+)]
+#[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
+pub enum ServerConfigurationLogLevel {
+    #[serde(rename = "trace")]
+    Trace,
+    #[serde(rename = "debug")]
+    Debug,
+    #[serde(rename = "info")]
+    Info,
+    #[serde(rename = "warn")]
+    Warn,
+    #[serde(rename = "error")]
+    Error,
+}
+
+impl std::fmt::Display for ServerConfigurationLogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            ServerConfigurationLogLevel::Trace => write!(f, "trace"),
+            ServerConfigurationLogLevel::Debug => write!(f, "debug"),
+            ServerConfigurationLogLevel::Info => write!(f, "info"),
+            ServerConfigurationLogLevel::Warn => write!(f, "warn"),
+            ServerConfigurationLogLevel::Error => write!(f, "error"),
+        }
+    }
+}
+
+impl std::str::FromStr for ServerConfigurationLogLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "trace" => std::result::Result::Ok(ServerConfigurationLogLevel::Trace),
+            "debug" => std::result::Result::Ok(ServerConfigurationLogLevel::Debug),
+            "info" => std::result::Result::Ok(ServerConfigurationLogLevel::Info),
+            "warn" => std::result::Result::Ok(ServerConfigurationLogLevel::Warn),
+            "error" => std::result::Result::Ok(ServerConfigurationLogLevel::Error),
+            _ => std::result::Result::Err(format!("Value not valid: {}", s)),
+        }
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ServerConfigurationLogLevel> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ServerConfigurationLogLevel>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ServerConfigurationLogLevel>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for ServerConfigurationLogLevel - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<ServerConfigurationLogLevel>
+{
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <ServerConfigurationLogLevel as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into ServerConfigurationLogLevel - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ServerConfigurationLogLevel>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ServerConfigurationLogLevel>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ServerConfigurationLogLevel>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<ServerConfigurationLogLevel> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <ServerConfigurationLogLevel as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{}' into ServerConfigurationLogLevel - {}",
+                                    hdr_value, err))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
             )),
         }
     }
@@ -2137,6 +3061,66 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ServerStatus>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ServerStatus>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ServerStatus>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<ServerStatus> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <ServerStatus as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into ServerStatus - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct SessionList {
@@ -2162,7 +3146,7 @@ impl std::string::ToString for SessionList {
         let params: Vec<Option<String>> = vec![
             Some("total".to_string()),
             Some(self.total.to_string()),
-            // Skipping sessions in query parameter serialization
+            // Skipping non-primitive type sessions in query parameter serialization
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -2286,6 +3270,66 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<SessionList>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<SessionList>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<SessionList>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<SessionList> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <SessionList as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into SessionList - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct StartupError {
@@ -2326,7 +3370,7 @@ impl std::string::ToString for StartupError {
             self.output
                 .as_ref()
                 .map(|output| ["output".to_string(), output.to_string()].join(",")),
-            // Skipping error in query parameter serialization
+            // Skipping non-primitive type error in query parameter serialization
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -2451,6 +3495,66 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<StartupError>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<StartupError>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<StartupError>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<StartupError> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <StartupError as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into StartupError - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 /// The status of the session
 /// Enumeration of values.
 /// Since this enum's variants do not hold data, we can easily define them as `#[repr(C)]`
@@ -2458,7 +3562,7 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 #[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, Hash,
 )]
 #[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
 pub enum Status {
@@ -2509,6 +3613,107 @@ impl std::str::FromStr for Status {
     }
 }
 
+// Methods for converting between header::IntoHeaderValue<Status> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<Status>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<Status>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for Status - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<Status> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <Status as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into Status - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<Status>>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<Status>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<Vec<Status>> {
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<Status> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <Status as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into Status - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct VarAction {
@@ -2541,7 +3746,7 @@ impl VarAction {
 impl std::string::ToString for VarAction {
     fn to_string(&self) -> String {
         let params: Vec<Option<String>> = vec![
-            // Skipping action in query parameter serialization
+            // Skipping non-primitive type action in query parameter serialization
             Some("name".to_string()),
             Some(self.name.to_string()),
             Some("value".to_string()),
@@ -2678,6 +3883,62 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
     }
 }
 
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<VarAction>>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<VarAction>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<Vec<VarAction>> {
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<VarAction> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <VarAction as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into VarAction - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
 /// The type of action to perform on the environment variable
 /// Enumeration of values.
 /// Since this enum's variants do not hold data, we can easily define them as `#[repr(C)]`
@@ -2685,7 +3946,7 @@ impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderVal
 #[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, Hash,
 )]
 #[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
 pub enum VarActionType {
@@ -2716,6 +3977,111 @@ impl std::str::FromStr for VarActionType {
             "append" => std::result::Result::Ok(VarActionType::Append),
             "prepend" => std::result::Result::Ok(VarActionType::Prepend),
             _ => std::result::Result::Err(format!("Value not valid: {}", s)),
+        }
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<VarActionType> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<VarActionType>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<VarActionType>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for VarActionType - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<VarActionType> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <VarActionType as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into VarActionType - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<VarActionType>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<VarActionType>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<VarActionType>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<VarActionType> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <VarActionType as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into VarActionType - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
         }
     }
 }
