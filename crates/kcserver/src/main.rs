@@ -33,6 +33,7 @@ mod wire_message;
 mod wire_message_header;
 mod working_dir;
 mod zmq_ws_proxy;
+mod websocket_service;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

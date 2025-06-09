@@ -12,6 +12,7 @@
 use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::future::BoxFuture;
 use hyper::client::connect;
 use hyper::header::{HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
 use hyper::server::conn::Http;
@@ -22,6 +23,7 @@ use hyper_util::rt::TokioIo;
 use kallichore_api::models::{NewSession200Response, ServerConfigurationLogLevel, ServerStatus};
 use log::info;
 use serde_json::json;
+use crate::websocket_service::ApiWebsocketExt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -58,6 +60,7 @@ use crate::registration_file::RegistrationFile;
 use crate::registration_socket::HandshakeResult;
 use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
+use crate::websocket_service::WebsocketInterceptorMakeService;
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
     DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
@@ -92,7 +95,7 @@ pub async fn create(
     #[cfg(unix)]
     let server_clone = server.clone();
 
-    let service = MakeService::new(server);
+    let service = WebsocketInterceptorMakeService::new(server);
 
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
 
@@ -1122,121 +1125,6 @@ where
         Ok(kallichore_api::ServerStatusResponse::ServerStatusAndInformation(resp))
     }
 
-    async fn channels_websocket_request(
-        &self,
-        mut request: hyper::Request<Body>,
-        session_id: String,
-        _context: &C,
-    ) -> Result<Response<Body>, ApiError> {
-        // TODO: This should also validate the bearer token to initiate the
-        // websocket connection
-        log::debug!(
-            "Upgrading channel connection to websocket for session '{}'",
-            session_id
-        );
-        let derived = {
-            let headers = request.headers();
-            let key = headers.get(SEC_WEBSOCKET_KEY);
-            key.map(|k| derive_accept_key(k.as_bytes()))
-        };
-        let version = request.version();
-        let kernel_sessions = self.kernel_sessions.clone();
-        {
-            // Validate the session ID before upgrading the connection
-            let kernel_sessions = kernel_sessions.read().unwrap();
-            if kernel_sessions
-                .iter()
-                .find(|s| s.connection.session_id == session_id)
-                .is_none()
-            {
-                let err = KSError::SessionNotFound(session_id.clone());
-                err.log();
-                let err = err.to_json(Some(
-                    "Establishing a websocket connection requires a valid session ID".to_string(),
-                ));
-                // Serialize the error to JSON
-                let err = serde_json::to_string(&err).unwrap();
-                let mut response = Response::new(err.into());
-                *response.status_mut() = StatusCode::BAD_REQUEST;
-                return Ok(response);
-            }
-        };
-
-        let client_sessions: Arc<RwLock<Vec<ClientSession>>> = self.client_sessions.clone();
-        {
-            // Check if the session already exists
-            let mut client_sessions = client_sessions.write().unwrap();
-            let index = client_sessions
-                .iter()
-                .position(|s| s.connection.session_id == session_id);
-            match index {
-                Some(pos) => {
-                    let session = client_sessions.get(pos).unwrap();
-                    // Disconnect the existing session
-                    log::debug!("Disconnecting existing client session for '{}'", session_id);
-                    session.disconnect.notify(usize::MAX);
-                    // Remove the existing session
-                    client_sessions.remove(pos);
-                }
-                None => {
-                    log::trace!("No existing client session found for '{}'", session_id);
-                }
-            }
-        }
-
-        tokio::task::spawn(async move {
-            match hyper::upgrade::on(&mut request).await {
-                Ok(upgraded) => {
-                    log::debug!("Creating session for websocket connection");
-
-                    // Find the kernel session with the given ID
-                    let client_session = {
-                        let sessions = kernel_sessions.read().unwrap();
-                        let session = sessions
-                            .iter()
-                            .find(|s| s.connection.session_id == session_id)
-                            .expect("Session not found");
-
-                        let ws_zmq_tx = session.ws_zmq_tx.clone();
-                        let ws_json_rx = session.ws_json_rx.clone();
-                        let connection = session.connection.clone();
-                        let state = session.state.clone();
-                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
-                    };
-
-                    // Add it to the list of client sessions
-                    {
-                        let mut client_sessions = client_sessions.write().unwrap();
-                        client_sessions.push(client_session.clone());
-                    }
-
-                    log::debug!(
-                        "Connection upgraded to websocket for session '{}'",
-                        session_id
-                    );
-
-                    let stream =
-                        WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
-                    client_session.handle_channel_ws(stream).await;
-                }
-                Err(e) => {
-                    log::error!("Failed to upgrade channel connection to websocket: {}", e);
-                }
-            }
-        });
-        let upgrade = HeaderValue::from_static("Upgrade");
-        let websocket = HeaderValue::from_static("websocket");
-        let mut response = Response::new(Body::default());
-        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-        *response.version_mut() = version;
-        response.headers_mut().append(CONNECTION, upgrade);
-        response.headers_mut().append(UPGRADE, websocket);
-        response
-            .headers_mut()
-            .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
-        Ok(response)
-    }
-
     async fn client_heartbeat(
         &self,
         _client_heartbeat: models::ClientHeartbeat,
@@ -1389,6 +1277,150 @@ where
                 serde_json::Value::Null,
             ),
         )
+    }
+}
+
+impl<C> Server<C> {
+    /// Handle websocket upgrade request for channels
+    /// This is the actual implementation that handles the raw HTTP request
+    async fn handle_channels_websocket_request(
+        &self,
+        mut request: hyper::Request<Body>,
+        session_id: String,
+        _context: &C,
+    ) -> Result<Response<Body>, ApiError> {
+        // TODO: This should also validate the bearer token to initiate the
+        // websocket connection
+        log::debug!(
+            "Upgrading channel connection to websocket for session '{}'",
+            session_id
+        );
+        let derived = {
+            let headers = request.headers();
+            let key = headers.get(SEC_WEBSOCKET_KEY);
+            key.map(|k| derive_accept_key(k.as_bytes()))
+        };
+        let version = request.version();
+        let kernel_sessions = self.kernel_sessions.clone();
+        {
+            // Validate the session ID before upgrading the connection
+            let kernel_sessions = kernel_sessions.read().unwrap();
+            if kernel_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+                .is_none()
+            {
+                let err = KSError::SessionNotFound(session_id.clone());
+                err.log();
+                let err = err.to_json(Some(
+                    "Establishing a websocket connection requires a valid session ID".to_string(),
+                ));
+                // Serialize the error to JSON
+                let err = serde_json::to_string(&err).unwrap();
+                let mut response = Response::new(err.into());
+                *response.status_mut() = StatusCode::BAD_REQUEST;
+                return Ok(response);
+            }
+        };
+
+        let client_sessions: Arc<RwLock<Vec<ClientSession>>> = self.client_sessions.clone();
+        {
+            // Check if the session already exists
+            let mut client_sessions = client_sessions.write().unwrap();
+            let index = client_sessions
+                .iter()
+                .position(|s| s.connection.session_id == session_id);
+            match index {
+                Some(pos) => {
+                    let session = client_sessions.get(pos).unwrap();
+                    // Disconnect the existing session
+                    log::debug!("Disconnecting existing client session for '{}'", session_id);
+                    session.disconnect.notify(usize::MAX);
+                    // Remove the existing session
+                    client_sessions.remove(pos);
+                }
+                None => {
+                    log::trace!("No existing client session found for '{}'", session_id);
+                }
+            }
+        }
+
+        tokio::task::spawn(async move {
+            match hyper::upgrade::on(&mut request).await {
+                Ok(upgraded) => {
+                    log::debug!("Creating session for websocket connection");
+
+                    // Find the kernel session with the given ID
+                    let client_session = {
+                        let sessions = kernel_sessions.read().unwrap();
+                        let session = sessions
+                            .iter()
+                            .find(|s| s.connection.session_id == session_id)
+                            .expect("Session not found");
+
+                        let ws_zmq_tx = session.ws_zmq_tx.clone();
+                        let ws_json_rx = session.ws_json_rx.clone();
+                        let connection = session.connection.clone();
+                        let state = session.state.clone();
+                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
+                    };
+
+                    // Add it to the list of client sessions
+                    {
+                        let mut client_sessions = client_sessions.write().unwrap();
+                        client_sessions.push(client_session.clone());
+                    }
+
+                    log::debug!(
+                        "Connection upgraded to websocket for session '{}'",
+                        session_id
+                    );
+
+                    let stream =
+                        WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
+                    client_session.handle_channel_ws(stream).await;
+                }
+                Err(e) => {
+                    log::error!("Failed to upgrade channel connection to websocket: {}", e);
+                }
+            }
+        });
+        let upgrade = HeaderValue::from_static("Upgrade");
+        let websocket = HeaderValue::from_static("websocket");
+        let mut response = Response::new(Body::default());
+        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+        *response.version_mut() = version;
+        response.headers_mut().append(CONNECTION, upgrade);
+        response.headers_mut().append(UPGRADE, websocket);
+        response
+            .headers_mut()
+            .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
+        Ok(response)
+    }
+}
+
+// Implement ApiWebsocketExt trait to provide access to channels_websocket_request
+impl<C> ApiWebsocketExt<C> for Server<C>
+where
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + Clone + 'static,
+{
+    fn channels_websocket_request(
+        &self,
+        request: hyper::Request<Body>,
+        session_id: String,
+        context: &C,
+    ) -> BoxFuture<'static, Result<Response<Body>, ApiError>> {
+        // Clone the data we need since we're moving into the future
+        let server = self.clone();
+        let context = context.clone();
+        
+        Box::pin(async move {
+            // Call the actual implementation method and convert ApiError to swagger::ApiError
+            match server.handle_channels_websocket_request(request, session_id, &context).await {
+                Ok(response) => Ok(response),
+                Err(api_error) => Err(ApiError(format!("Websocket error: {}", api_error))),
+            }
+        })
     }
 }
 
