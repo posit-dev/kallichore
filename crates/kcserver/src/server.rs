@@ -291,9 +291,9 @@ impl<C> Server<C> {
                             all_sessions.read().unwrap().clone()
                         };
 
-                        // If we have a nonzero client PID, check to see if the
-                        // process is still running.
-                        if client_pid != 0 {
+                        // If we have a positive client PID, check to see if the
+                        // process is still running. If it is, skip the idle check.
+                        if client_pid > 1 {
                             let system = System::new_all();
                             if system.process(Pid::from_u32(client_pid)).is_some() {
                                 log::info!("Skipping idle check; client process {} still running.", client_pid);
