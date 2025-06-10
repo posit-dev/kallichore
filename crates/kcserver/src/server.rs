@@ -297,7 +297,7 @@ impl<C> Server<C> {
                             let system = System::new_all();
                             if system.process(Pid::from_u32(client_pid)).is_some() {
                                 log::info!("Skipping idle check; client process {} still running.", client_pid);
-                                return;
+                                continue;
                             }
                             else {
                                 log::info!("Client process {} is no longer running.", client_pid);
