@@ -383,6 +383,12 @@ paths:
     post:
       operationId: client-heartbeat
       parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/clientHeartbeat'
+        required: true
       responses:
         "200":
           content:
@@ -568,6 +574,12 @@ components:
       - signal
       - message
       type: string
+    clientHeartbeat:
+      properties:
+        process_id:
+          description: The process ID of the client sending the heartbeat
+          type: integer
+      type: object
     newSession:
       properties:
         session_id:
@@ -880,14 +892,7 @@ components:
             idle sessions (-1 if idle shutdown is disabled)
           type: integer
         log_level:
-          description: The current log level
-          enum:
-          - trace
-          - debug
-          - info
-          - warn
-          - error
-          type: string
+          $ref: '#/components/schemas/serverConfiguration_log_level'
       type: object
     new_session_200_response:
       example:
@@ -899,6 +904,15 @@ components:
       required:
       - session_id
       type: object
+    serverConfiguration_log_level:
+      description: The current log level
+      enum:
+      - trace
+      - debug
+      - info
+      - warn
+      - error
+      type: string
   securitySchemes:
     bearerAuth:
       scheme: bearer

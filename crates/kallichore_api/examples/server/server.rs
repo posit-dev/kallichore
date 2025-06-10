@@ -58,6 +58,7 @@ pub async fn create(addr: &str, https: bool) {
             let tls_acceptor = ssl.build();
             let tcp_listener = TcpListener::bind(&addr).await.unwrap();
 
+            info!("Starting a server (with https)");
             loop {
                 if let Ok((tcp, _)) = tcp_listener.accept().await {
                     let ssl = Ssl::new(tls_acceptor.context()).unwrap();
@@ -77,6 +78,7 @@ pub async fn create(addr: &str, https: bool) {
             }
         }
     } else {
+        info!("Starting a server (over http, so no TLS)");
         // Using HTTP
         hyper::server::Server::bind(&addr)
             .serve(service)
@@ -98,6 +100,14 @@ impl<C> Server<C> {
     }
 }
 
+use crate::server_auth;
+use jsonwebtoken::{
+    decode, encode, errors::Error as JwtError, Algorithm, DecodingKey, EncodingKey, Header,
+    TokenData, Validation,
+};
+use serde::{Deserialize, Serialize};
+use swagger::auth::Authorization;
+
 use kallichore_api::server::MakeService;
 use kallichore_api::{
     AdoptSessionResponse, Api, ChannelsWebsocketResponse, ClientHeartbeatResponse,
@@ -114,71 +124,18 @@ impl<C> Api<C> for Server<C>
 where
     C: Has<XSpanIdString> + Send + Sync,
 {
-    /// Adopt an existing session
-    async fn adopt_session(
-        &self,
-        session_id: String,
-        connection_info: models::ConnectionInfo,
-        context: &C,
-    ) -> Result<AdoptSessionResponse, ApiError> {
-        info!(
-            "adopt_session(\"{}\", {:?}) - X-Span-ID: {:?}",
-            session_id,
-            connection_info,
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Upgrade to a WebSocket for channel communication
-    async fn channels_websocket(
-        &self,
-        session_id: String,
-        context: &C,
-    ) -> Result<ChannelsWebsocketResponse, ApiError> {
-        info!(
-            "channels_websocket(\"{}\") - X-Span-ID: {:?}",
-            session_id,
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
-    }
-
     /// Notify the server that a client is connected
-    async fn client_heartbeat(&self, context: &C) -> Result<ClientHeartbeatResponse, ApiError> {
-        info!(
-            "client_heartbeat() - X-Span-ID: {:?}",
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Get Jupyter connection information for the session
-    async fn connection_info(
+    async fn client_heartbeat(
         &self,
-        session_id: String,
+        client_heartbeat: models::ClientHeartbeat,
         context: &C,
-    ) -> Result<ConnectionInfoResponse, ApiError> {
+    ) -> Result<ClientHeartbeatResponse, ApiError> {
         info!(
-            "connection_info(\"{}\") - X-Span-ID: {:?}",
-            session_id,
+            "client_heartbeat({:?}) - X-Span-ID: {:?}",
+            client_heartbeat,
             context.get().0.clone()
         );
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Delete session
-    async fn delete_session(
-        &self,
-        session_id: String,
-        context: &C,
-    ) -> Result<DeleteSessionResponse, ApiError> {
-        info!(
-            "delete_session(\"{}\") - X-Span-ID: {:?}",
-            session_id,
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
     /// Get the server configuration
@@ -190,55 +147,13 @@ where
             "get_server_configuration() - X-Span-ID: {:?}",
             context.get().0.clone()
         );
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Get session details
-    async fn get_session(
-        &self,
-        session_id: String,
-        context: &C,
-    ) -> Result<GetSessionResponse, ApiError> {
-        info!(
-            "get_session(\"{}\") - X-Span-ID: {:?}",
-            session_id,
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Interrupt session
-    async fn interrupt_session(
-        &self,
-        session_id: String,
-        context: &C,
-    ) -> Result<InterruptSessionResponse, ApiError> {
-        info!(
-            "interrupt_session(\"{}\") - X-Span-ID: {:?}",
-            session_id,
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Force quit session
-    async fn kill_session(
-        &self,
-        session_id: String,
-        context: &C,
-    ) -> Result<KillSessionResponse, ApiError> {
-        info!(
-            "kill_session(\"{}\") - X-Span-ID: {:?}",
-            session_id,
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
     /// List active sessions
     async fn list_sessions(&self, context: &C) -> Result<ListSessionsResponse, ApiError> {
         info!("list_sessions() - X-Span-ID: {:?}", context.get().0.clone());
-        Err(ApiError("Generic failure".into()))
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
     /// Create a new session
@@ -252,25 +167,137 @@ where
             new_session,
             context.get().0.clone()
         );
-        Err(ApiError("Generic failure".into()))
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
-    // --- Start Kallichore ---
-    async fn channels_websocket_request(
+    /// Get server status and information
+    async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError> {
+        info!("server_status() - X-Span-ID: {:?}", context.get().0.clone());
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Change the server configuration
+    async fn set_server_configuration(
         &self,
-        request: hyper::Request<hyper::Body>,
+        server_configuration: models::ServerConfiguration,
+        context: &C,
+    ) -> Result<SetServerConfigurationResponse, ApiError> {
+        info!(
+            "set_server_configuration({:?}) - X-Span-ID: {:?}",
+            server_configuration,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Shut down all sessions and the server itself
+    async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {
+        info!(
+            "shutdown_server() - X-Span-ID: {:?}",
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Adopt an existing session
+    async fn adopt_session(
+        &self,
+        session_id: String,
+        connection_info: models::ConnectionInfo,
+        context: &C,
+    ) -> Result<AdoptSessionResponse, ApiError> {
+        info!(
+            "adopt_session(\"{}\", {:?}) - X-Span-ID: {:?}",
+            session_id,
+            connection_info,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Upgrade to a WebSocket for channel communication
+    async fn channels_websocket(
+        &self,
         session_id: String,
         context: &C,
-    ) -> Result<hyper::Response<hyper::Body>, ApiError> {
+    ) -> Result<ChannelsWebsocketResponse, ApiError> {
         info!(
-            "channels_websocket_request({:?}, \"{}\") - X-Span-ID: {:?}",
-            request,
+            "channels_websocket(\"{}\") - X-Span-ID: {:?}",
             session_id,
             context.get().0.clone()
         );
-        Err(ApiError("Generic failure".into()))
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
-    // --- End Kallichore ---
+
+    /// Get Jupyter connection information for the session
+    async fn connection_info(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<ConnectionInfoResponse, ApiError> {
+        info!(
+            "connection_info(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Delete session
+    async fn delete_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<DeleteSessionResponse, ApiError> {
+        info!(
+            "delete_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Get session details
+    async fn get_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionResponse, ApiError> {
+        info!(
+            "get_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Interrupt session
+    async fn interrupt_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<InterruptSessionResponse, ApiError> {
+        info!(
+            "interrupt_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Force quit session
+    async fn kill_session(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<KillSessionResponse, ApiError> {
+        info!(
+            "kill_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
 
     /// Restart a session
     async fn restart_session(
@@ -285,36 +312,7 @@ where
             restart_session,
             context.get().0.clone()
         );
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Get server status and information
-    async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError> {
-        info!("server_status() - X-Span-ID: {:?}", context.get().0.clone());
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Change the server configuration
-    async fn set_server_configuration(
-        &self,
-        server_configuration: models::ServerConfiguration,
-        context: &C,
-    ) -> Result<SetServerConfigurationResponse, ApiError> {
-        info!(
-            "set_server_configuration({:?}) - X-Span-ID: {:?}",
-            server_configuration,
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
-    }
-
-    /// Shut down all sessions and the server itself
-    async fn shutdown_server(&self, context: &C) -> Result<ShutdownServerResponse, ApiError> {
-        info!(
-            "shutdown_server() - X-Span-ID: {:?}",
-            context.get().0.clone()
-        );
-        Err(ApiError("Generic failure".into()))
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
     /// Start a session
@@ -328,6 +326,6 @@ where
             session_id,
             context.get().0.clone()
         );
-        Err(ApiError("Generic failure".into()))
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 }

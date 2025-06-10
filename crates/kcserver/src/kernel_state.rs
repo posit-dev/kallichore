@@ -67,7 +67,7 @@ pub struct KernelState {
     pub busy_since: Option<std::time::Instant>,
 
     /// A channel on which to send idle nudges
-    pub idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
+    pub idle_nudge_tx: tokio::sync::mpsc::Sender<Option<u32>>,
 
     /// A channel to publish status updates to the websocket
     ws_json_tx: Sender<WebsocketMessage>,
@@ -81,7 +81,7 @@ impl KernelState {
     pub fn new(
         session: models::NewSession,
         working_directory: String,
-        idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
+        idle_nudge_tx: tokio::sync::mpsc::Sender<Option<u32>>,
         ws_json_tx: Sender<WebsocketMessage>,
     ) -> Self {
         KernelState {
@@ -105,7 +105,7 @@ impl KernelState {
     }
 
     async fn nudge_idle(&mut self) {
-        if let Err(err) = self.idle_nudge_tx.send(()).await {
+        if let Err(err) = self.idle_nudge_tx.send(None).await {
             log::error!(
                 "[session {}] Failed to send idle nudge: {}",
                 self.session_id,

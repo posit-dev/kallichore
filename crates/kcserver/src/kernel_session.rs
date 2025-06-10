@@ -144,7 +144,7 @@ impl KernelSession {
     pub async fn new(
         session: models::NewSession,
         key: String,
-        idle_nudge_tx: tokio::sync::mpsc::Sender<()>,
+        idle_nudge_tx: tokio::sync::mpsc::Sender<Option<u32>>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
@@ -360,98 +360,6 @@ impl KernelSession {
             argv
         );
 
-        // Check if we should run in a login shell
-        let run_in_shell = self.model.run_in_shell.unwrap_or(false);
-
-        // Create the command to start the kernel with the processed arguments
-        let mut command = if run_in_shell {
-            #[cfg(not(target_os = "windows"))]
-            {
-                // On Unix systems, use a login shell if requested
-                // Get the shell from the environment, or use bash as fallback
-                let shell_path =
-                    std::env::var("SHELL").unwrap_or_else(|_| String::from("/bin/bash"));
-
-                log::debug!(
-                    "[session {}] Running kernel in login shell: {}",
-                    self.model.session_id,
-                    shell_path
-                );
-
-                // Create the original command as a string with proper shell escaping
-                let original_command = argv
-                    .iter()
-                    .map(|arg| escape_for_shell(arg))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-
-                // Create a command that uses the login shell. Note that we use
-                // the short form -l rather than --login to ensure compatibility
-                // with shells that don't support the long form, such as
-                // sh/dash.
-                let mut cmd = tokio::process::Command::new(shell_path);
-                cmd.args(&["-l", "-c", &original_command]);
-                cmd
-            }
-
-            #[cfg(target_os = "windows")]
-            {
-                // On Windows, just use the command as is (run_in_shell has no effect)
-                log::debug!(
-                    "[session {}] run_in_shell parameter ignored on Windows",
-                    self.model.session_id
-                );
-                let mut cmd = tokio::process::Command::new(&argv[0]);
-                cmd.args(&argv[1..]);
-                cmd
-            }
-        } else {
-            // Normal execution - no login shell
-            let mut cmd = tokio::process::Command::new(&argv[0]);
-            cmd.args(&argv[1..]);
-            cmd
-        };
-
-        // If a working directory was specified, test the working directory to
-        // see if it exists. If it doesn't, log a warning and don't set the
-        // process's working directory.
-        if working_directory != "" {
-            match fs::metadata(&working_directory) {
-                Ok(metadata) => {
-                    if metadata.is_dir() {
-                        command.current_dir(&working_directory);
-                        log::trace!(
-                            "[session {}] Using working directory '{}'",
-                            self.model.session_id.clone(),
-                            working_directory
-                        );
-                    } else {
-                        log::warn!(
-                            "[session {}] Requested working directory '{}' is not a directory; using current directory '{}'",
-                            self.model.session_id.clone(),
-                            working_directory,
-                            match std::env::current_dir() {
-                                Ok(dir) => dir.display().to_string(),
-                                Err(e) => format!("<error: {}>", e),
-                            }
-                        );
-                    }
-                }
-                Err(e) => {
-                    log::warn!(
-                    "[session {}] Requested working directory '{}' could not be read ({}); using current directory '{}'",
-                    self.model.session_id.clone(),
-                    working_directory,
-                    e,
-                    match std::env::current_dir() {
-                        Ok(dir) => dir.display().to_string(),
-                        Err(e) => format!("<error: {}>", e),
-                    }
-                );
-                }
-            }
-        }
-
         // Start with a copy of the process environment
         let initial = std::env::vars();
         let mut resolved_env = HashMap::new();
@@ -552,6 +460,114 @@ impl KernelSession {
         {
             let mut state = self.state.write().await;
             state.resolved_env = resolved_env.clone();
+        }
+
+        // Check if we should run in a login shell
+        let run_in_shell = self.model.run_in_shell.unwrap_or(false);
+
+        // Create the command to start the kernel with the processed arguments
+        let mut command = if run_in_shell {
+            #[cfg(not(target_os = "windows"))]
+            {
+                // On Unix systems, use a login shell if requested
+                // Get the shell from the environment, or use bash as fallback
+                let shell_path =
+                    std::env::var("SHELL").unwrap_or_else(|_| String::from("/bin/bash"));
+
+                log::debug!(
+                    "[session {}] Running kernel in login shell: {}",
+                    self.model.session_id,
+                    shell_path
+                );
+
+                // Create the original command as a string with proper shell escaping
+                let mut original_command = argv
+                    .iter()
+                    .map(|arg| escape_for_shell(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                // On macOS, if the DYLD_LIBRARY_PATH environment variable was
+                // requested, set it explictly; it is not inherited by default
+                // in login shells due to SIP.
+                if let Some(dyld_path) = resolved_env.get("DYLD_LIBRARY_PATH") {
+                    log::debug!(
+                        "[session {}] Explicitly forwarding DYLD_LIBRARY_PATH: {}",
+                        self.model.session_id,
+                        dyld_path
+                    );
+                    original_command = format!(
+                        "DYLD_LIBRARY_PATH={} {}",
+                        escape_for_shell(dyld_path),
+                        original_command
+                    );
+                }
+
+                // Create a command that uses the login shell. Note that we use
+                // the short form -l rather than --login to ensure compatibility
+                // with shells that don't support the long form, such as
+                // sh/dash.
+                let mut cmd = tokio::process::Command::new(shell_path);
+                cmd.args(&["-l", "-c", &original_command]);
+                cmd
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                // On Windows, just use the command as is (run_in_shell has no effect)
+                log::debug!(
+                    "[session {}] run_in_shell parameter ignored on Windows",
+                    self.model.session_id
+                );
+                let mut cmd = tokio::process::Command::new(&argv[0]);
+                cmd.args(&argv[1..]);
+                cmd
+            }
+        } else {
+            // Normal execution - no login shell
+            let mut cmd = tokio::process::Command::new(&argv[0]);
+            cmd.args(&argv[1..]);
+            cmd
+        };
+
+        // If a working directory was specified, test the working directory to
+        // see if it exists. If it doesn't, log a warning and don't set the
+        // process's working directory.
+        if working_directory != "" {
+            match fs::metadata(&working_directory) {
+                Ok(metadata) => {
+                    if metadata.is_dir() {
+                        command.current_dir(&working_directory);
+                        log::trace!(
+                            "[session {}] Using working directory '{}'",
+                            self.model.session_id.clone(),
+                            working_directory
+                        );
+                    } else {
+                        log::warn!(
+                            "[session {}] Requested working directory '{}' is not a directory; using current directory '{}'",
+                            self.model.session_id.clone(),
+                            working_directory,
+                            match std::env::current_dir() {
+                                Ok(dir) => dir.display().to_string(),
+                                Err(e) => format!("<error: {}>", e),
+                            }
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                    "[session {}] Requested working directory '{}' could not be read ({}); using current directory '{}'",
+                    self.model.session_id.clone(),
+                    working_directory,
+                    e,
+                    match std::env::current_dir() {
+                        Ok(dir) => dir.display().to_string(),
+                        Err(e) => format!("<error: {}>", e),
+                    }
+                );
+                }
+            }
         }
 
         // Attempt to actually start the kernel process

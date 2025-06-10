@@ -29,6 +29,7 @@ mod registration_file;
 mod registration_socket;
 mod server;
 mod startup_status;
+mod websocket_service;
 mod wire_message;
 mod wire_message_header;
 mod working_dir;
