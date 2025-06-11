@@ -617,36 +617,32 @@ where
                 return Ok(NewSessionResponse::Unauthorized);
             }
 
-            // Validate argv - it cannot be empty and must have at least one element (the kernel path)
-            if session.argv.is_empty() {
-                let error = KSError::NoKernelPath(session.session_id.clone());
-                error.log();
-                return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
-            }
+            // Validate argv - it's okay for it to be empty (it is for adopted
+            // sessions), but if it is not, validate that the first element is a
+            // valid kernel path.
+            if !session.argv.is_empty() {
+                // Check if the kernel path exists as a file or can be found in PATH
+                let kernel_path = &session.argv[0];
+                let kernel_exists = if std::path::Path::new(kernel_path).is_absolute() {
+                    // If it's an absolute path, check if the file exists
+                    let path = std::path::Path::new(kernel_path);
+                    path.exists() && path.is_file()
+                } else {
+                    // If it's a relative path, check if it can be found in PATH
+                    env::var("PATH")
+                        .unwrap_or_default()
+                        .split(std::path::MAIN_SEPARATOR)
+                        .any(|dir| {
+                            let full_path = std::path::Path::new(dir).join(kernel_path);
+                            full_path.exists() && full_path.is_file()
+                        })
+                };
 
-            // Validate kernel path - check if the first element of argv (kernel command) exists
-            let kernel_path = &session.argv[0];
-
-            // Check if the kernel path exists as a file or can be found in PATH
-            let kernel_exists = if std::path::Path::new(kernel_path).is_absolute() {
-                // If it's an absolute path, check if the file exists
-                let path = std::path::Path::new(kernel_path);
-                path.exists() && path.is_file()
-            } else {
-                // If it's a relative path, check if it can be found in PATH
-                env::var("PATH")
-                    .unwrap_or_default()
-                    .split(std::path::MAIN_SEPARATOR)
-                    .any(|dir| {
-                        let full_path = std::path::Path::new(dir).join(kernel_path);
-                        full_path.exists() && full_path.is_file()
-                    })
-            };
-
-            if !kernel_exists {
-                let error = KSError::KernelPathNotFound(kernel_path.clone());
-                error.log();
-                return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
+                if !kernel_exists {
+                    let error = KSError::KernelPathNotFound(kernel_path.clone());
+                    error.log();
+                    return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
+                }
             }
 
             // Check to see if the session already exists, dropping the read

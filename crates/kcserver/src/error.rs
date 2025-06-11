@@ -1,7 +1,7 @@
 //
 // error.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -37,7 +37,6 @@ pub enum KSError {
     HandshakeFailed(String, anyhow::Error),
     NoConnectionInfo(String, anyhow::Error),
     KernelPathNotFound(String),
-    NoKernelPath(String),
 }
 
 impl fmt::Display for KSError {
@@ -125,13 +124,6 @@ impl fmt::Display for KSError {
             }
             KSError::KernelPathNotFound(kernel_path) => {
                 write!(f, "Kernel path not found: {}", kernel_path)
-            }
-            KSError::NoKernelPath(session_id) => {
-                write!(
-                    f,
-                    "Session {} is missing a kernel path; the 'argv' field in the session info must name a path to a kernel executable",
-                    session_id
-                )
             }
         }
     }
