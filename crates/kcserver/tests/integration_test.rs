@@ -151,15 +151,13 @@ async fn test_python_kernel_session_and_websocket_communication() {
     // First, try to find a Python executable
     let python_cmd = find_python_executable().await;
     if python_cmd.is_none() {
-        println!("Skipping test: No Python executable found");
-        return;
+        panic!("No Python executable found");
     }
     let python_cmd = python_cmd.unwrap();
 
     // Check if ipykernel is available
     if !check_ipykernel_available(&python_cmd).await {
-        println!("Skipping test: ipykernel not available for {}", python_cmd);
-        return;
+        panic!("ipykernel not available for {}", python_cmd);
     }
 
     let server = TestServer::start().await;
