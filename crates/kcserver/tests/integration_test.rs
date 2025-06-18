@@ -141,6 +141,11 @@ async fn test_kernel_session_basic_connectivity() {
 
     println!("Test completed. Received {} text messages.", message_count);
 
+    // Properly close the websocket connection
+    if let Err(e) = _ws_sender.send(Message::Close(None)).await {
+        println!("Failed to send close message: {}", e);
+    }
+
     // This test just needs to complete without hanging
     // Even if we don't get kernel responses, we should at least get websocket connectivity
     assert!(true, "Test completed successfully - no hanging detected");
@@ -441,7 +446,10 @@ async fn test_python_kernel_session_and_websocket_communication() {
     }
 
     // This test should complete without hanging even if kernel doesn't respond
-    let _ = ws_sender.close().await;
+    // Properly close the websocket connection
+    if let Err(e) = ws_sender.send(Message::Close(None)).await {
+        println!("Failed to send close message: {}", e);
+    }
 }
 async fn find_python_executable() -> Option<String> {
     let candidates = vec!["python3", "python", "/usr/bin/python3", "/usr/bin/python"];
