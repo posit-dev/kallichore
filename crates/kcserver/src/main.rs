@@ -156,7 +156,13 @@ async fn main() {
     let port = match args.port {
         0 => {
             // If the port is 0, pick a random port
-            let port = portpicker::pick_unused_port().unwrap_or(0);
+            let port = match portpicker::pick_unused_port() {
+                Some(p) => p,
+                None => {
+                    log::error!("Failed to find a free port. Specify a port with --port <port> to use a specific port.");
+                    std::process::exit(1);
+                }
+            };
             println!("Using random port: {}", port);
             port
         }
