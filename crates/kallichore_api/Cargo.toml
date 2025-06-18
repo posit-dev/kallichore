@@ -77,10 +77,6 @@ tokio-openssl = "0.6"
 openssl = "0.10"
 
 [[example]]
-name = "client"
-required-features = ["client"]
-
-[[example]]
 name = "server"
 required-features = ["server"]
 
