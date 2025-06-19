@@ -630,10 +630,11 @@ where
                 } else {
                     // If it's a relative path, check if it can be found in PATH
                     env::var("PATH")
+                        .map(|path| env::split_paths(&path).collect::<Vec<_>>())
                         .unwrap_or_default()
-                        .split(std::path::MAIN_SEPARATOR)
+                        .into_iter()
                         .any(|dir| {
-                            let full_path = std::path::Path::new(dir).join(kernel_path);
+                            let full_path = dir.join(kernel_path);
                             full_path.exists() && full_path.is_file()
                         })
                 };
