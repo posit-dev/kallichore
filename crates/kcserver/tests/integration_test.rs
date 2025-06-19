@@ -103,8 +103,7 @@ async fn test_python_kernel_session_and_websocket_communication() {
             println!("Python kernel test completed successfully");
         }
         Err(_) => {
-            println!("Python kernel test timed out after 25 seconds - treating as success to avoid hanging");
-            // Don't panic on timeout, just log it
+            panic!("Python kernel test timed out after 25 seconds - this indicates the kernel is not working properly or the test setup failed");
         }
     }
 }
@@ -240,7 +239,7 @@ async fn run_python_kernel_test(python_cmd: &str) {
         .expect("Failed to send websocket message");
 
     // Listen for any responses for a limited time
-    let timeout = Duration::from_secs(15); // Reduced from 45 seconds
+    let timeout = Duration::from_secs(15);
     let start_time = std::time::Instant::now();
     let mut message_count = 0;
     let mut received_jupyter_messages = 0;
@@ -249,11 +248,12 @@ async fn run_python_kernel_test(python_cmd: &str) {
     let mut execute_reply_received = false;
     let mut stream_output_received = false;
     let mut expected_output_found = false;
+    let mut collected_output = String::new(); // Collect all output to check against
 
     println!("Listening for Python kernel responses...");
 
-    while start_time.elapsed() < timeout && message_count < 20 {
-        // Reduced from 30
+    while start_time.elapsed() < timeout && message_count < 30 {
+        // Increased from 20 to allow for more messages
         println!(
             "Waiting for message... (elapsed: {:.1}s)",
             start_time.elapsed().as_secs_f32()
@@ -283,9 +283,22 @@ async fn run_python_kernel_test(python_cmd: &str) {
                                 println!("  ✅ Received execute_reply");
                                 if let Some(status) = jupyter_msg.content.get("status") {
                                     println!("  -> Execution status: {}", status);
+
+                                    // Ensure the execution was successful
+                                    if status != "ok" {
+                                        panic!("Code execution failed with status: {}", status);
+                                    }
+
+                                    // If we have both successful execution and expected output, we can be confident
                                     if status == "ok" && expected_output_found {
                                         println!("  🎉 Execution completed successfully with expected output!");
-                                        break; // Exit early on complete success
+                                        break; // Exit when we have complete success
+                                    }
+                                } else {
+                                    // Even without status, if we got execute_reply, it's good
+                                    if expected_output_found {
+                                        println!("  🎉 Execution completed with expected output!");
+                                        break;
                                     }
                                 }
                                 if let Some(execution_count) =
@@ -302,13 +315,16 @@ async fn run_python_kernel_test(python_cmd: &str) {
                                     let output_text = text.as_str().unwrap_or("");
                                     println!("  ✅ Received stream output: {}", output_text);
 
-                                    // Check if we got the expected output
-                                    if output_text.contains("Hello from Kallichore test!")
-                                        && output_text.contains("2 + 3 = 5")
+                                    // Collect all output to check comprehensively
+                                    collected_output.push_str(output_text);
+
+                                    // Check if we got the expected output in the collected text
+                                    if collected_output.contains("Hello from Kallichore test!")
+                                        && collected_output.contains("2 + 3 = 5")
                                     {
                                         expected_output_found = true;
-                                        println!("  🎉 Found expected output content!");
-                                        break; // Exit early when we get the expected result
+                                        println!("  🎉 Found expected output content in collected output!");
+                                        // Don't break here - let the test continue to get execute_reply
                                     }
                                 }
                             }
@@ -364,35 +380,41 @@ async fn run_python_kernel_test(python_cmd: &str) {
     println!("  - Execute reply: {}", execute_reply_received);
     println!("  - Stream output: {}", stream_output_received);
     println!("  - Expected output found: {}", expected_output_found);
+    println!("  - Collected output: {:?}", collected_output);
 
-    // For this more advanced test, we expect to get at least some messages
-    // if the Python kernel is working correctly
-    if received_jupyter_messages > 0 || received_kernel_messages > 0 {
-        println!("✅ Python kernel is communicating!");
+    // Make the test robust by requiring specific conditions to be met
 
-        // If we got execution results, that's even better
-        if execute_reply_received {
-            println!("✅ Code execution completed successfully!");
-        }
+    // First, we must receive at least some communication from the kernel
+    assert!(
+        received_jupyter_messages > 0,
+        "Expected to receive Jupyter messages from the Python kernel, but got {}. The kernel may not be starting or communicating properly.",
+        received_jupyter_messages
+    );
 
-        if expected_output_found {
-            println!("🎉 Code execution produced expected output!");
-            // This is the best possible outcome - assert success
-            assert!(true, "Code execution test passed completely");
-        } else if execute_reply_received {
-            println!(
-                "⚠️  Code executed but output may not match expected (this is still a success)"
-            );
-            assert!(true, "Code execution test passed (reply received)");
-        } else if stream_output_received {
-            println!("⚠️  Got some output but no execute_reply (partial success)");
-            assert!(true, "Partial code execution success");
-        }
-    } else {
-        println!(
-            "⚠️  Python kernel communication may have issues (this is not necessarily a failure)"
-        );
-    }
+    // We should get a kernel_info_reply to confirm the kernel is responsive
+    assert!(
+        kernel_info_reply_received,
+        "Expected to receive kernel_info_reply from Python kernel, but didn't get one. The kernel is not responding to basic requests."
+    );
+
+    // We should get an execute_reply to confirm code execution capability
+    assert!(
+        execute_reply_received,
+        "Expected to receive execute_reply from Python kernel, but didn't get one. The kernel is not executing code properly."
+    );
+
+    // We should get stream output from our print statements
+    assert!(
+        stream_output_received,
+        "Expected to receive stream output from Python kernel, but didn't get any. The kernel is not producing stdout output."
+    );
+
+    // Most importantly, we should get the exact output we expect
+    assert!(
+        expected_output_found,
+        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        collected_output
+    );
 
     // This test should complete without hanging even if kernel doesn't respond
     // Properly close the websocket connection
@@ -400,6 +422,7 @@ async fn run_python_kernel_test(python_cmd: &str) {
         println!("Failed to send close message: {}", e);
     }
 }
+
 async fn find_python_executable() -> Option<String> {
     let candidates = vec!["python3", "python"];
 
