@@ -29,24 +29,45 @@ impl TestServer {
     pub async fn start() -> Self {
         let port = portpicker::pick_unused_port().expect("Failed to pick unused port");
 
-        let mut cmd = Command::new("cargo");
-        cmd.args(&[
-            "run",
-            "--bin",
-            "kcserver",
-            "--",
-            "--port",
-            &port.to_string(),
-            "--token",
-            "none", // Disable auth for testing
-        ]);
-        // Enable logging for debugging - comment out to see server output
-        cmd.stdout(Stdio::inherit());
-        cmd.stderr(Stdio::inherit());
+        // Try to use pre-built binary first, fall back to cargo run
+        let binary_path = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target/debug/kcserver");
 
-        // Set up environment for better logging
-        cmd.env("RUST_LOG", "debug");
-        cmd.env("RUST_BACKTRACE", "1");
+        let mut cmd = if binary_path.exists() {
+            let mut c = Command::new(&binary_path);
+            c.args(&[
+                "--port",
+                &port.to_string(),
+                "--token",
+                "none", // Disable auth for testing
+            ]);
+            c
+        } else {
+            let mut c = Command::new("cargo");
+            c.args(&[
+                "run",
+                "--bin",
+                "kcserver",
+                "--",
+                "--port",
+                &port.to_string(),
+                "--token",
+                "none", // Disable auth for testing
+            ]);
+            c
+        };
+
+        // Reduce logging noise for faster startup
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+
+        // Reduce log level for faster startup
+        cmd.env("RUST_LOG", "error"); // Even less logging
 
         let child = cmd.spawn().expect("Failed to start kcserver");
 
@@ -65,11 +86,24 @@ impl TestServer {
     async fn wait_for_ready(&self) {
         let client = self.create_client().await;
 
-        for _attempt in 0..50 {
-            match timeout(Duration::from_millis(500), client.server_status()).await {
+        // Slightly increased timeout but still fast
+        for attempt in 0..40 {
+            // Increased from 25
+            match timeout(Duration::from_millis(150), client.server_status()).await {
+                // Slightly longer timeout
                 Ok(Ok(_)) => return,
-                _ => tokio::time::sleep(Duration::from_millis(200)).await,
+                Ok(Err(e)) => {
+                    if attempt > 30 {
+                        println!("Server status error on attempt {}: {:?}", attempt, e);
+                    }
+                }
+                Err(_) => {
+                    if attempt > 30 {
+                        println!("Server status timeout on attempt {}", attempt);
+                    }
+                }
             }
+            tokio::time::sleep(Duration::from_millis(50)).await; // Faster retry
         }
 
         panic!("Server failed to start within timeout");
