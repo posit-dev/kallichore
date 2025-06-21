@@ -73,7 +73,7 @@ async fn test_server_starts_and_responds() {
 
     match response {
         ServerStatusResponse::ServerStatusAndInformation(status) => {
-            assert_eq!(status.version, "0.1.47");
+            assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
             assert!(status.sessions >= 0);
         }
         ServerStatusResponse::Error(err) => {
@@ -714,7 +714,7 @@ async fn test_server_starts_with_connection_file() {
 
     match response {
         ServerStatusResponse::ServerStatusAndInformation(status) => {
-            assert_eq!(status.version, "0.1.47");
+            assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
             assert!(status.sessions >= 0);
         }
         ServerStatusResponse::Error(err) => {
@@ -893,7 +893,7 @@ async fn test_server_connection_file_with_auth_token() {
 
     match auth_response {
         ServerStatusResponse::ServerStatusAndInformation(status) => {
-            assert_eq!(status.version, "0.1.47");
+            assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
         }
         ServerStatusResponse::Error(err) => {
             panic!("Authenticated request failed: {:?}", err);
