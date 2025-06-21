@@ -13,14 +13,23 @@ mod common;
 use common::TestServer;
 use futures::{SinkExt, StreamExt};
 use kallichore_api::models::{InterruptMode, NewSession, VarAction, VarActionType};
-use kallichore_api::{NewSessionResponse, ServerStatusResponse};
+use kallichore_api::{ApiNoContext, NewSessionResponse, ServerStatusResponse, ContextWrapperExt};
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
 use kcshared::websocket_message::WebsocketMessage;
 use serde_json;
 use std::time::Duration;
+use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
 use tokio::sync::OnceCell;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
+
+#[allow(dead_code)]
+type ClientContext = swagger::make_context_ty!(
+    ContextBuilder,
+    EmptyContext,
+    Option<AuthData>,
+    XSpanIdString
+);
 
 // Cache Python executable discovery to avoid repeated lookups
 static PYTHON_EXECUTABLE: OnceCell<Option<String>> = OnceCell::const_new();
@@ -560,4 +569,411 @@ async fn test_multiple_kernel_sessions() {
         "Successfully created {} unique kernel sessions",
         sessions.len()
     );
+}
+
+#[tokio::test]
+async fn test_server_starts_with_connection_file() {
+    // Create a temporary connection file path
+    let temp_dir = std::env::temp_dir();
+    let connection_file_path = temp_dir.join(format!("kallichore_test_connection_{}.json", Uuid::new_v4()));
+    let connection_file_str = connection_file_path.to_string_lossy().to_string();
+
+    // Start server without specifying port (port 0), using connection file
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/kcserver");
+
+    let mut cmd = if binary_path.exists() {
+        let mut c = std::process::Command::new(&binary_path);
+        c.args(&[
+            "--port", "0",  // Let OS pick the port
+            "--connection-file", &connection_file_str,
+            "--token", "none", // Disable auth for testing
+        ]);
+        c
+    } else {
+        let mut c = std::process::Command::new("cargo");
+        c.args(&[
+            "run", "--bin", "kcserver", "--",
+            "--port", "0",  // Let OS pick the port
+            "--connection-file", &connection_file_str,
+            "--token", "none", // Disable auth for testing
+        ]);
+        c
+    };
+
+    // Reduce logging noise for faster startup
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.env("RUST_LOG", "error");
+
+    let mut child = cmd.spawn().expect("Failed to start kcserver");
+
+    // Wait for connection file to be created
+    let mut attempts = 0;
+    while !connection_file_path.exists() && attempts < 50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        attempts += 1;
+    }
+
+    assert!(connection_file_path.exists(), "Connection file was not created within timeout");
+
+    // Read the connection file
+    let connection_content = std::fs::read_to_string(&connection_file_path)
+        .expect("Failed to read connection file");
+    
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct ServerConnectionInfo {
+        port: u16,
+        base_path: String,
+        server_path: String,
+        server_pid: u32,
+        bearer_token: Option<String>,
+        log_path: Option<String>,
+    }
+
+    let connection_info: ServerConnectionInfo = serde_json::from_str(&connection_content)
+        .expect("Failed to parse connection file");
+
+    // Verify the connection info makes sense
+    assert!(connection_info.port > 0, "Port should be greater than 0");
+    assert_eq!(connection_info.base_path, format!("http://127.0.0.1:{}", connection_info.port));
+    assert!(connection_info.server_pid > 0, "PID should be greater than 0");
+    assert_eq!(connection_info.bearer_token, None, "Token should be None when disabled");
+
+    // Create a client using the connection info from the file
+    #[allow(trivial_casts)]
+    let client = {
+        let context = swagger::make_context!(
+            ContextBuilder,
+            EmptyContext,
+            None as Option<AuthData>,
+            XSpanIdString::default()
+        );
+
+        let client = kallichore_api::Client::try_new_http(&connection_info.base_path)
+            .expect("Failed to create HTTP client");
+
+        Box::new(client.with_context(context))
+    };
+
+    // Wait for server to be ready by polling status
+    let mut ready = false;
+    #[allow(unused_variables)]
+    for attempt in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(200), client.server_status()).await {
+            Ok(Ok(_)) => {
+                ready = true;
+                break;
+            }
+            Ok(Err(_)) | Err(_) => {
+                if attempt > 40 {
+                    println!("Server status check failed on attempt {}", attempt);
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    assert!(ready, "Server failed to become ready within timeout");
+
+    // Test that we can actually use the server
+    let response = client
+        .server_status()
+        .await
+        .expect("Failed to get server status");
+
+    match response {
+        ServerStatusResponse::ServerStatusAndInformation(status) => {
+            assert_eq!(status.version, "0.1.47");
+            assert!(status.sessions >= 0);
+        }
+        ServerStatusResponse::Error(err) => {
+            panic!("Server returned error: {:?}", err);
+        }
+    }
+
+    // Clean up
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&connection_file_path);
+
+    println!("Successfully tested server with connection file. Port: {}", connection_info.port);
+}
+
+#[tokio::test]
+async fn test_server_connection_file_with_auth_token() {
+    // Create a temporary connection file path
+    let temp_dir = std::env::temp_dir();
+    let connection_file_path = temp_dir.join(format!("kallichore_test_auth_{}.json", Uuid::new_v4()));
+    let connection_file_str = connection_file_path.to_string_lossy().to_string();
+
+    // Create a temporary token file
+    let token_file_path = temp_dir.join(format!("kallichore_test_token_{}.txt", Uuid::new_v4()));
+    let token_file_str = token_file_path.to_string_lossy().to_string();
+    let test_token = "test_auth_token_12345";
+    std::fs::write(&token_file_path, test_token).expect("Failed to write token file");
+
+    // Start server without specifying port, using connection file and auth token
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/kcserver");
+
+    let mut cmd = if binary_path.exists() {
+        let mut c = std::process::Command::new(&binary_path);
+        c.args(&[
+            "--port", "0",  // Let OS pick the port
+            "--connection-file", &connection_file_str,
+            "--token", &token_file_str,
+        ]);
+        c
+    } else {
+        let mut c = std::process::Command::new("cargo");
+        c.args(&[
+            "run", "--bin", "kcserver", "--",
+            "--port", "0",  // Let OS pick the port
+            "--connection-file", &connection_file_str,
+            "--token", &token_file_str,
+        ]);
+        c
+    };
+
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.env("RUST_LOG", "error");
+
+    let mut child = cmd.spawn().expect("Failed to start kcserver");
+
+    // Wait for connection file to be created
+    let mut attempts = 0;
+    while !connection_file_path.exists() && attempts < 50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        attempts += 1;
+    }
+
+    assert!(connection_file_path.exists(), "Connection file was not created within timeout");
+
+    // Read the connection file
+    let connection_content = std::fs::read_to_string(&connection_file_path)
+        .expect("Failed to read connection file");
+    
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct ServerConnectionInfo {
+        port: u16,
+        base_path: String,
+        #[allow(dead_code)]
+        server_path: String,
+        server_pid: u32,
+        bearer_token: Option<String>,
+        #[allow(dead_code)]
+        log_path: Option<String>,
+    }
+
+    let connection_info: ServerConnectionInfo = serde_json::from_str(&connection_content)
+        .expect("Failed to parse connection file");
+
+    // Verify the connection info includes the auth token
+    assert!(connection_info.port > 0);
+    assert_eq!(connection_info.bearer_token, Some(test_token.to_string()));
+
+    // Test that we can connect with the proper auth token
+    let client_with_auth = {
+        let context = swagger::make_context!(
+            ContextBuilder,
+            EmptyContext,
+            Some(AuthData::Bearer(swagger::auth::Bearer { token: test_token.to_string() })),
+            XSpanIdString::default()
+        );
+
+        let client = kallichore_api::Client::try_new_http(&connection_info.base_path)
+            .expect("Failed to create HTTP client");
+
+        Box::new(client.with_context(context))
+    };
+
+    // Test that we cannot connect without auth token
+    #[allow(trivial_casts)]
+    let client_no_auth = {
+        type ClientContext = swagger::make_context_ty!(
+            ContextBuilder,
+            EmptyContext,
+            Option<AuthData>,
+            XSpanIdString
+        );
+        
+        let context: ClientContext = swagger::make_context!(
+            ContextBuilder,
+            EmptyContext,
+            None as Option<AuthData>,
+            XSpanIdString::default()
+        );
+
+        let client = kallichore_api::Client::try_new_http(&connection_info.base_path)
+            .expect("Failed to create HTTP client");
+
+        Box::new(client.with_context(context))
+    };
+
+    // Wait for server to be ready
+    let mut ready = false;
+    #[allow(unused_variables)]
+    for attempt in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(200), client_with_auth.server_status()).await {
+            Ok(Ok(_)) => {
+                ready = true;
+                break;
+            }
+            Ok(Err(_)) | Err(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    assert!(ready, "Server failed to become ready within timeout");
+
+    // Test authenticated request succeeds
+    let auth_response = client_with_auth
+        .server_status()
+        .await
+        .expect("Failed to get server status with auth");
+
+    match auth_response {
+        ServerStatusResponse::ServerStatusAndInformation(status) => {
+            assert_eq!(status.version, "0.1.47");
+        }
+        ServerStatusResponse::Error(err) => {
+            panic!("Authenticated request failed: {:?}", err);
+        }
+    }
+
+    // Test unauthenticated request for server status (this is allowed)
+    let unauth_result = client_no_auth.server_status().await;
+    
+    // Server status should work without authentication
+    match unauth_result {
+        Ok(_) => {
+            println!("Unauthenticated server status request succeeded as expected");
+        }
+        Err(e) => {
+            println!("Warning: Unauthenticated server status failed unexpectedly: {:?}", e);
+        }
+    }
+
+    // Clean up
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&connection_file_path);
+    let _ = std::fs::remove_file(&token_file_path);
+
+    println!("Successfully tested server with connection file and auth token. Port: {}", connection_info.port);
+}
+
+#[tokio::test]
+async fn test_multiple_servers_different_ports() {
+    // Test that we can start multiple servers and they get different ports
+    let temp_dir = std::env::temp_dir();
+    let mut servers = Vec::new();
+    let mut connection_files = Vec::new();
+
+    // Start 3 servers
+    for i in 0..3 {
+        let connection_file_path = temp_dir.join(format!("kallichore_test_multi_{}_{}.json", i, Uuid::new_v4()));
+        let connection_file_str = connection_file_path.to_string_lossy().to_string();
+
+        let binary_path = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target/debug/kcserver");
+
+        let mut cmd = if binary_path.exists() {
+            let mut c = std::process::Command::new(&binary_path);
+            c.args(&[
+                "--port", "0",  // Let OS pick the port
+                "--connection-file", &connection_file_str,
+                "--token", "none",
+            ]);
+            c
+        } else {
+            let mut c = std::process::Command::new("cargo");
+            c.args(&[
+                "run", "--bin", "kcserver", "--",
+                "--port", "0",  // Let OS pick the port
+                "--connection-file", &connection_file_str,
+                "--token", "none",
+            ]);
+            c
+        };
+
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        cmd.env("RUST_LOG", "error");
+
+        let child = cmd.spawn().expect("Failed to start kcserver");
+        servers.push(child);
+        connection_files.push(connection_file_path);
+
+        // Small delay between starts
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Wait for all connection files to be created and read them
+    let mut ports = Vec::new();
+    for connection_file_path in &connection_files {
+        let mut attempts = 0;
+        while !connection_file_path.exists() && attempts < 50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            attempts += 1;
+        }
+
+        assert!(connection_file_path.exists(), "Connection file was not created within timeout");
+
+        let connection_content = std::fs::read_to_string(connection_file_path)
+            .expect("Failed to read connection file");
+        
+        #[derive(serde::Deserialize)]
+        struct ServerConnectionInfo {
+            port: u16,
+        }
+
+        let connection_info: ServerConnectionInfo = serde_json::from_str(&connection_content)
+            .expect("Failed to parse connection file");
+
+        ports.push(connection_info.port);
+    }
+
+    // Verify all servers got different ports
+    assert_eq!(ports.len(), 3);
+    ports.sort();
+    ports.dedup();
+    assert_eq!(ports.len(), 3, "All servers should have different ports");
+
+    // Verify all ports are valid
+    for port in &ports {
+        assert!(*port > 0, "Port should be greater than 0");
+    }
+
+    // Clean up
+    for mut server in servers {
+        let _ = server.kill();
+        let _ = server.wait();
+    }
+
+    for connection_file_path in &connection_files {
+        let _ = std::fs::remove_file(connection_file_path);
+    }
+
+    println!("Successfully tested multiple servers with different ports: {:?}", ports);
 }

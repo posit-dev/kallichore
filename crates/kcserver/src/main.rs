@@ -253,6 +253,8 @@ async fn main() {
         env!("CARGO_PKG_VERSION")
     );
 
+    println!("Listening at 127.0.0.1:{}", port);
+
     // If a connection file path was specified, write the connection details to it
     if let Some(connection_file_path) = &args.connection_file {
         if let Err(e) =
@@ -264,7 +266,7 @@ async fn main() {
         log::info!("Wrote connection details to {}", connection_file_path);
     }
 
-    log::info!("Starting Kallichore server at 127.0.0.1:{}", port);
+    log::debug!("Starting Kallichore");
 
     // Pass the TcpListener to the server
     server::create(listener, token, args.idle_shutdown_hours, args.log_level).await;
