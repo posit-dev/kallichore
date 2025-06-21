@@ -152,30 +152,40 @@ async fn main() {
         }
     }
 
-    // Check if the port is already in use
-    let port = match args.port {
+    // Create TcpListener to bind to the port
+    let listener = match args.port {
         0 => {
-            // If the port is 0, pick a random port
-            let port = match portpicker::pick_unused_port() {
-                Some(p) => p,
-                None => {
-                    log::error!("Failed to find a free port. Specify a port with --port <port> to use a specific port.");
+            // If the port is 0, let the OS pick a random port
+            match std::net::TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => {
+                    let port = listener.local_addr().unwrap().port();
+                    log::info!("Using OS-assigned port: {}", port);
+                    listener
+                }
+                Err(e) => {
+                    log::error!("Failed to bind to any available port: {}", e);
                     std::process::exit(1);
                 }
-            };
-            println!("Using random port: {}", port);
-            port
+            }
         }
         _ => {
-            // If the port is not 0, check if it's free
-            if !portpicker::is_free_tcp(args.port) {
-                log::error!("Port {} is already in use", args.port);
-                std::process::exit(1);
+            // If the port is specified, try to bind to it
+            let addr = format!("127.0.0.1:{}", args.port);
+            match std::net::TcpListener::bind(&addr) {
+                Ok(listener) => {
+                    log::info!("Using specified port: {}", args.port);
+                    listener
+                }
+                Err(e) => {
+                    log::error!("Failed to bind to port {}: {}", args.port, e);
+                    std::process::exit(1);
+                }
             }
-            println!("Using specified port: {}", args.port);
-            args.port
         }
     };
+
+    // Get the actual port that was bound
+    let port = listener.local_addr().unwrap().port();
 
     // See if a token file was provided
     let token = match args.token {
@@ -243,14 +253,10 @@ async fn main() {
         env!("CARGO_PKG_VERSION")
     );
 
-    // Start the server
-    let addr = format!("127.0.0.1:{}", port);
-    println!("Listening at {}", addr);
-
     // If a connection file path was specified, write the connection details to it
     if let Some(connection_file_path) = &args.connection_file {
         if let Err(e) =
-            write_server_connection_file(connection_file_path, port, &addr, &token, &args.log_file)
+            write_server_connection_file(connection_file_path, port, &token, &args.log_file)
         {
             log::error!("Failed to write connection file: {}", e);
             std::process::exit(1);
@@ -258,17 +264,16 @@ async fn main() {
         log::info!("Wrote connection details to {}", connection_file_path);
     }
 
-    log::info!("Starting Kallichore server at {}", addr);
+    log::info!("Starting Kallichore server at 127.0.0.1:{}", port);
 
-    // Pass the log level from command line arguments to the server
-    server::create(&addr, token, args.idle_shutdown_hours, args.log_level).await;
+    // Pass the TcpListener to the server
+    server::create(listener, token, args.idle_shutdown_hours, args.log_level).await;
 }
 
 /// Write server connection details to a file
 fn write_server_connection_file(
     path: &str,
     port: u16,
-    addr: &str,
     token: &Option<String>,
     log_file: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -309,7 +314,7 @@ fn write_server_connection_file(
     // Create the connection info struct
     let connection_info = ServerConnectionInfo {
         port,
-        base_path: format!("http://{}", addr),
+        base_path: format!("http://127.0.0.1:{}", port),
         server_path,
         server_pid,
         bearer_token: token.clone(),

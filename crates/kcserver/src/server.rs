@@ -75,12 +75,17 @@ use kcshared::{
 use tokio::sync::broadcast;
 
 pub async fn create(
-    addr: &str,
+    listener: std::net::TcpListener,
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
 ) {
-    let addr = addr.parse().expect("Failed to parse bind address");
+    // Convert std::net::TcpListener to tokio::net::TcpListener
+    listener
+        .set_nonblocking(true)
+        .expect("Failed to set listener to non-blocking");
+    let listener = tokio::net::TcpListener::from_std(listener)
+        .expect("Failed to convert to tokio TcpListener");
 
     // Get the log level from the provided parameter or environment variable if not provided
     let effective_log_level = match log_level {
@@ -104,8 +109,10 @@ pub async fn create(
     let mut service =
         kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
 
-    // Create the HTTP server
-    let server_future = hyper::server::Server::bind(&addr).serve(service);
+    // Create the HTTP server from the TcpListener
+    let server_future = hyper::server::Server::from_tcp(listener.into_std().unwrap())
+        .expect("Failed to create server from TcpListener")
+        .serve(service);
 
     // Set up signal handling for graceful shutdown on SIGTERM and SIGINT (Unix only)
     #[cfg(unix)]
