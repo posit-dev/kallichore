@@ -23,6 +23,182 @@ use tokio::sync::OnceCell;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 
+#[cfg(unix)]
+mod unix_socket_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use std::io::{Read, Write};
+
+    struct UnixSocketTestServer {
+        child: std::process::Child,
+        socket_path: PathBuf,
+        _temp_dir: tempfile::TempDir, // Keep temp dir alive
+    }
+
+    impl UnixSocketTestServer {
+        async fn start() -> Self {
+            let temp_dir = tempdir().expect("Failed to create temp directory");
+            let socket_path = temp_dir.path().join("kallichore-test.sock");
+
+            // Try to use pre-built binary first, fall back to cargo run
+            let binary_path = std::env::current_dir()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("target/debug/kcserver");
+
+            let mut cmd = if binary_path.exists() {
+                let mut c = Command::new(&binary_path);
+                c.args(&[
+                    "--unix-socket",
+                    socket_path.to_str().unwrap(),
+                    "--token",
+                    "none", // Disable auth for testing
+                ]);
+                c
+            } else {
+                let mut c = Command::new("cargo");
+                c.args(&[
+                    "run",
+                    "--bin",
+                    "kcserver",
+                    "--",
+                    "--unix-socket",
+                    socket_path.to_str().unwrap(),
+                    "--token",
+                    "none", // Disable auth for testing
+                ]);
+                c
+            };
+
+            // Reduce logging noise for faster startup
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+            cmd.env("RUST_LOG", "error");
+
+            let child = cmd.spawn().expect("Failed to start kcserver with Unix socket");
+
+            let test_server = UnixSocketTestServer {
+                child,
+                socket_path: socket_path.to_path_buf(),
+                _temp_dir: temp_dir, // Keep temp dir alive
+            };
+
+            test_server.wait_for_ready().await;
+            test_server
+        }
+
+        async fn wait_for_ready(&self) {
+            // Wait for the socket file to be created and accept connections
+            for _attempt in 0..60 { // Increased timeout
+                if self.socket_path.exists() {
+                    // Try to connect to the socket and send a simple HTTP request
+                    if let Ok(mut stream) = UnixStream::connect(&self.socket_path) {
+                        let request = "GET /status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                        if stream.write_all(request.as_bytes()).is_ok() {
+                            let mut buffer = [0; 1024];
+                            if stream.read(&mut buffer).is_ok() {
+                                let response = String::from_utf8_lossy(&buffer);
+                                if response.contains("HTTP/1.1") {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                tokio::time::sleep(Duration::from_millis(250)).await; // Slower but more reliable
+            }
+            
+            panic!("Unix socket server failed to start within timeout");
+        }
+
+        fn socket_path(&self) -> &std::path::Path {
+            &self.socket_path
+        }
+
+        // Simple method to test basic HTTP connectivity
+        async fn test_http_status(&self) -> Result<String, Box<dyn std::error::Error>> {
+            let mut stream = UnixStream::connect(&self.socket_path)?;
+            
+            let request = "GET /status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+            stream.write_all(request.as_bytes())?;
+            
+            let mut response = String::new();
+            stream.read_to_string(&mut response)?;
+            
+            Ok(response)
+        }
+    }
+
+    impl Drop for UnixSocketTestServer {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            
+            // Clean up socket file
+            if self.socket_path.exists() {
+                let _ = std::fs::remove_file(&self.socket_path);
+            }
+            // temp_dir will be automatically cleaned up when dropped
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unix_socket_server_starts_and_responds() {
+        let server = UnixSocketTestServer::start().await;
+
+        // Test basic HTTP connectivity through Unix socket
+        let response = server
+            .test_http_status()
+            .await
+            .expect("Failed to get HTTP response via Unix socket");
+
+        // Check that we got a valid HTTP response
+        assert!(response.contains("HTTP/1.1"), "Expected HTTP response, got: {}", response);
+        assert!(response.contains("200"), "Expected HTTP 200 status, got: {}", response);
+        
+        // The response should contain JSON with version info
+        if let Some(json_start) = response.find("{") {
+            let json_part = &response[json_start..];
+            if let Some(json_end) = json_part.find("}") {
+                let json_str = &json_part[..=json_end];
+                let status: serde_json::Value = serde_json::from_str(json_str)
+                    .expect("Failed to parse JSON response from Unix socket");
+                
+                assert_eq!(
+                    status["version"].as_str().unwrap_or(""),
+                    env!("CARGO_PKG_VERSION"),
+                    "Version mismatch in Unix socket response"
+                );
+                
+                assert!(
+                    status["sessions"].is_number(),
+                    "Sessions field should be a number in Unix socket response"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unix_socket_creates_socket_file() {
+        let server = UnixSocketTestServer::start().await;
+        
+        // Verify the socket file exists and is a socket
+        let metadata = std::fs::metadata(server.socket_path())
+            .expect("Socket file should exist");
+        
+        use std::os::unix::fs::FileTypeExt;
+        assert!(metadata.file_type().is_socket(), "File should be a Unix domain socket");
+    }
+}
+
 #[allow(dead_code)]
 type ClientContext = swagger::make_context_ty!(
     ContextBuilder,

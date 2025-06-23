@@ -39,6 +39,8 @@ use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
 use tokio::net::TcpListener;
 #[cfg(unix)]
+use tokio::net::UnixListener;
+#[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::MissedTickBehavior;
@@ -74,6 +76,36 @@ use kcshared::{
 };
 use tokio::sync::broadcast;
 
+// Enum to handle different listener types in server
+#[cfg(unix)]
+pub enum ServerListener {
+    Tcp(tokio::net::TcpListener),
+    Unix(tokio::net::UnixListener),
+}
+
+#[cfg(not(unix))]
+pub enum ServerListener {
+    Tcp(tokio::net::TcpListener),
+}
+
+pub async fn create_with_listener(
+    listener: ServerListener,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+) {
+    match listener {
+        ServerListener::Tcp(tcp_listener) => {
+            create_tcp_server(tcp_listener, token, idle_shutdown_hours, log_level).await;
+        }
+        #[cfg(unix)]
+        ServerListener::Unix(unix_listener) => {
+            create_unix_server(unix_listener, token, idle_shutdown_hours, log_level).await;
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub async fn create(
     listener: std::net::TcpListener,
     token: Option<String>,
@@ -86,6 +118,16 @@ pub async fn create(
         .expect("Failed to set listener to non-blocking");
     let listener = tokio::net::TcpListener::from_std(listener)
         .expect("Failed to convert to tokio TcpListener");
+
+    create_tcp_server(listener, token, idle_shutdown_hours, log_level).await;
+}
+
+async fn create_tcp_server(
+    listener: tokio::net::TcpListener,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+) {
 
     // Get the log level from the provided parameter or environment variable if not provided
     let effective_log_level = match log_level {
@@ -146,6 +188,57 @@ pub async fn create(
     {
         if let Err(e) = server_future.await {
             log::error!("Server error: {}", e);
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn create_unix_server(
+    listener: tokio::net::UnixListener,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+) {
+    // Get the log level from the provided parameter or environment variable if not provided
+    let effective_log_level = match log_level {
+        Some(level) => Some(level),
+        None => match env::var("RUST_LOG") {
+            Ok(level) => Some(level),
+            Err(_) => None,
+        },
+    };
+
+    let server = Server::new(token, idle_shutdown_hours, effective_log_level);
+    let server_clone = server.clone();
+
+    let service = WebsocketInterceptorMakeService::new(server);
+    let service = MakeAllowAllAuthenticator::new(service, "cosmo");
+    let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+
+    // Create the HTTP server for Unix domain socket using hyperlocal
+    let incoming = hyperlocal::SocketIncoming::from_listener(listener);
+    let server_future = hyper::server::Server::builder(incoming)
+        .serve(service);
+
+    // Set up signal handling for graceful shutdown on SIGTERM and SIGINT
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
+
+    // Wait for either the server to complete or a SIGTERM/SIGINT signal
+    tokio::select! {
+        result = server_future => {
+            // Server completed normally (unlikely in this case)
+            if let Err(e) = result {
+                log::error!("Unix socket server error: {}", e);
+            }
+        }
+        _ = sigterm.recv() => {
+            log::info!("Received SIGTERM signal, initiating graceful shutdown");
+            handle_shutdown_signal(server_clone).await;
+        }
+        _ = sigint.recv() => {
+            log::info!("Received SIGINT signal, initiating graceful shutdown");
+            handle_shutdown_signal(server_clone).await;
         }
     }
 }
