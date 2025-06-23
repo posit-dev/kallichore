@@ -6,6 +6,7 @@
 //
 
 use kallichore_api::{ApiNoContext, Client, ContextWrapperExt};
+use kcshared::port_picker::pick_unused_tcp_port;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
@@ -27,7 +28,7 @@ pub struct TestServer {
 
 impl TestServer {
     pub async fn start() -> Self {
-        let port = portpicker::pick_unused_port().expect("Failed to pick unused port");
+        let port = pick_unused_tcp_port().expect("Failed to pick unused port");
 
         // Try to use pre-built binary first, fall back to cargo run
         let binary_path = std::env::current_dir()

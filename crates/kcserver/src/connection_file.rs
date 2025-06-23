@@ -16,6 +16,8 @@ use kallichore_api::models::ConnectionInfo;
 use kcshared::handshake_protocol::HandshakeVersion;
 use serde::{Deserialize, Serialize};
 
+use kcshared::port_picker::pick_unused_tcp_port;
+
 /// The contents of the Connection File as listed in the Jupyter specfication;
 /// directly parsed from JSON.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -63,7 +65,7 @@ impl ConnectionFile {
 
         while port == 0 {
             // Find a free port
-            let candidate = match portpicker::pick_unused_port() {
+            let candidate = match pick_unused_tcp_port() {
                 Some(port) => port,
                 None => {
                     return Err(anyhow::anyhow!(

@@ -14,3 +14,6 @@ pub mod kernel_info;
 
 /// Jupyter Handshaking Protocol (JEP 66)
 pub mod handshake_protocol;
+
+/// Port picker for finding free TCP ports
+pub mod port_picker;
