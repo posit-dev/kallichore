@@ -65,6 +65,7 @@ jobs:
 
         env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            DEBUG_FLAG: ${{ matrix.flavor == 'debug' && '-debug' || '' }}
 
         strategy:
             max-parallel: 1
@@ -127,7 +128,7 @@ jobs:
                   pushd target/${{ matrix.rust_target_prefix }}-apple-darwin/${{ matrix.flavor }}
 
                   # Compress the server to an archive
-                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-${{ matrix.arch }}.zip"
+                  ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-${{ matrix.arch }}.zip"
                   zip -Xry $ARCHIVE kcserver
 
                   popd
@@ -137,7 +138,7 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: kallichore-${{ matrix.flavor }}-darwin-${{ matrix.arch }}-archive
-                  path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-darwin-${{ matrix.arch }}.zip
+                  path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-${{ matrix.arch }}.zip
 
     build_windows:
         name: Build Windows
@@ -259,12 +260,12 @@ jobs:
               run: |
                   # Decompress x64 builds
                   rm -rf x64 && mkdir x64 && pushd x64
-                  unzip ../kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-darwin-x64.zip
+                  unzip ../kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-x64.zip
                   popd
 
                   # Decompress arm64 build
                   rm -rf arm64 && mkdir arm64 && pushd arm64
-                  unzip ../kallichore-${{ env.RELEASE_TAG }}-${{ matrix.flavor }}-darwin-arm64.zip
+                  unzip ../kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-arm64.zip
                   popd
 
                   # Create a universal binary
@@ -282,6 +283,26 @@ jobs:
                   upload_url: ${{ needs.create_release.outputs.upload_url }}
                   asset_path: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-universal.zip
                   asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-universal.zip
+                  asset_content_type: application/octet-stream
+
+            - name: Upload macOS release artifact (arm64/Apple Silicon)
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ github.token }}
+              with:
+                  upload_url: ${{ needs.create_release.outputs.upload_url }}
+                  asset_path: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-arm64.zip
+                  asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-arm64.zip
+                  asset_content_type: application/octet-stream
+
+            - name: Upload macOS release artifact (x64/Intel)
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ github.token }}
+              with:
+                  upload_url: ${{ needs.create_release.outputs.upload_url }}
+                  asset_path: kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-x64.zip
+                  asset_name: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-x64.zip
                   asset_content_type: application/octet-stream
 
             - name: Upload Windows release artifact (x64)
@@ -324,11 +345,25 @@ jobs:
         env:
             RELEASE_TAG: ${{ needs.get_version.outputs.KALLICHORE_VERSION }}
         steps:
-            - name: Download macOS release
+            - name: Download macOS release (universal)
               uses: dsaltares/fetch-gh-release-asset@1.1.2
               with:
                   version: tags/${{ env.RELEASE_TAG }}
                   file: kallichore-${{ env.RELEASE_TAG }}-darwin-universal.zip
+                  token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Download macOS release (arm64/Apple Silicon)
+              uses: dsaltares/fetch-gh-release-asset@1.1.2
+              with:
+                  version: tags/${{ env.RELEASE_TAG }}
+                  file: kallichore-${{ env.RELEASE_TAG }}-darwin-arm64.zip
+                  token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Download macOS release (x64/Intel)
+              uses: dsaltares/fetch-gh-release-asset@1.1.2
+              with:
+                  version: tags/${{ env.RELEASE_TAG }}
+                  file: kallichore-${{ env.RELEASE_TAG }}-darwin-x64.zip
                   token: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Download Linux release (x64)
@@ -376,6 +411,8 @@ jobs:
                       Kallichore ${{env.RELEASE_TAG }}
                   files: |
                       kallichore-${{ env.RELEASE_TAG }}-darwin-universal.zip
+                      kallichore-${{ env.RELEASE_TAG }}-darwin-arm64.zip
+                      kallichore-${{ env.RELEASE_TAG }}-darwin-x64.zip
                       kallichore-${{ env.RELEASE_TAG }}-windows-x64.zip
                       kallichore-${{ env.RELEASE_TAG }}-linux-x64.zip
                       kallichore-${{ env.RELEASE_TAG }}-linux-arm64.zip
