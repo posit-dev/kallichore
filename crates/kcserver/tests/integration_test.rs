@@ -1719,7 +1719,7 @@ async fn test_server_connection_file_default_socket() {
     assert!(connection_info.named_pipe.is_none());
 
     let socket_path = connection_info.socket_path.unwrap();
-    
+
     // Verify the socket file exists
     assert!(
         std::path::Path::new(&socket_path).exists(),
@@ -1729,8 +1729,8 @@ async fn test_server_connection_file_default_socket() {
 
     // Test that we can connect to the socket
     use std::os::unix::net::UnixStream;
-    let _stream = UnixStream::connect(&socket_path)
-        .expect("Should be able to connect to the Unix socket");
+    let _stream =
+        UnixStream::connect(&socket_path).expect("Should be able to connect to the Unix socket");
 
     // Clean up
     cleanup_spawned_server(child);
@@ -1837,7 +1837,7 @@ async fn test_server_connection_file_explicit_tcp_transport() {
 
     let port = connection_info.port.unwrap();
     let base_path = connection_info.base_path.unwrap();
-    
+
     // Verify the base path is correctly formatted
     assert_eq!(base_path, format!("http://127.0.0.1:{}", port));
 
@@ -1851,8 +1851,8 @@ async fn test_server_connection_file_explicit_tcp_transport() {
             XSpanIdString::default()
         );
 
-        let client = kallichore_api::Client::try_new_http(&base_path)
-            .expect("Failed to create HTTP client");
+        let client =
+            kallichore_api::Client::try_new_http(&base_path).expect("Failed to create HTTP client");
 
         Box::new(client.with_context(context))
     };
@@ -1993,7 +1993,7 @@ async fn test_server_connection_file_explicit_socket_transport() {
     assert!(connection_info.named_pipe.is_none());
 
     let socket_path = connection_info.socket_path.unwrap();
-    
+
     // Verify the socket file exists
     assert!(
         std::path::Path::new(&socket_path).exists(),
@@ -2003,8 +2003,8 @@ async fn test_server_connection_file_explicit_socket_transport() {
 
     // Test that we can connect to the socket
     use std::os::unix::net::UnixStream;
-    let _stream = UnixStream::connect(&socket_path)
-        .expect("Should be able to connect to the Unix socket");
+    let _stream =
+        UnixStream::connect(&socket_path).expect("Should be able to connect to the Unix socket");
 
     // Clean up
     cleanup_spawned_server(child);
@@ -2018,10 +2018,8 @@ async fn test_server_connection_file_explicit_socket_transport() {
 async fn test_invalid_transport_parameter() {
     // Test that invalid transport values are rejected
     let temp_dir = std::env::temp_dir();
-    let connection_file_path = temp_dir.join(format!(
-        "kallichore_test_invalid_{}.json",
-        Uuid::new_v4()
-    ));
+    let connection_file_path =
+        temp_dir.join(format!("kallichore_test_invalid_{}.json", Uuid::new_v4()));
     let connection_file_str = connection_file_path.to_string_lossy().to_string();
 
     let binary_path = std::env::current_dir()

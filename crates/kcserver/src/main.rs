@@ -94,11 +94,17 @@ fn determine_transport(args: &Args) -> String {
     } else if args.connection_file.is_some() {
         // Default to socket/named-pipe when using connection file
         #[cfg(unix)]
-        { "socket".to_string() }
+        {
+            "socket".to_string()
+        }
         #[cfg(windows)]
-        { "named-pipe".to_string() }
+        {
+            "named-pipe".to_string()
+        }
         #[cfg(not(any(unix, windows)))]
-        { "tcp".to_string() }
+        {
+            "tcp".to_string()
+        }
     } else {
         "tcp".to_string()
     }
@@ -122,11 +128,18 @@ fn generate_named_pipe() -> String {
 /// Information about the server connection that gets written to the connection file
 #[derive(Debug, Clone)]
 enum ServerConnectionType {
-    Tcp { port: u16, base_path: String },
+    Tcp {
+        port: u16,
+        base_path: String,
+    },
     #[cfg(unix)]
-    Socket { socket_path: String },
+    Socket {
+        socket_path: String,
+    },
     #[cfg(windows)]
-    NamedPipe { pipe_name: String },
+    NamedPipe {
+        pipe_name: String,
+    },
 }
 
 /// Create the appropriate listener based on transport type and arguments
@@ -171,12 +184,12 @@ fn create_tcp_listener_with_info(port: u16) -> (ListenerType, ServerConnectionTy
     let tcp_listener = create_tcp_listener(port);
     let actual_port = tcp_listener.local_addr().unwrap().port();
     log::info!("Using TCP port: {}", actual_port);
-    
+
     let connection_info = ServerConnectionType::Tcp {
         port: actual_port,
         base_path: format!("http://127.0.0.1:{}", actual_port),
     };
-    
+
     (ListenerType::Tcp(tcp_listener), connection_info)
 }
 
@@ -205,11 +218,11 @@ fn create_unix_listener(socket_path: &str) -> (ListenerType, ServerConnectionTyp
             let listener = UnixListener::from_std(std_listener)
                 .expect("Failed to convert to tokio UnixListener");
             log::info!("Using Unix domain socket: {}", socket_path);
-            
+
             let connection_info = ServerConnectionType::Socket {
                 socket_path: socket_path.to_string(),
             };
-            
+
             (ListenerType::Unix(listener), connection_info)
         }
         Err(e) => {
@@ -225,12 +238,15 @@ fn create_named_pipe_listener(pipe_name: &str) -> (ListenerType, ServerConnectio
     // For now, we'll store the pipe name and create the actual listener in the server
     // This is because Windows named pipes require different handling
     log::info!("Using named pipe: {}", pipe_name);
-    
+
     let connection_info = ServerConnectionType::NamedPipe {
         pipe_name: pipe_name.to_string(),
     };
-    
-    (ListenerType::NamedPipe(pipe_name.to_string()), connection_info)
+
+    (
+        ListenerType::NamedPipe(pipe_name.to_string()),
+        connection_info,
+    )
 }
 
 #[derive(Parser, Debug)]
