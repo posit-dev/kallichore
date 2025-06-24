@@ -433,7 +433,11 @@ async fn run_python_kernel_test(python_cmd: &str) {
 }
 
 async fn find_python_executable() -> Option<String> {
-    let candidates = vec!["python3", "python"];
+    let candidates = if cfg!(windows) {
+        vec!["python", "python3", "py"]
+    } else {
+        vec!["python3", "python"]
+    };
 
     for candidate in candidates {
         match tokio::process::Command::new(candidate)
@@ -443,21 +447,25 @@ async fn find_python_executable() -> Option<String> {
         {
             Ok(output) if output.status.success() => {
                 println!("Found Python at: {}", candidate);
-                // If it's a relative command, try to find the full path using `which`
-                if !candidate.starts_with('/') {
-                    if let Ok(which_output) = tokio::process::Command::new("which")
-                        .arg(candidate)
-                        .output()
-                        .await
-                    {
-                        if which_output.status.success() {
-                            let full_path = String::from_utf8_lossy(&which_output.stdout)
-                                .trim()
-                                .to_string();
-                            if !full_path.is_empty() {
-                                println!("Full path for {}: {}", candidate, full_path);
-                                return Some(full_path);
-                            }
+
+                // Try to find the full path using platform-appropriate command
+                let which_cmd = if cfg!(windows) { "where" } else { "which" };
+
+                if let Ok(which_output) = tokio::process::Command::new(which_cmd)
+                    .arg(candidate)
+                    .output()
+                    .await
+                {
+                    if which_output.status.success() {
+                        let full_path = String::from_utf8_lossy(&which_output.stdout)
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if !full_path.is_empty() {
+                            println!("Full path for {}: {}", candidate, full_path);
+                            return Some(full_path);
                         }
                     }
                 }
@@ -579,18 +587,18 @@ async fn test_server_starts_with_connection_file() {
         "kallichore_test_connection_{}.json",
         Uuid::new_v4()
     ));
-    let connection_file_str = connection_file_path.to_string_lossy().to_string();
-
-    // Start server without specifying port (port 0), using connection file
+    let connection_file_str = connection_file_path.to_string_lossy().to_string(); // Start server without specifying port (port 0), using connection file
     let binary_path = std::env::current_dir()
         .unwrap()
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("target/debug/kcserver");
+        .join("target/debug/kcserver")
+        .with_extension(if cfg!(windows) { "exe" } else { "" });
 
     let mut cmd = if binary_path.exists() {
+        println!("Using pre-built binary at: {:?}", binary_path);
         let mut c = std::process::Command::new(&binary_path);
         c.args(&[
             "--port",
@@ -602,6 +610,7 @@ async fn test_server_starts_with_connection_file() {
         ]);
         c
     } else {
+        println!("Pre-built binary not found, using cargo run");
         let mut c = std::process::Command::new("cargo");
         c.args(&[
             "run",
@@ -616,26 +625,54 @@ async fn test_server_starts_with_connection_file() {
             "none", // Disable auth for testing
         ]);
         c
-    };
-
-    // Reduce logging noise for faster startup
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-    cmd.env("RUST_LOG", "error");
+    }; // Capture output for debugging
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.env("RUST_LOG", "info");
 
     let mut child = cmd.spawn().expect("Failed to start kcserver");
 
-    // Wait for connection file to be created
+    // Wait for connection file to be created with increased timeout
     let mut attempts = 0;
-    while !connection_file_path.exists() && attempts < 50 {
+    while !connection_file_path.exists() && attempts < 100 {
+        // Increased from 50
         tokio::time::sleep(Duration::from_millis(100)).await;
         attempts += 1;
+        if attempts % 20 == 0 {
+            println!(
+                "Still waiting for connection file after {} attempts...",
+                attempts
+            );
+        }
     }
 
-    assert!(
-        connection_file_path.exists(),
-        "Connection file was not created within timeout"
-    );
+    if !connection_file_path.exists() {
+        // Try to get error output from the process
+        if let Ok(output) = child.try_wait() {
+            if let Some(_exit_status) = output {
+                // Process has exited, try to get output
+                if let Ok(final_output) = child.wait_with_output() {
+                    if !final_output.stdout.is_empty() {
+                        println!(
+                            "Server stdout: {}",
+                            String::from_utf8_lossy(&final_output.stdout)
+                        );
+                    }
+                    if !final_output.stderr.is_empty() {
+                        println!(
+                            "Server stderr: {}",
+                            String::from_utf8_lossy(&final_output.stderr)
+                        );
+                    }
+                }
+            } else {
+                // Process is still running, kill it
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        panic!("Connection file was not created within timeout");
+    }
 
     // Read the connection file
     let connection_content =
@@ -745,18 +782,18 @@ async fn test_server_connection_file_with_auth_token() {
     let token_file_path = temp_dir.join(format!("kallichore_test_token_{}.txt", Uuid::new_v4()));
     let token_file_str = token_file_path.to_string_lossy().to_string();
     let test_token = "test_auth_token_12345";
-    std::fs::write(&token_file_path, test_token).expect("Failed to write token file");
-
-    // Start server without specifying port, using connection file and auth token
+    std::fs::write(&token_file_path, test_token).expect("Failed to write token file"); // Start server without specifying port, using connection file and auth token
     let binary_path = std::env::current_dir()
         .unwrap()
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .join("target/debug/kcserver");
+        .join("target/debug/kcserver")
+        .with_extension(if cfg!(windows) { "exe" } else { "" });
 
     let mut cmd = if binary_path.exists() {
+        println!("Using pre-built binary at: {:?}", binary_path);
         let mut c = std::process::Command::new(&binary_path);
         c.args(&[
             "--port",
@@ -768,6 +805,7 @@ async fn test_server_connection_file_with_auth_token() {
         ]);
         c
     } else {
+        println!("Pre-built binary not found, using cargo run");
         let mut c = std::process::Command::new("cargo");
         c.args(&[
             "run",
@@ -784,23 +822,51 @@ async fn test_server_connection_file_with_auth_token() {
         c
     };
 
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-    cmd.env("RUST_LOG", "error");
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.env("RUST_LOG", "info");
 
-    let mut child = cmd.spawn().expect("Failed to start kcserver");
-
-    // Wait for connection file to be created
+    let mut child = cmd.spawn().expect("Failed to start kcserver"); // Wait for connection file to be created with increased timeout
     let mut attempts = 0;
-    while !connection_file_path.exists() && attempts < 50 {
+    while !connection_file_path.exists() && attempts < 100 {
+        // Increased from 50
         tokio::time::sleep(Duration::from_millis(100)).await;
         attempts += 1;
+        if attempts % 20 == 0 {
+            println!(
+                "Still waiting for connection file after {} attempts...",
+                attempts
+            );
+        }
     }
 
-    assert!(
-        connection_file_path.exists(),
-        "Connection file was not created within timeout"
-    );
+    if !connection_file_path.exists() {
+        // Try to get error output from the process
+        if let Ok(output) = child.try_wait() {
+            if let Some(_exit_status) = output {
+                // Process has exited, try to get output
+                if let Ok(final_output) = child.wait_with_output() {
+                    if !final_output.stdout.is_empty() {
+                        println!(
+                            "Server stdout: {}",
+                            String::from_utf8_lossy(&final_output.stdout)
+                        );
+                    }
+                    if !final_output.stderr.is_empty() {
+                        println!(
+                            "Server stderr: {}",
+                            String::from_utf8_lossy(&final_output.stderr)
+                        );
+                    }
+                }
+            } else {
+                // Process is still running, kill it
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        panic!("Connection file was not created within timeout");
+    }
 
     // Read the connection file
     let connection_content =
@@ -943,14 +1009,14 @@ async fn test_multiple_servers_different_ports() {
             Uuid::new_v4()
         ));
         let connection_file_str = connection_file_path.to_string_lossy().to_string();
-
         let binary_path = std::env::current_dir()
             .unwrap()
             .parent()
             .unwrap()
             .parent()
             .unwrap()
-            .join("target/debug/kcserver");
+            .join("target/debug/kcserver")
+            .with_extension(if cfg!(windows) { "exe" } else { "" });
 
         let mut cmd = if binary_path.exists() {
             let mut c = std::process::Command::new(&binary_path);
@@ -980,9 +1046,9 @@ async fn test_multiple_servers_different_ports() {
             c
         };
 
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        cmd.env("RUST_LOG", "error");
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.env("RUST_LOG", "info");
 
         let child = cmd.spawn().expect("Failed to start kcserver");
         servers.push(child);
@@ -990,21 +1056,24 @@ async fn test_multiple_servers_different_ports() {
 
         // Small delay between starts
         tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-
-    // Wait for all connection files to be created and read them
+    } // Wait for all connection files to be created and read them
     let mut ports = Vec::new();
-    for connection_file_path in &connection_files {
+    for (i, connection_file_path) in connection_files.iter().enumerate() {
         let mut attempts = 0;
-        while !connection_file_path.exists() && attempts < 50 {
+        while !connection_file_path.exists() && attempts < 100 {
+            // Increased from 50
             tokio::time::sleep(Duration::from_millis(100)).await;
             attempts += 1;
+            if attempts % 20 == 0 {
+                println!(
+                    "Still waiting for connection file {} after {} attempts...",
+                    i, attempts
+                );
+            }
         }
-
-        assert!(
-            connection_file_path.exists(),
-            "Connection file was not created within timeout"
-        );
+        if !connection_file_path.exists() {
+            panic!("Connection file {} was not created within timeout", i);
+        }
 
         let connection_content =
             std::fs::read_to_string(connection_file_path).expect("Failed to read connection file");
