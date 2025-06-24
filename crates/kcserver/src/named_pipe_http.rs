@@ -38,10 +38,10 @@ impl NamedPipeServer {
         // For now, simulate accepting a connection
         // In a full implementation, this would create actual named pipe connections
         log::info!("Simulating named pipe connection on: {}", self.pipe_name);
-        
+
         // Simulate some async work
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         Ok(NamedPipeStream::new())
     }
 }
@@ -94,11 +94,18 @@ impl tokio::io::AsyncWrite for NamedPipeStream {
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
         // For the simplified implementation, just accept all writes
-        log::debug!("Named pipe received {} bytes: {}", buf.len(), String::from_utf8_lossy(buf));
+        log::debug!(
+            "Named pipe received {} bytes: {}",
+            buf.len(),
+            String::from_utf8_lossy(buf)
+        );
         std::task::Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), std::io::Error>> {
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
         std::task::Poll::Ready(Ok(()))
     }
 
@@ -148,11 +155,12 @@ impl hyper::server::accept::Accept for NamedPipeIncoming {
 pub async fn start_named_pipe_http_server(
     pipe_name: String,
     server: Server<()>,
-) -> Result<(), Box<dyn std::error::Error>> {    use tokio::net::windows::named_pipe::ServerOptions;
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tokio::net::windows::named_pipe::ServerOptions;
 
     let server = Arc::new(server);
-    
-    log::info!("Starting HTTP server over named pipe at: {}", pipe_name);    // Accept connections in a loop
+
+    log::info!("Starting HTTP server over named pipe at: {}", pipe_name); // Accept connections in a loop
     loop {
         // Create a new named pipe for each connection
         let pipe_server = match ServerOptions::new().create(&pipe_name) {
@@ -162,12 +170,12 @@ pub async fn start_named_pipe_http_server(
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
-        };        // Accept a connection
+        }; // Accept a connection
         match pipe_server.connect().await {
             Ok(_) => {
                 log::info!("Client connected to named pipe: {}", pipe_name);
                 let server_clone = Arc::clone(&server);
-                
+
                 // Handle this connection
                 tokio::spawn(async move {
                     if let Err(e) = handle_http_request(pipe_server, server_clone).await {
@@ -188,33 +196,33 @@ async fn handle_http_request(
     mut stream: tokio::net::windows::named_pipe::NamedPipeServer,
     server: Arc<Server<()>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use hyper::Method;
     use std::str::FromStr;
-    
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     // Read the HTTP request
     let mut buffer = vec![0u8; 4096];
     let bytes_read = stream.read(&mut buffer).await?;
     let request_str = String::from_utf8_lossy(&buffer[..bytes_read]);
-    
+
     log::debug!("Named pipe received HTTP request: {}", request_str);
-    
+
     // Parse the request
     let lines: Vec<&str> = request_str.split("\r\n").collect();
     if lines.is_empty() {
         return Err("No HTTP request received".into());
     }
-    
+
     // Parse the request line
     let request_line = lines[0];
     let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
     if parts.len() < 3 {
         return Err("Invalid HTTP request line".into());
     }
-    
+
     let method = Method::from_str(parts[0])?;
     let path = parts[1];
-    
+
     // Find the body (after empty line)
     let mut body = String::new();
     let mut found_empty = false;
@@ -226,9 +234,9 @@ async fn handle_http_request(
             found_empty = true;
         }
     }
-    
+
     log::info!("Named pipe HTTP request: {} {}", method, path);
-    
+
     // Handle the request based on the path using real server methods
     let response = match (method.as_str(), path) {
         ("GET", "/sessions") => {
@@ -244,9 +252,8 @@ async fn handle_http_request(
                     // Call the server's session creation method
                     match server.create_session(new_session_request).await {
                         Ok(session_id) => {
-                            let response_obj = kallichore_api::models::NewSession200Response {
-                                session_id,
-                            };
+                            let response_obj =
+                                kallichore_api::models::NewSession200Response { session_id };
                             let json = serde_json::to_string(&response_obj)?;
                             create_http_response(200, "OK", &json)
                         }
@@ -285,11 +292,11 @@ async fn handle_http_request(
             create_http_response(404, "Not Found", &json)
         }
     };
-    
+
     // Send the response
     stream.write_all(response.as_bytes()).await?;
     stream.flush().await?;
-    
+
     log::info!("Named pipe HTTP response sent successfully");
     Ok(())
 }

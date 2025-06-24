@@ -37,6 +37,7 @@ use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -48,7 +49,6 @@ use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 use kallichore_api::models::ConnectionInfo;
 use kallichore_api::server::MakeService;
@@ -262,7 +262,7 @@ async fn create_named_pipe_server(
     log_level: Option<String>,
 ) {
     use crate::named_pipe_http::start_named_pipe_http_server;
-    
+
     // Get the log level from the provided parameter or environment variable if not provided
     let effective_log_level = match log_level {
         Some(level) => Some(level),
@@ -273,15 +273,14 @@ async fn create_named_pipe_server(
     };
 
     let server = Server::new(token, idle_shutdown_hours, effective_log_level, false);
-    
+
     log::info!("Starting named pipe HTTP server on: {}", pipe_name);
-    
+
     // Start the named pipe HTTP server
     if let Err(e) = start_named_pipe_http_server(pipe_name, server).await {
         log::error!("Named pipe HTTP server error: {}", e);
     }
 }
-
 
 #[derive(Clone)]
 pub struct Server<C> {
@@ -2025,7 +2024,7 @@ impl<C> Server<C> {
     }
 
     // Public methods for named pipe HTTP server
-      /// Get a list of all active sessions (for named pipe HTTP)
+    /// Get a list of all active sessions (for named pipe HTTP)
     pub async fn get_sessions_list(&self) -> models::SessionList {
         // Make a copy of the active session list to avoid holding the lock
         let sessions = {
@@ -2038,20 +2037,20 @@ impl<C> Server<C> {
         for s in sessions.iter() {
             result.push(s.as_active_session().await);
         }
-        
+
         models::SessionList {
             total: result.len() as i32,
             sessions: result,
         }
     }
-    
+
     /// Create a new session (for named pipe HTTP)
     pub async fn create_session(&self, new_session: models::NewSession) -> Result<String, String> {
-        use crate::kernel_session::KernelSession;
         use crate::error::KSError;
+        use crate::kernel_session::KernelSession;
         use kallichore_api::models;
         use std::env;
-        
+
         // Validate argv - it's okay for it to be empty (it is for adopted
         // sessions), but if it is not, validate that the first element is a
         // valid kernel path.
@@ -2084,10 +2083,14 @@ impl<C> Server<C> {
             let sessions = self.kernel_sessions.read().unwrap();
             for s in sessions.iter() {
                 if s.connection.session_id == new_session.session_id {
-                    return Err(format!("Session already exists: {}", new_session.session_id));
+                    return Err(format!(
+                        "Session already exists: {}",
+                        new_session.session_id
+                    ));
                 }
             }
-        }        let session_id = new_session.session_id.clone();
+        }
+        let session_id = new_session.session_id.clone();
 
         // Generate a key for the session
         let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
