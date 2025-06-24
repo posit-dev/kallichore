@@ -36,19 +36,13 @@ mod working_dir;
 mod zmq_ws_proxy;
 
 // Enum to handle different listener types
-#[cfg(all(unix, not(windows)))]
+#[cfg(unix)]
 enum ListenerType {
     Tcp(std::net::TcpListener),
     Unix(tokio::net::UnixListener),
 }
 
-#[cfg(windows)]
-enum ListenerType {
-    Tcp(std::net::TcpListener),
-    NamedPipe(String), // Store the pipe name
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 enum ListenerType {
     Tcp(std::net::TcpListener),
 }
@@ -87,6 +81,158 @@ fn create_tcp_listener(port: u16) -> std::net::TcpListener {
     }
 }
 
+/// Determine the transport type to use
+fn determine_transport(args: &Args) -> String {
+    if let Some(ref transport) = args.transport {
+        match transport.as_str() {
+            "tcp" | "socket" | "named-pipe" => transport.clone(),
+            _ => {
+                log::error!("Invalid transport type '{}'. Valid values are 'tcp', 'socket', and 'named-pipe'", transport);
+                std::process::exit(1);
+            }
+        }
+    } else if args.connection_file.is_some() {
+        // Default to socket/named-pipe when using connection file
+        #[cfg(unix)]
+        { "socket".to_string() }
+        #[cfg(windows)]
+        { "named-pipe".to_string() }
+        #[cfg(not(any(unix, windows)))]
+        { "tcp".to_string() }
+    } else {
+        "tcp".to_string()
+    }
+}
+
+/// Generate a socket path for Unix domain sockets
+#[cfg(unix)]
+fn generate_socket_path() -> String {
+    use std::env;
+    let temp_dir = env::temp_dir();
+    let socket_name = format!("kallichore-{}.sock", std::process::id());
+    temp_dir.join(socket_name).to_string_lossy().to_string()
+}
+
+/// Generate a named pipe name for Windows
+#[cfg(windows)]
+fn generate_named_pipe() -> String {
+    format!(r"\\.\pipe\kallichore-{}", std::process::id())
+}
+
+/// Information about the server connection that gets written to the connection file
+#[derive(Debug, Clone)]
+enum ServerConnectionType {
+    Tcp { port: u16, base_path: String },
+    #[cfg(unix)]
+    Socket { socket_path: String },
+    #[cfg(windows)]
+    NamedPipe { pipe_name: String },
+}
+
+/// Create the appropriate listener based on transport type and arguments
+fn create_listener(args: &Args, transport_type: &str) -> (ListenerType, ServerConnectionType) {
+    // If --unix-socket is explicitly provided, use that (overrides transport type)
+    #[cfg(unix)]
+    if let Some(ref socket_path) = args.unix_socket {
+        return create_unix_listener(socket_path);
+    }
+
+    match transport_type {
+        "tcp" => create_tcp_listener_with_info(args.port),
+        #[cfg(unix)]
+        "socket" => {
+            let socket_path = generate_socket_path();
+            create_unix_listener(&socket_path)
+        }
+        #[cfg(windows)]
+        "named-pipe" => {
+            let pipe_name = generate_named_pipe();
+            create_named_pipe_listener(&pipe_name)
+        }
+        #[cfg(unix)]
+        "named-pipe" => {
+            log::error!("Named pipes are not supported on Unix systems");
+            std::process::exit(1);
+        }
+        #[cfg(windows)]
+        "socket" => {
+            log::error!("Unix domain sockets are not supported on Windows");
+            std::process::exit(1);
+        }
+        _ => {
+            log::error!("Unsupported transport type: {}", transport_type);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Create TCP listener with connection info
+fn create_tcp_listener_with_info(port: u16) -> (ListenerType, ServerConnectionType) {
+    let tcp_listener = create_tcp_listener(port);
+    let actual_port = tcp_listener.local_addr().unwrap().port();
+    log::info!("Using TCP port: {}", actual_port);
+    
+    let connection_info = ServerConnectionType::Tcp {
+        port: actual_port,
+        base_path: format!("http://127.0.0.1:{}", actual_port),
+    };
+    
+    (ListenerType::Tcp(tcp_listener), connection_info)
+}
+
+/// Create Unix domain socket listener
+#[cfg(unix)]
+fn create_unix_listener(socket_path: &str) -> (ListenerType, ServerConnectionType) {
+    use std::os::unix::net::UnixListener as StdUnixListener;
+    use tokio::net::UnixListener;
+
+    // Remove existing socket file if it exists
+    if std::path::Path::new(&socket_path).exists() {
+        if let Err(e) = std::fs::remove_file(&socket_path) {
+            log::warn!(
+                "Failed to remove existing socket file '{}': {}",
+                socket_path,
+                e
+            );
+        }
+    }
+
+    match StdUnixListener::bind(&socket_path) {
+        Ok(std_listener) => {
+            std_listener
+                .set_nonblocking(true)
+                .expect("Failed to set Unix listener to non-blocking");
+            let listener = UnixListener::from_std(std_listener)
+                .expect("Failed to convert to tokio UnixListener");
+            log::info!("Using Unix domain socket: {}", socket_path);
+            
+            let connection_info = ServerConnectionType::Socket {
+                socket_path: socket_path.to_string(),
+            };
+            
+            (ListenerType::Unix(listener), connection_info)
+        }
+        Err(e) => {
+            log::error!("Failed to bind to Unix socket '{}': {}", socket_path, e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Create named pipe listener (Windows)
+#[cfg(windows)]
+fn create_named_pipe_listener(pipe_name: &str) -> (ListenerType, ServerConnectionType) {
+    // For now, we'll store the pipe name and create the actual listener in the server
+    // This is because Windows named pipes require different handling
+    log::info!("Using named pipe: {}", pipe_name);
+    
+    let connection_info = ServerConnectionType::NamedPipe {
+        pipe_name: pipe_name.to_string(),
+    };
+    
+    (ListenerType::NamedPipe(pipe_name.to_string()), connection_info)
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -123,17 +269,19 @@ struct Args {
     /// value of `RUST_LOG` if set.
     #[arg(short, long)]
     log_level: Option<String>,
+
     /// The path to a Unix domain socket to bind the server to (Unix only).
     /// If specified, the server will listen on this socket instead of TCP.
     #[cfg(unix)]
     #[arg(long)]
     unix_socket: Option<String>,
 
-    /// The path to a named pipe to bind the server to (Windows only).
-    /// If specified, the server will listen on this named pipe instead of TCP.
-    #[cfg(windows)]
+    /// The transport type to use when creating a connection file. Valid values
+    /// are "tcp", "socket" (Unix only), and "named-pipe" (Windows only).
+    /// If not specified, defaults to "socket" on Unix and "named-pipe" on Windows
+    /// when using --connection-file, otherwise "tcp".
     #[arg(long)]
-    named_pipe: Option<String>,
+    transport: Option<String>,
 }
 
 /// Create custom server, wire it to the autogenerated router,
@@ -142,6 +290,9 @@ struct Args {
 async fn main() {
     // Parse command line arguments
     let args = Args::parse();
+
+    // Determine the transport type to use
+    let transport_type = determine_transport(&args);
 
     // Derive the log level
     let log_level = match args.log_level {
@@ -215,85 +366,8 @@ async fn main() {
         }
     }
 
-    // Create TcpListener to bind to the port, Unix domain socket, or named pipe
-    #[cfg(all(unix, not(windows)))]
-    let (listener, socket_path) = match args.unix_socket {
-        Some(socket_path) => {
-            // Unix domain socket path specified, create Unix listener
-            use std::os::unix::net::UnixListener as StdUnixListener;
-            use tokio::net::UnixListener;
-
-            // Remove existing socket file if it exists
-            if std::path::Path::new(&socket_path).exists() {
-                if let Err(e) = std::fs::remove_file(&socket_path) {
-                    log::warn!(
-                        "Failed to remove existing socket file '{}': {}",
-                        socket_path,
-                        e
-                    );
-                }
-            }
-
-            match StdUnixListener::bind(&socket_path) {
-                Ok(std_listener) => {
-                    std_listener
-                        .set_nonblocking(true)
-                        .expect("Failed to set Unix listener to non-blocking");
-                    let listener = UnixListener::from_std(std_listener)
-                        .expect("Failed to convert to tokio UnixListener");
-                    log::info!("Using Unix domain socket: {}", socket_path);
-                    (ListenerType::Unix(listener), Some(socket_path.clone()))
-                }
-                Err(e) => {
-                    log::error!("Failed to bind to Unix socket '{}': {}", socket_path, e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        None => {
-            // No Unix socket specified, use TCP
-            let tcp_listener = create_tcp_listener(args.port);
-            let port = tcp_listener.local_addr().unwrap().port();
-            log::info!("Using TCP port: {}", port);
-            (ListenerType::Tcp(tcp_listener), None)
-        }
-    };
-
-    #[cfg(windows)]
-    let (listener, socket_path) = match args.named_pipe {
-        Some(pipe_name) => {
-            // Named pipe path specified
-            log::info!("Using named pipe: {}", pipe_name);
-            (
-                ListenerType::NamedPipe(pipe_name.clone()),
-                Some(pipe_name.clone()),
-            )
-        }
-        None => {
-            // No named pipe specified, use TCP
-            let tcp_listener = create_tcp_listener(args.port);
-            let port = tcp_listener.local_addr().unwrap().port();
-            log::info!("Using TCP port: {}", port);
-            (ListenerType::Tcp(tcp_listener), None)
-        }
-    };
-
-    #[cfg(not(any(unix, windows)))]
-    let (listener, socket_path) = {
-        let tcp_listener = create_tcp_listener(args.port);
-        let port = tcp_listener.local_addr().unwrap().port();
-        log::info!("Using TCP port: {}", port);
-        (ListenerType::Tcp(tcp_listener), None::<String>)
-    };
-
-    // Get the port for TCP connections (for display and connection file)
-    let port = match &listener {
-        ListenerType::Tcp(tcp_listener) => Some(tcp_listener.local_addr().unwrap().port()),
-        #[cfg(unix)]
-        ListenerType::Unix(_) => None,
-        #[cfg(windows)]
-        ListenerType::NamedPipe(_) => None,
-    };
+    // Create the appropriate listener based on transport type and arguments
+    let (listener, connection_info) = create_listener(&args, &transport_type);
 
     // See if a token file was provided
     let token = match args.token {
@@ -359,51 +433,40 @@ async fn main() {
   Copyright (c) 2025, Posit Software PBC. All rights reserved.
 "#,
         env!("CARGO_PKG_VERSION")
-    ); // Display connection information
-    match (&listener, &socket_path) {
-        (ListenerType::Tcp(_), _) => {
-            println!("Listening at 127.0.0.1:{}", port.unwrap());
+    );
+
+    // Display connection information
+    match &connection_info {
+        ServerConnectionType::Tcp { port, .. } => {
+            println!("Listening at 127.0.0.1:{}", port);
         }
         #[cfg(unix)]
-        (ListenerType::Unix(_), Some(path)) => {
-            println!("Listening on Unix socket: {}", path);
-        }
-        #[cfg(unix)]
-        (ListenerType::Unix(_), None) => {
-            println!("Listening on Unix socket (path not available)");
+        ServerConnectionType::Socket { socket_path } => {
+            println!("Listening on Unix socket: {}", socket_path);
         }
         #[cfg(windows)]
-        (ListenerType::NamedPipe(pipe_name), _) => {
+        ServerConnectionType::NamedPipe { pipe_name } => {
             println!("Listening on named pipe: {}", pipe_name);
-        }
-    } // If a connection file path was specified, write the connection details to it
-      // (only for TCP connections)
-    if let Some(connection_file_path) = &args.connection_file {
-        match &listener {
-            ListenerType::Tcp(_) => {
-                if let Err(e) = write_server_connection_file(
-                    connection_file_path,
-                    port.unwrap(),
-                    &token,
-                    &args.log_file,
-                ) {
-                    log::error!("Failed to write connection file: {}", e);
-                    std::process::exit(1);
-                }
-                log::info!("Wrote connection details to {}", connection_file_path);
-            }
-            #[cfg(unix)]
-            ListenerType::Unix(_) => {
-                log::warn!("Connection file not supported for Unix domain sockets");
-            }
-            #[cfg(windows)]
-            ListenerType::NamedPipe(_) => {
-                log::warn!("Connection file not supported for named pipes");
-            }
         }
     }
 
-    log::debug!("Starting Kallichore"); // Convert the listener type and pass to the server
+    // If a connection file path was specified, write the connection details to it
+    if let Some(connection_file_path) = &args.connection_file {
+        if let Err(e) = write_server_connection_file_new(
+            connection_file_path,
+            &connection_info,
+            &token,
+            &args.log_file,
+        ) {
+            log::error!("Failed to write connection file: {}", e);
+            std::process::exit(1);
+        }
+        log::info!("Wrote connection details to {}", connection_file_path);
+    }
+
+    log::debug!("Starting Kallichore");
+
+    // Convert the listener type and pass to the server
     let server_listener = match listener {
         ListenerType::Tcp(tcp_listener) => {
             tcp_listener
@@ -415,8 +478,6 @@ async fn main() {
         }
         #[cfg(unix)]
         ListenerType::Unix(unix_listener) => server::ServerListener::Unix(unix_listener),
-        #[cfg(windows)]
-        ListenerType::NamedPipe(pipe_name) => server::ServerListener::NamedPipe(pipe_name),
     };
 
     // Pass the listener to the server
@@ -430,6 +491,7 @@ async fn main() {
 }
 
 /// Write server connection details to a file
+#[allow(dead_code)]
 fn write_server_connection_file(
     path: &str,
     port: u16,
@@ -482,6 +544,109 @@ fn write_server_connection_file(
 
     // Serialize to JSON
     let json = serde_json::to_string_pretty(&connection_info)?;
+
+    // Write to file
+    let mut file = File::create(path)?;
+    file.write_all(json.as_bytes())?;
+
+    Ok(())
+}
+
+/// Write server connection details to a file (new format supporting multiple transports)
+fn write_server_connection_file_new(
+    path: &str,
+    connection_info: &ServerConnectionType,
+    token: &Option<String>,
+    log_file: &Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use serde::{Deserialize, Serialize};
+    use std::fs::File;
+    use std::io::Write;
+
+    #[derive(Serialize, Deserialize)]
+    struct ServerConnectionInfoNew {
+        /// The port the server is listening on (TCP only)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        port: Option<u16>,
+
+        /// The full API basepath, starting with 'http' (TCP only)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_path: Option<String>,
+
+        /// The path to the Unix domain socket (Unix only)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        socket_path: Option<String>,
+
+        /// The named pipe path (Windows only)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        named_pipe: Option<String>,
+
+        /// The transport type: "tcp", "socket", or "named-pipe"
+        transport: String,
+
+        /// The path to the server executable (this process)
+        server_path: String,
+
+        /// The PID of the server process
+        server_pid: u32,
+
+        /// The authentication token, if any
+        bearer_token: Option<String>,
+
+        /// The path to the log file, if any
+        log_path: Option<String>,
+    }
+
+    // Get the server path
+    let server_path = std::env::current_exe()?
+        .to_str()
+        .ok_or("Failed to convert server path to string")?
+        .to_string();
+
+    // Get the server PID
+    let server_pid = std::process::id();
+
+    // Create the connection info struct based on the connection type
+    let connection_info_new = match connection_info {
+        ServerConnectionType::Tcp { port, base_path } => ServerConnectionInfoNew {
+            port: Some(*port),
+            base_path: Some(base_path.clone()),
+            socket_path: None,
+            named_pipe: None,
+            transport: "tcp".to_string(),
+            server_path,
+            server_pid,
+            bearer_token: token.clone(),
+            log_path: log_file.clone(),
+        },
+        #[cfg(unix)]
+        ServerConnectionType::Socket { socket_path } => ServerConnectionInfoNew {
+            port: None,
+            base_path: None,
+            socket_path: Some(socket_path.clone()),
+            named_pipe: None,
+            transport: "socket".to_string(),
+            server_path,
+            server_pid,
+            bearer_token: token.clone(),
+            log_path: log_file.clone(),
+        },
+        #[cfg(windows)]
+        ServerConnectionType::NamedPipe { pipe_name } => ServerConnectionInfoNew {
+            port: None,
+            base_path: None,
+            socket_path: None,
+            named_pipe: Some(pipe_name.clone()),
+            transport: "named-pipe".to_string(),
+            server_path,
+            server_pid,
+            bearer_token: token.clone(),
+            log_path: log_file.clone(),
+        },
+    };
+
+    // Serialize to JSON
+    let json = serde_json::to_string_pretty(&connection_info_new)?;
 
     // Write to file
     let mut file = File::create(path)?;

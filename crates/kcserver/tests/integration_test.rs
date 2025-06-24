@@ -1106,6 +1106,8 @@ async fn test_server_starts_with_connection_file() {
             "0", // Let OS pick the port
             "--connection-file",
             &connection_file_str,
+            "--transport",
+            "tcp", // Explicitly request TCP for backward compatibility test
             "--token",
             "none", // Disable auth for testing
         ]);
@@ -1122,6 +1124,8 @@ async fn test_server_starts_with_connection_file() {
             "0", // Let OS pick the port
             "--connection-file",
             &connection_file_str,
+            "--transport",
+            "tcp", // Explicitly request TCP for backward compatibility test
             "--token",
             "none", // Disable auth for testing
         ]);
@@ -1300,6 +1304,8 @@ async fn test_server_connection_file_with_auth_token() {
             "0", // Let OS pick the port
             "--connection-file",
             &connection_file_str,
+            "--transport",
+            "tcp", // Explicitly request TCP for backward compatibility test
             "--token",
             &token_file_str,
         ]);
@@ -1316,6 +1322,8 @@ async fn test_server_connection_file_with_auth_token() {
             "0", // Let OS pick the port
             "--connection-file",
             &connection_file_str,
+            "--transport",
+            "tcp", // Explicitly request TCP for backward compatibility test
             "--token",
             &token_file_str,
         ]);
@@ -1612,4 +1620,456 @@ async fn test_multiple_servers_different_ports() {
         "Successfully tested multiple servers with different ports: {:?}",
         ports
     );
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_server_connection_file_default_socket() {
+    // Test that --connection-file defaults to socket transport on Unix
+    let temp_dir = std::env::temp_dir();
+    let connection_file_path = temp_dir.join(format!(
+        "kallichore_test_socket_default_{}.json",
+        Uuid::new_v4()
+    ));
+    let connection_file_str = connection_file_path.to_string_lossy().to_string();
+
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/kcserver")
+        .with_extension(if cfg!(windows) { "exe" } else { "" });
+
+    let mut cmd = if binary_path.exists() {
+        println!("Using pre-built binary at: {:?}", binary_path);
+        let mut c = std::process::Command::new(&binary_path);
+        c.args(&[
+            "--connection-file",
+            &connection_file_str,
+            "--token",
+            "none", // Disable auth for testing
+        ]);
+        c
+    } else {
+        println!("Pre-built binary not found, using cargo run");
+        let mut c = std::process::Command::new("cargo");
+        c.args(&[
+            "run",
+            "--bin",
+            "kcserver",
+            "--",
+            "--connection-file",
+            &connection_file_str,
+            "--token",
+            "none", // Disable auth for testing
+        ]);
+        c
+    };
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.env("RUST_LOG", "info");
+
+    let child = cmd.spawn().expect("Failed to start kcserver");
+
+    // Wait for connection file to be created
+    let mut attempts = 0;
+    while !connection_file_path.exists() && attempts < 100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        attempts += 1;
+    }
+
+    assert!(
+        connection_file_path.exists(),
+        "Connection file was not created within timeout"
+    );
+
+    // Read and parse the connection file
+    let connection_content =
+        std::fs::read_to_string(&connection_file_path).expect("Failed to read connection file");
+
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct ServerConnectionInfoNew {
+        port: Option<u16>,
+        base_path: Option<String>,
+        socket_path: Option<String>,
+        named_pipe: Option<String>,
+        transport: String,
+        server_path: String,
+        server_pid: u32,
+        bearer_token: Option<String>,
+        log_path: Option<String>,
+    }
+
+    let connection_info: ServerConnectionInfoNew =
+        serde_json::from_str(&connection_content).expect("Failed to parse connection file");
+
+    // Verify this is a socket connection
+    assert_eq!(connection_info.transport, "socket");
+    assert!(connection_info.socket_path.is_some());
+    assert!(connection_info.port.is_none());
+    assert!(connection_info.base_path.is_none());
+    assert!(connection_info.named_pipe.is_none());
+
+    let socket_path = connection_info.socket_path.unwrap();
+    
+    // Verify the socket file exists
+    assert!(
+        std::path::Path::new(&socket_path).exists(),
+        "Socket file should exist at: {}",
+        socket_path
+    );
+
+    // Test that we can connect to the socket
+    use std::os::unix::net::UnixStream;
+    let _stream = UnixStream::connect(&socket_path)
+        .expect("Should be able to connect to the Unix socket");
+
+    // Clean up
+    cleanup_spawned_server(child);
+    let _ = std::fs::remove_file(&connection_file_path);
+    let _ = std::fs::remove_file(&socket_path);
+
+    println!("Successfully tested default socket transport with connection file");
+}
+
+#[tokio::test]
+async fn test_server_connection_file_explicit_tcp_transport() {
+    // Test that --transport tcp forces TCP mode even with --connection-file
+    let temp_dir = std::env::temp_dir();
+    let connection_file_path = temp_dir.join(format!(
+        "kallichore_test_tcp_explicit_{}.json",
+        Uuid::new_v4()
+    ));
+    let connection_file_str = connection_file_path.to_string_lossy().to_string();
+
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/kcserver")
+        .with_extension(if cfg!(windows) { "exe" } else { "" });
+
+    let mut cmd = if binary_path.exists() {
+        println!("Using pre-built binary at: {:?}", binary_path);
+        let mut c = std::process::Command::new(&binary_path);
+        c.args(&[
+            "--connection-file",
+            &connection_file_str,
+            "--transport",
+            "tcp",
+            "--token",
+            "none", // Disable auth for testing
+        ]);
+        c
+    } else {
+        println!("Pre-built binary not found, using cargo run");
+        let mut c = std::process::Command::new("cargo");
+        c.args(&[
+            "run",
+            "--bin",
+            "kcserver",
+            "--",
+            "--connection-file",
+            &connection_file_str,
+            "--transport",
+            "tcp",
+            "--token",
+            "none", // Disable auth for testing
+        ]);
+        c
+    };
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.env("RUST_LOG", "info");
+
+    let child = cmd.spawn().expect("Failed to start kcserver");
+
+    // Wait for connection file to be created
+    let mut attempts = 0;
+    while !connection_file_path.exists() && attempts < 100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        attempts += 1;
+    }
+
+    assert!(
+        connection_file_path.exists(),
+        "Connection file was not created within timeout"
+    );
+
+    // Read and parse the connection file
+    let connection_content =
+        std::fs::read_to_string(&connection_file_path).expect("Failed to read connection file");
+
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct ServerConnectionInfoNew {
+        port: Option<u16>,
+        base_path: Option<String>,
+        socket_path: Option<String>,
+        named_pipe: Option<String>,
+        transport: String,
+        server_path: String,
+        server_pid: u32,
+        bearer_token: Option<String>,
+        log_path: Option<String>,
+    }
+
+    let connection_info: ServerConnectionInfoNew =
+        serde_json::from_str(&connection_content).expect("Failed to parse connection file");
+
+    // Verify this is a TCP connection
+    assert_eq!(connection_info.transport, "tcp");
+    assert!(connection_info.port.is_some());
+    assert!(connection_info.base_path.is_some());
+    assert!(connection_info.socket_path.is_none());
+    assert!(connection_info.named_pipe.is_none());
+
+    let port = connection_info.port.unwrap();
+    let base_path = connection_info.base_path.unwrap();
+    
+    // Verify the base path is correctly formatted
+    assert_eq!(base_path, format!("http://127.0.0.1:{}", port));
+
+    // Test that we can make HTTP requests to the server
+    #[allow(trivial_casts)]
+    let client = {
+        let context = swagger::make_context!(
+            ContextBuilder,
+            EmptyContext,
+            None as Option<AuthData>,
+            XSpanIdString::default()
+        );
+
+        let client = kallichore_api::Client::try_new_http(&base_path)
+            .expect("Failed to create HTTP client");
+
+        Box::new(client.with_context(context))
+    };
+
+    // Wait for server to be ready by polling status
+    let mut ready = false;
+    for _attempt in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(200), client.server_status()).await {
+            Ok(Ok(_)) => {
+                ready = true;
+                break;
+            }
+            Ok(Err(_)) | Err(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    assert!(ready, "Server failed to become ready within timeout");
+
+    // Test that we can actually use the server
+    let response = client
+        .server_status()
+        .await
+        .expect("Failed to get server status");
+
+    match response {
+        ServerStatusResponse::ServerStatusAndInformation(status) => {
+            assert_eq!(status.version, env!("CARGO_PKG_VERSION"));
+            assert!(status.sessions >= 0);
+        }
+        ServerStatusResponse::Error(err) => {
+            panic!("Server returned error: {:?}", err);
+        }
+    }
+
+    // Clean up
+    cleanup_spawned_server(child);
+    let _ = std::fs::remove_file(&connection_file_path);
+
+    println!("Successfully tested explicit TCP transport with connection file");
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn test_server_connection_file_explicit_socket_transport() {
+    // Test that --transport socket explicitly requests socket mode
+    let temp_dir = std::env::temp_dir();
+    let connection_file_path = temp_dir.join(format!(
+        "kallichore_test_socket_explicit_{}.json",
+        Uuid::new_v4()
+    ));
+    let connection_file_str = connection_file_path.to_string_lossy().to_string();
+
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/kcserver")
+        .with_extension(if cfg!(windows) { "exe" } else { "" });
+
+    let mut cmd = if binary_path.exists() {
+        println!("Using pre-built binary at: {:?}", binary_path);
+        let mut c = std::process::Command::new(&binary_path);
+        c.args(&[
+            "--connection-file",
+            &connection_file_str,
+            "--transport",
+            "socket",
+            "--token",
+            "none", // Disable auth for testing
+        ]);
+        c
+    } else {
+        println!("Pre-built binary not found, using cargo run");
+        let mut c = std::process::Command::new("cargo");
+        c.args(&[
+            "run",
+            "--bin",
+            "kcserver",
+            "--",
+            "--connection-file",
+            &connection_file_str,
+            "--transport",
+            "socket",
+            "--token",
+            "none", // Disable auth for testing
+        ]);
+        c
+    };
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.env("RUST_LOG", "info");
+
+    let child = cmd.spawn().expect("Failed to start kcserver");
+
+    // Wait for connection file to be created
+    let mut attempts = 0;
+    while !connection_file_path.exists() && attempts < 100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        attempts += 1;
+    }
+
+    assert!(
+        connection_file_path.exists(),
+        "Connection file was not created within timeout"
+    );
+
+    // Read and parse the connection file
+    let connection_content =
+        std::fs::read_to_string(&connection_file_path).expect("Failed to read connection file");
+
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct ServerConnectionInfoNew {
+        port: Option<u16>,
+        base_path: Option<String>,
+        socket_path: Option<String>,
+        named_pipe: Option<String>,
+        transport: String,
+        server_path: String,
+        server_pid: u32,
+        bearer_token: Option<String>,
+        log_path: Option<String>,
+    }
+
+    let connection_info: ServerConnectionInfoNew =
+        serde_json::from_str(&connection_content).expect("Failed to parse connection file");
+
+    // Verify this is a socket connection
+    assert_eq!(connection_info.transport, "socket");
+    assert!(connection_info.socket_path.is_some());
+    assert!(connection_info.port.is_none());
+    assert!(connection_info.base_path.is_none());
+    assert!(connection_info.named_pipe.is_none());
+
+    let socket_path = connection_info.socket_path.unwrap();
+    
+    // Verify the socket file exists
+    assert!(
+        std::path::Path::new(&socket_path).exists(),
+        "Socket file should exist at: {}",
+        socket_path
+    );
+
+    // Test that we can connect to the socket
+    use std::os::unix::net::UnixStream;
+    let _stream = UnixStream::connect(&socket_path)
+        .expect("Should be able to connect to the Unix socket");
+
+    // Clean up
+    cleanup_spawned_server(child);
+    let _ = std::fs::remove_file(&connection_file_path);
+    let _ = std::fs::remove_file(&socket_path);
+
+    println!("Successfully tested explicit socket transport with connection file");
+}
+
+#[tokio::test]
+async fn test_invalid_transport_parameter() {
+    // Test that invalid transport values are rejected
+    let temp_dir = std::env::temp_dir();
+    let connection_file_path = temp_dir.join(format!(
+        "kallichore_test_invalid_{}.json",
+        Uuid::new_v4()
+    ));
+    let connection_file_str = connection_file_path.to_string_lossy().to_string();
+
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/kcserver")
+        .with_extension(if cfg!(windows) { "exe" } else { "" });
+
+    let mut cmd = if binary_path.exists() {
+        let mut c = std::process::Command::new(&binary_path);
+        c.args(&[
+            "--connection-file",
+            &connection_file_str,
+            "--transport",
+            "invalid-transport", // This should be rejected
+            "--token",
+            "none",
+        ]);
+        c
+    } else {
+        let mut c = std::process::Command::new("cargo");
+        c.args(&[
+            "run",
+            "--bin",
+            "kcserver",
+            "--",
+            "--connection-file",
+            &connection_file_str,
+            "--transport",
+            "invalid-transport", // This should be rejected
+            "--token",
+            "none",
+        ]);
+        c
+    };
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output = cmd.output().expect("Failed to run command");
+
+    // Server should exit with error code
+    assert!(!output.status.success());
+
+    // Should not create connection file
+    assert!(!connection_file_path.exists());
+
+    // Clean up (just in case)
+    let _ = std::fs::remove_file(&connection_file_path);
+
+    println!("Successfully tested invalid transport parameter rejection");
 }
