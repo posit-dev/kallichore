@@ -261,4 +261,124 @@ impl ClientSession {
             state.connected = false;
         }
     }
+
+    /// Handle a Unix domain socket connection similarly to WebSocket but using raw sockets
+    #[cfg(unix)]
+    pub async fn handle_domain_socket_connection(&self, mut stream: tokio::net::UnixStream, _session_id: String) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        
+        // Mark the session as connected
+        {
+            let mut state = self.state.write().await;
+            if state.connected {
+                log::warn!(
+                    "[client {}] Received domain socket connection request for already-connected session.",
+                    self.client_id
+                );
+            } else {
+                log::info!("[client {}] Connecting to Unix domain socket", self.client_id);
+            }
+            state.set_connected(true).await
+        }
+
+        // Split the stream for reading and writing
+        let (read_half, mut write_half) = stream.split();
+        let mut reader = BufReader::new(read_half);
+
+        // Interval timer for client pings
+        let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(10));
+
+        // Loop to handle messages from the domain socket and the ZMQ channel
+        loop {
+            let mut buffer = String::new();
+            select! {
+                line_result = reader.read_line(&mut buffer) => {
+                    match line_result {
+                        Ok(0) => {
+                            log::info!("[client {}] Domain socket closed by client", self.client_id);
+                            break;
+                        }
+                        Ok(_) => {
+                            if !buffer.trim().is_empty() {
+                                self.handle_domain_socket_message(buffer.trim().to_string()).await;
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("[client {}] Failed to read from domain socket: {}", self.client_id, e);
+                            break;
+                        }
+                    }
+                },
+                json = self.ws_json_rx.recv() => {
+                    match json {
+                        Ok(json) => {
+                            let json_str = serde_json::to_string(&json).unwrap();
+                            let message = format!("{}\n", json_str);
+                            match write_half.write_all(message.as_bytes()).await {
+                                Ok(_) => {
+                                    if let Err(e) = write_half.flush().await {
+                                        log::error!("[client {}] Failed to flush domain socket: {}", self.client_id, e);
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("[client {}] Failed to write to domain socket: {}", self.client_id, e);
+                                    break;
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            log::error!("[client {}] Failed to receive message for domain socket: {}", self.client_id, e);
+                            break;
+                        }
+                    }
+                },
+                _ = tick.tick() => {
+                    // Send a simple ping over the domain socket
+                    let ping_msg = format!("{{\"type\":\"ping\",\"timestamp\":{}}}\n", 
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs());
+                    
+                    match write_half.write_all(ping_msg.as_bytes()).await {
+                        Ok(_) => {
+                            if let Err(e) = write_half.flush().await {
+                                log::error!("[client {}] Failed to flush ping to domain socket: {}", self.client_id, e);
+                                break;
+                            }
+                            log::trace!("[client {}] Sent ping over domain socket", self.client_id);
+                        }
+                        Err(e) => {
+                            log::error!("[client {}] Failed to send ping to domain socket: {}", self.client_id, e);
+                            break;
+                        }
+                    }
+                },
+                _ = self.disconnect.listen() => {
+                    log::info!("[client {}] Disconnecting domain socket", self.client_id);
+                    
+                    // Send a disconnect message over the domain socket
+                    let close_msg = format!("{{\"type\":\"disconnect\",\"reason\":\"Another client is connecting to this session.\"}}\n");
+                    let _ = write_half.write_all(close_msg.as_bytes()).await;
+                    let _ = write_half.flush().await;
+                    
+                    break;
+                }
+            }
+        }
+
+        // Mark the session as disconnected
+        {
+            let mut state = self.state.write().await;
+            state.connected = false;
+        }
+    }
+
+    /// Handle a message received from the domain socket
+    #[cfg(unix)]
+    async fn handle_domain_socket_message(&self, data: String) {
+        // This is similar to handle_ws_message but for domain socket text
+        self.handle_ws_message(data).await;
+    }
 }

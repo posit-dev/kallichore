@@ -137,7 +137,7 @@ async fn create_tcp_server(
         },
     };
 
-    let server = Server::new(token, idle_shutdown_hours, effective_log_level);
+    let server = Server::new(token, idle_shutdown_hours, effective_log_level, false);
 
     #[cfg(unix)]
     let server_clone = server.clone();
@@ -207,10 +207,12 @@ async fn create_unix_server(
         },
     };
 
-    let server = Server::new(token, idle_shutdown_hours, effective_log_level);
+    let server = Server::new(token, idle_shutdown_hours, effective_log_level, true);
     let server_clone = server.clone();
 
-    let service = WebsocketInterceptorMakeService::new(server);
+    // For domain sockets, use the regular API service instead of the websocket interceptor
+    // since domain sockets handle channels differently
+    let service = kallichore_api::server::MakeService::new(server);
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
 
@@ -257,13 +259,59 @@ pub struct Server<C> {
     log_level: Option<String>,
     // Channel to signal changes to idle configuration
     idle_config_update_tx: Sender<Option<u16>>,
+    // Track whether this server is using Unix domain sockets
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    uses_domain_sockets: bool,
 }
 
 impl<C> Server<C> {
+    #[cfg(unix)]
     pub fn new(
         token: Option<String>,
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
+        uses_domain_sockets: bool,
+    ) -> Self {
+        // Create the list of kernel sessions we'll use throughout the server lifetime
+        let kernel_sessions = Arc::new(RwLock::new(vec![]));
+
+        // Create a shared, thread-safe storage for the idle_shutdown_hours setting
+        let shared_idle_hours = Arc::new(RwLock::new(idle_shutdown_hours));
+
+        // Create channels for idle nudging and configuration updates
+        let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
+        let (idle_config_update_tx, idle_config_update_rx) = mpsc::channel(16);
+
+        // Start the idle poll task
+        Self::idle_poll_task(
+            kernel_sessions.clone(),
+            idle_nudge_rx,
+            shared_idle_hours.clone(),
+            idle_config_update_rx,
+        );
+
+        Server {
+            token,
+            started_time: std::time::Instant::now(),
+            marker: PhantomData,
+            kernel_sessions,
+            client_sessions: Arc::new(RwLock::new(vec![])),
+            reserved_ports: Arc::new(RwLock::new(vec![])),
+            idle_nudge_tx,
+            idle_shutdown_hours: shared_idle_hours,
+            log_level,
+            idle_config_update_tx,
+            uses_domain_sockets,
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+        _uses_domain_sockets: bool,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -926,9 +974,42 @@ where
     async fn channels_upgrade(
         &self,
         session_id: String,
-        _context: &C,
+        context: &C,
     ) -> Result<ChannelsUpgradeResponse, ApiError> {
         info!("upgrade to websocket: {}", session_id);
+
+        // Token validation
+        if !self.validate_token(context) {
+            log::warn!("channels_upgrade: token validation failed for session {}", session_id);
+            return Ok(ChannelsUpgradeResponse::Unauthorized);
+        }
+
+        // Validate the session exists
+        {
+            let kernel_sessions = self.kernel_sessions.read().unwrap();
+            if kernel_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+                .is_none()
+            {
+                let err = KSError::SessionNotFound(session_id.clone());
+                err.log();
+                log::warn!("channels_upgrade: session not found: {}", session_id);
+                return Ok(ChannelsUpgradeResponse::SessionNotFound);
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            if self.uses_domain_sockets {
+                log::info!("channels_upgrade: using domain sockets for session {}", session_id);
+                // For Unix domain sockets, create a new socket and return its path
+                return self.create_domain_socket_channel(session_id).await;
+            }
+        }
+
+        log::info!("channels_upgrade: using WebSocket upgrade for session {}", session_id);
+        // For TCP connections, use the normal WebSocket upgrade response
         Ok(ChannelsUpgradeResponse::UpgradedConnection(
             session_id.clone(),
         ))
@@ -1527,6 +1608,159 @@ impl<C> Server<C> {
             .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
         Ok(response)
     }
+
+    /// Create a Unix domain socket for the session and return its path
+    #[cfg(unix)]
+    async fn create_domain_socket_channel(
+        &self,
+        session_id: String,
+    ) -> Result<ChannelsUpgradeResponse, ApiError> {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::net::UnixListener;
+        use uuid::Uuid;
+
+        log::info!("create_domain_socket_channel: starting for session {}", session_id);
+
+        // Generate a unique socket path in a temp directory
+        let temp_dir = env::temp_dir();
+        // Use a shorter name to avoid hitting Unix domain socket path length limits
+        let socket_name = format!("kc-{}.sock", Uuid::new_v4().simple());
+        let socket_path = temp_dir.join(socket_name);
+
+        info!("Creating Unix domain socket for session '{}' at {:?}", session_id, socket_path);
+
+        // Remove existing socket file if it exists
+        if socket_path.exists() {
+            if let Err(e) = std::fs::remove_file(&socket_path) {
+                log::warn!("Failed to remove existing socket file '{:?}': {}", socket_path, e);
+            }
+        }
+
+        // Create the Unix domain socket
+        match UnixListener::bind(&socket_path) {
+            Ok(listener) => {
+                log::info!("create_domain_socket_channel: successfully created listener for session {}", session_id);
+                
+                // Set appropriate permissions on the socket file (readable/writable by owner)
+                if let Err(e) = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)) {
+                    log::warn!("Failed to set permissions on socket file '{:?}': {}", socket_path, e);
+                }
+
+                info!("Created Unix domain socket for session '{}' at {:?}", session_id, socket_path);
+
+                // Spawn a task to handle connections to this domain socket
+                let kernel_sessions = self.kernel_sessions.clone();
+                let client_sessions = self.client_sessions.clone();
+                let socket_path_for_task = socket_path.clone();
+                let session_id_for_task = session_id.clone();
+
+                tokio::spawn(async move {
+                    Self::handle_domain_socket_connections(
+                        listener,
+                        session_id_for_task,
+                        kernel_sessions,
+                        client_sessions,
+                        socket_path_for_task,
+                    ).await;
+                });
+
+                let path_string = socket_path.to_string_lossy().to_string();
+                log::info!("create_domain_socket_channel: returning path {} for session {}", path_string, session_id);
+
+                // Return the socket path
+                Ok(ChannelsUpgradeResponse::UpgradedConnection(path_string))
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to create Unix domain socket: {}", e);
+                log::error!("create_domain_socket_channel: {}", error_msg);
+                Ok(ChannelsUpgradeResponse::InvalidRequest(
+                    models::Error {
+                        message: error_msg,
+                        code: "domain_socket_error".to_string(),
+                        details: None,
+                    }
+                ))
+            }
+        }
+    }
+
+    /// Handle incoming connections to a Unix domain socket
+    #[cfg(unix)]
+    async fn handle_domain_socket_connections(
+        listener: tokio::net::UnixListener,
+        session_id: String,
+        kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
+        client_sessions: Arc<RwLock<Vec<ClientSession>>>,
+        socket_path: PathBuf,
+    ) {
+        info!("Starting to handle connections for Unix domain socket at {:?}", socket_path);
+
+        while let Ok((stream, _)) = listener.accept().await {
+            info!("Accepted connection on Unix domain socket for session '{}'", session_id);
+
+            // Check if the session already exists and disconnect the existing one
+            {
+                let mut client_sessions_guard = client_sessions.write().unwrap();
+                let index = client_sessions_guard
+                    .iter()
+                    .position(|s| s.connection.session_id == session_id);
+                match index {
+                    Some(pos) => {
+                        let session = client_sessions_guard.get(pos).unwrap();
+                        log::debug!("Disconnecting existing client session for '{}'", session_id);
+                        session.disconnect.notify(usize::MAX);
+                        client_sessions_guard.remove(pos);
+                    }
+                    None => {
+                        log::trace!("No existing client session found for '{}'", session_id);
+                    }
+                }
+            }
+
+            // Create a new client session for this domain socket connection
+            let client_session = {
+                let sessions = kernel_sessions.read().unwrap();
+                let kernel_session = sessions
+                    .iter()
+                    .find(|s| s.connection.session_id == session_id);
+
+                match kernel_session {
+                    Some(session) => {
+                        let ws_zmq_tx = session.ws_zmq_tx.clone();
+                        let ws_json_rx = session.ws_json_rx.clone();
+                        let connection = session.connection.clone();
+                        let state = session.state.clone();
+                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
+                    }
+                    None => {
+                        log::error!("Session '{}' not found when creating domain socket client", session_id);
+                        continue;
+                    }
+                }
+            };
+
+            // Add it to the list of client sessions
+            {
+                let mut client_sessions_guard = client_sessions.write().unwrap();
+                client_sessions_guard.push(client_session.clone());
+            }
+
+            // Handle the domain socket connection
+            let session_id_for_handler = session_id.clone();
+            tokio::spawn(async move {
+                client_session.handle_domain_socket_connection(stream, session_id_for_handler).await;
+            });
+        }
+
+        // Clean up the socket file when we're done
+        if socket_path.exists() {
+            if let Err(e) = std::fs::remove_file(&socket_path) {
+                log::warn!("Failed to remove socket file '{:?}': {}", socket_path, e);
+            }
+        }
+    }
+
+    // ...existing code...
 }
 
 // Implement ApiWebsocketExt trait to provide access to channels_websocket_request

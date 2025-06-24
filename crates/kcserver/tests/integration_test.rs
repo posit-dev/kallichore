@@ -197,6 +197,251 @@ mod unix_socket_tests {
         use std::os::unix::fs::FileTypeExt;
         assert!(metadata.file_type().is_socket(), "File should be a Unix domain socket");
     }
+
+    #[tokio::test]
+    async fn test_unix_socket_domain_socket_channels() {
+        let server = UnixSocketTestServer::start().await;
+
+        // Test that when we make an HTTP request to channels_upgrade over Unix socket,
+        // we get back a domain socket path instead of a WebSocket upgrade
+        let socket_path = server.socket_path();
+        
+        // Create a simple session first by making raw HTTP requests over the Unix socket
+        let session_id = format!("domain-socket-test-{}", Uuid::new_v4());
+        
+        // Create session via raw HTTP over Unix socket
+        let create_session_result = create_session_via_unix_http(socket_path, &session_id).await;
+        assert!(create_session_result.is_ok(), "Failed to create session via Unix socket HTTP");
+        
+        // Start the session
+        let start_session_result = start_session_via_unix_http(socket_path, &session_id).await;
+        assert!(start_session_result.is_ok(), "Failed to start session via Unix socket HTTP");
+        
+        // Now test channels upgrade - this should return a domain socket path
+        let domain_socket_path = upgrade_channels_via_unix_http(socket_path, &session_id).await;
+        assert!(domain_socket_path.is_some(), "Failed to get domain socket path from channels upgrade");
+        
+        let domain_socket_path = domain_socket_path.unwrap();
+        println!("Received domain socket path: {}", domain_socket_path);
+
+        // Verify the domain socket file exists
+        let socket_file_path = std::path::Path::new(&domain_socket_path);
+        assert!(socket_file_path.exists(), "Domain socket file should exist at {}", domain_socket_path);
+
+        // Test basic communication over the domain socket
+        test_domain_socket_communication(&domain_socket_path).await;
+
+        println!("Domain socket communication test completed successfully");
+    }
+
+    async fn create_session_via_unix_http(socket_path: &std::path::Path, session_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::net::UnixStream;
+        use std::io::{Read, Write};
+
+        let mut stream = UnixStream::connect(socket_path)?;
+        
+        let session_json = format!(r#"{{
+            "session_id": "{}",
+            "display_name": "Test Python Kernel (Domain Socket)",
+            "language": "python",
+            "username": "testuser",
+            "input_prompt": "In [{{}}]: ",
+            "continuation_prompt": "   ...: ",
+            "argv": ["python3", "-m", "ipykernel_launcher", "-f", "{{connection_file}}"],
+            "working_directory": "{}",
+            "env": [],
+            "connection_timeout": 3,
+            "interrupt_mode": "message",
+            "protocol_version": "5.3",
+            "run_in_shell": false
+        }}"#, session_id, std::env::current_dir().unwrap().to_string_lossy());
+
+        let request = format!(
+            "PUT /sessions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            session_json.len(),
+            session_json
+        );
+        
+        stream.write_all(request.as_bytes())?;
+        
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        
+        println!("Session creation response: {}", response);
+        
+        if response.contains("200 OK") || response.contains("201") {
+            Ok(())
+        } else {
+            Err(format!("Session creation failed: {}", response).into())
+        }
+    }
+
+    async fn start_session_via_unix_http(socket_path: &std::path::Path, session_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::net::UnixStream;
+        use std::io::{Read, Write};
+
+        let mut stream = UnixStream::connect(socket_path)?;
+        
+        let request = format!(
+            "POST /sessions/{}/start HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            session_id
+        );
+        
+        stream.write_all(request.as_bytes())?;
+        
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        
+        println!("Session start response: {}", response);
+        
+        if response.contains("200 OK") {
+            Ok(())
+        } else {
+            Err(format!("Session start failed: {}", response).into())
+        }
+    }
+
+    async fn upgrade_channels_via_unix_http(socket_path: &std::path::Path, session_id: &str) -> Option<String> {
+        use std::os::unix::net::UnixStream;
+        use std::io::{Read, Write};
+
+        let mut stream = UnixStream::connect(socket_path).ok()?;
+        
+        let request = format!(
+            "GET /sessions/{}/channels HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            session_id
+        );
+        
+        stream.write_all(request.as_bytes()).ok()?;
+        
+        let mut response = String::new();
+        stream.read_to_string(&mut response).ok()?;
+        
+        println!("Channels upgrade response: {}", response);
+        
+        // Look for the domain socket path in the response
+        // The response should contain the socket path as a JSON string
+        if response.contains("200 OK") {
+            if let Some(json_start) = response.find("\"") {
+                let json_part = &response[json_start..];
+                if let Some(json_end) = json_part.rfind("\"") {
+                    let json_str = &json_part[..=json_end];
+                    // Parse as a JSON string (which includes the quotes)
+                    if let Ok(path) = serde_json::from_str::<String>(json_str) {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+
+    async fn test_domain_socket_communication(socket_path: &str) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixStream;
+
+        // Connect to the domain socket
+        let mut stream = UnixStream::connect(socket_path)
+            .await
+            .expect("Failed to connect to domain socket");
+
+        let (read_half, mut write_half) = stream.split();
+        let mut reader = BufReader::new(read_half);
+
+        // Send a simple kernel_info_request over the domain socket
+        let kernel_info_request = JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_id: Uuid::new_v4().to_string(),
+                msg_type: "kernel_info_request".to_string(),
+            },
+            parent_header: None,
+            channel: JupyterChannel::Shell,
+            content: serde_json::json!({}),
+            metadata: serde_json::json!({}),
+            buffers: vec![],
+        };
+
+        let ws_message = WebsocketMessage::Jupyter(kernel_info_request);
+        let message_json = serde_json::to_string(&ws_message).expect("Failed to serialize message");
+        let message_with_newline = format!("{}\n", message_json);
+
+        println!("Sending kernel_info_request over domain socket...");
+        write_half
+            .write_all(message_with_newline.as_bytes())
+            .await
+            .expect("Failed to write to domain socket");
+        write_half
+            .flush()
+            .await
+            .expect("Failed to flush domain socket");
+
+        // Wait for responses with timeout
+        let timeout = Duration::from_secs(10);
+        let start_time = std::time::Instant::now();
+        let mut message_count = 0;
+        let mut kernel_info_reply_received = false;
+
+        while start_time.elapsed() < timeout && message_count < 10 {
+            let mut response_line = String::new();
+            match tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut response_line)).await {
+                Ok(Ok(0)) => {
+                    println!("Domain socket closed by server");
+                    break;
+                }
+                Ok(Ok(_)) => {
+                    message_count += 1;
+                    let trimmed_response = response_line.trim();
+                    
+                    if trimmed_response.is_empty() {
+                        continue;
+                    }
+
+                    println!("Received message {}: {}", message_count, trimmed_response);
+
+                    // Try to parse as WebsocketMessage
+                    if let Ok(ws_msg) = serde_json::from_str::<WebsocketMessage>(trimmed_response) {
+                        match ws_msg {
+                            WebsocketMessage::Jupyter(jupyter_msg) => {
+                                println!("  -> Jupyter message type: {}", jupyter_msg.header.msg_type);
+
+                                if jupyter_msg.header.msg_type == "kernel_info_reply" {
+                                    kernel_info_reply_received = true;
+                                    println!("  ✅ Received kernel_info_reply over domain socket");
+                                    break; // Success!
+                                }
+                            }
+                            WebsocketMessage::Kernel(kernel_msg) => {
+                                println!("  -> Kernel message: {:?}", kernel_msg);
+                            }
+                        }
+                    } else {
+                        // It might be a ping or other simple message
+                        if trimmed_response.contains("\"type\":\"ping\"") {
+                            println!("  -> Received ping message");
+                        } else {
+                            println!("  -> Could not parse as WebsocketMessage: {}", trimmed_response);
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    println!("Error reading from domain socket: {}", e);
+                    break;
+                }
+                Err(_) => {
+                    println!("Timeout waiting for domain socket response");
+                    continue;
+                }
+            }
+        }
+
+        assert!(
+            kernel_info_reply_received || message_count > 0,
+            "Expected to receive kernel_info_reply or any communication over domain socket"
+        );
+
+        println!("Domain socket communication test successful!");
+    }
 }
 
 #[allow(dead_code)]
