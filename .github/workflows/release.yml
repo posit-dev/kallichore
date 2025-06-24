@@ -27,8 +27,11 @@ jobs:
             - name: Checkout sources
               uses: actions/checkout@v4
 
+            # Set up Python. We only do this on Github hosted runners since it
+            # won't work on our self hosted macOS runner.
             - name: Set up Python
               uses: actions/setup-python@v5
+              if: matrix.platform == 'linux' || matrix.platform == 'windows'
               with:
                   python-version: '3.11'
 
@@ -45,11 +48,6 @@ jobs:
               run: |
                   sudo apt-get update
                   sudo apt-get install -y pkg-config libsodium-dev libzmq3-dev
-
-            - name: Install dependencies (macOS)
-              if: matrix.platform == 'macos'
-              run: |
-                  brew install pkg-config libsodium zeromq
 
             - name: Install dependencies (Windows)
               if: matrix.platform == 'windows'
