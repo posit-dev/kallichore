@@ -37,9 +37,11 @@ impl TestServer {
             .unwrap()
             .parent()
             .unwrap()
-            .join("target/debug/kcserver");
+            .join("target/debug/kcserver")
+            .with_extension(if cfg!(windows) { "exe" } else { "" });
 
         let mut cmd = if binary_path.exists() {
+            println!("Using pre-built binary at: {:?}", binary_path);
             let mut c = Command::new(&binary_path);
             c.args(&[
                 "--port",
@@ -49,6 +51,7 @@ impl TestServer {
             ]);
             c
         } else {
+            println!("Pre-built binary not found, using cargo run");
             let mut c = Command::new("cargo");
             c.args(&[
                 "run",
@@ -63,12 +66,12 @@ impl TestServer {
             c
         };
 
-        // Reduce logging noise for faster startup
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
+        // Capture output for debugging if needed
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
 
-        // Reduce log level for faster startup
-        cmd.env("RUST_LOG", "error"); // Even less logging
+        // Reduce log level for faster startup but still capture errors
+        cmd.env("RUST_LOG", "warn");
 
         let child = cmd.spawn().expect("Failed to start kcserver");
 
@@ -83,28 +86,28 @@ impl TestServer {
         test_server.wait_for_ready().await;
         test_server
     }
-
     async fn wait_for_ready(&self) {
         let client = self.create_client().await;
 
-        // Slightly increased timeout but still fast
-        for attempt in 0..40 {
-            // Increased from 25
-            match timeout(Duration::from_millis(150), client.server_status()).await {
-                // Slightly longer timeout
-                Ok(Ok(_)) => return,
+        // Increased timeout for Windows and debug builds
+        for attempt in 0..60 {
+            match timeout(Duration::from_millis(500), client.server_status()).await {
+                Ok(Ok(_)) => {
+                    println!("Server ready after {} attempts", attempt + 1);
+                    return;
+                }
                 Ok(Err(e)) => {
-                    if attempt > 30 {
+                    if attempt > 45 {
                         println!("Server status error on attempt {}: {:?}", attempt, e);
                     }
                 }
                 Err(_) => {
-                    if attempt > 30 {
+                    if attempt > 45 {
                         println!("Server status timeout on attempt {}", attempt);
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(50)).await; // Faster retry
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         panic!("Server failed to start within timeout");
@@ -137,7 +140,22 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        println!("Cleaning up test server (PID: {})", self.child.id());
+
+        // Use kill() which sends SIGTERM on Unix (gentler than SIGKILL)
+        // and terminates gracefully on Windows
+        if let Err(e) = self.child.kill() {
+            println!("Warning: Failed to terminate test server process: {}", e);
+        }
+
+        // Wait for the process to terminate
+        match self.child.wait() {
+            Ok(status) => {
+                println!("Test server process terminated with status: {}", status);
+            }
+            Err(e) => {
+                println!("Warning: Failed to wait for test server process: {}", e);
+            }
+        }
     }
 }
