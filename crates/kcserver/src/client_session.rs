@@ -388,4 +388,153 @@ impl ClientSession {
         // This is similar to handle_ws_message but for domain socket text
         self.handle_ws_message(data).await;
     }
+
+    /// Handle a Windows named pipe stream connection (real implementation)
+    #[cfg(windows)]
+    pub async fn handle_named_pipe_stream<T>(&self, mut stream: T, session_id: String)
+    where
+        T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        log::info!(
+            "[client {}] Named pipe stream handler started for session {}",
+            self.client_id,
+            session_id
+        );
+
+        // Mark the session as connected
+        {
+            let mut state = self.state.write().await;
+            state.set_connected(true).await;
+        } // Create channels for bidirectional communication
+        let (tx_to_pipe, mut rx_from_kernel) = tokio::sync::mpsc::channel::<String>(100);
+        let (tx_to_kernel, rx_from_pipe) = tokio::sync::mpsc::channel::<String>(100);
+
+        // Spawn task to handle kernel messages and send them to the pipe
+        let client_id_clone = self.client_id.clone();
+        let ws_json_rx_clone = self.ws_json_rx.clone();
+        tokio::spawn(async move {
+            let receiver = ws_json_rx_clone;
+            while let Ok(message) = receiver.recv().await {
+                log::debug!(
+                    "[client {}] Sending kernel message to named pipe: {:?}",
+                    client_id_clone,
+                    message
+                );
+                let json_str = serde_json::to_string(&message).unwrap_or_else(|_| "{}".to_string());
+                if tx_to_pipe.send(json_str).await.is_err() {
+                    log::debug!(
+                        "[client {}] Named pipe channel closed, stopping kernel message forwarder",
+                        client_id_clone
+                    );
+                    break;
+                }
+            }
+        });
+
+        // Spawn task to handle pipe messages and send them to the kernel
+        let client_id_clone = self.client_id.clone();
+        let ws_zmq_tx_clone = self.ws_zmq_tx.clone();
+        let mut rx_from_pipe = rx_from_pipe;
+        tokio::spawn(async move {
+            while let Some(message_str) = rx_from_pipe.recv().await {
+                log::debug!(
+                    "[client {}] Received message from named pipe: {}",
+                    client_id_clone,
+                    message_str
+                );
+
+                // Parse and forward to kernel
+                match serde_json::from_str::<WebsocketMessage>(&message_str) {
+                    Ok(ws_message) => match ws_message {
+                        WebsocketMessage::Jupyter(jupyter_message) => {
+                            if let Err(e) = ws_zmq_tx_clone.send(jupyter_message).await {
+                                log::error!(
+                                    "[client {}] Failed to send message to kernel: {}",
+                                    client_id_clone,
+                                    e
+                                );
+                                break;
+                            }
+                        }
+                        WebsocketMessage::Kernel(_) => {
+                            log::debug!(
+                                "[client {}] Received kernel message on named pipe (ignoring)",
+                                client_id_clone
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        log::error!(
+                            "[client {}] Failed to parse named pipe message: {} - {}",
+                            client_id_clone,
+                            e,
+                            message_str
+                        );
+                    }
+                }
+            }
+        });
+
+        // Main I/O loop
+        let mut buffer = [0u8; 4096];
+        loop {
+            tokio::select! {
+                // Read from named pipe
+                read_result = stream.read(&mut buffer) => {
+                    match read_result {
+                        Ok(0) => {
+                            log::info!("[client {}] Named pipe client disconnected", self.client_id);
+                            break;
+                        },
+                        Ok(bytes_read) => {
+                            let received_data = String::from_utf8_lossy(&buffer[..bytes_read]);
+                            log::debug!("[client {}] Received from named pipe: {}", self.client_id, received_data);
+
+                            // Send to kernel handler
+                            if tx_to_kernel.send(received_data.to_string()).await.is_err() {
+                                log::debug!("[client {}] Kernel channel closed", self.client_id);
+                                break;
+                            }
+                        },
+                        Err(e) => {
+                            log::error!("[client {}] Failed to read from named pipe: {}", self.client_id, e);
+                            break;
+                        }
+                    }
+                },
+                // Write to named pipe
+                message = rx_from_kernel.recv() => {
+                    match message {
+                        Some(msg) => {
+                            if let Err(e) = stream.write_all(msg.as_bytes()).await {
+                                log::error!("[client {}] Failed to write to named pipe: {}", self.client_id, e);
+                                break;
+                            }
+                            if let Err(e) = stream.flush().await {
+                                log::error!("[client {}] Failed to flush named pipe: {}", self.client_id, e);
+                                break;
+                            }
+                        },
+                        None => {
+                            log::debug!("[client {}] Kernel message channel closed", self.client_id);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark the session as disconnected
+        {
+            let mut state = self.state.write().await;
+            state.set_connected(false).await;
+        }
+
+        // Notify that this client is disconnecting
+        self.disconnect.notify(usize::MAX);
+
+        log::info!("[client {}] Named pipe connection closed", self.client_id);
+    }
 }
