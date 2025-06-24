@@ -140,7 +140,22 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        println!("Cleaning up test server (PID: {})", self.child.id());
+
+        // Use kill() which sends SIGTERM on Unix (gentler than SIGKILL)
+        // and terminates gracefully on Windows
+        if let Err(e) = self.child.kill() {
+            println!("Warning: Failed to terminate test server process: {}", e);
+        }
+
+        // Wait for the process to terminate
+        match self.child.wait() {
+            Ok(status) => {
+                println!("Test server process terminated with status: {}", status);
+            }
+            Err(e) => {
+                println!("Warning: Failed to wait for test server process: {}", e);
+            }
+        }
     }
 }

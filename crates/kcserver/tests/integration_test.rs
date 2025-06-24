@@ -6,6 +6,12 @@
 //
 
 //! Integration tests for Kallichore server
+//!
+//! ## Running Tests
+//!
+//! - Run normally: `cargo test --package kcserver --test integration_test`
+//! - Run sequentially: `cargo test --package kcserver --test integration_test -- --test-threads=1`
+
 #![allow(missing_docs)]
 
 mod common;
@@ -35,6 +41,25 @@ type ClientContext = swagger::make_context_ty!(
 static PYTHON_EXECUTABLE: OnceCell<Option<String>> = OnceCell::const_new();
 static IPYKERNEL_AVAILABLE: OnceCell<bool> = OnceCell::const_new();
 
+// Helper function to properly clean up a spawned server process
+fn cleanup_spawned_server(mut child: std::process::Child) {
+    println!("Cleaning up spawned server (PID: {})", child.id());
+
+    if let Err(e) = child.kill() {
+        println!("Warning: Failed to terminate spawned server process: {}", e);
+    }
+
+    // Wait for the process to terminate
+    match child.wait() {
+        Ok(status) => {
+            println!("Spawned server process terminated with status: {}", status);
+        }
+        Err(e) => {
+            println!("Warning: Failed to wait for spawned server process: {}", e);
+        }
+    }
+}
+
 async fn get_python_executable() -> Option<String> {
     PYTHON_EXECUTABLE
         .get_or_init(find_python_executable)
@@ -54,16 +79,14 @@ async fn is_ipykernel_available() -> bool {
         .await
 }
 
-// Global shared test server
-static TEST_SERVER: OnceCell<TestServer> = OnceCell::const_new();
-
-async fn get_test_server() -> &'static TestServer {
-    TEST_SERVER.get_or_init(TestServer::start).await
+// Helper function to create a test server for each test
+async fn create_test_server() -> TestServer {
+    TestServer::start().await
 }
 
 #[tokio::test]
 async fn test_server_starts_and_responds() {
-    let server = get_test_server().await;
+    let server = create_test_server().await;
     let client = server.create_client().await;
 
     let response = client
@@ -80,6 +103,9 @@ async fn test_server_starts_and_responds() {
             panic!("Server returned error: {:?}", err);
         }
     }
+
+    // Explicitly drop the server to ensure cleanup
+    drop(server);
 }
 
 #[tokio::test]
@@ -118,7 +144,7 @@ async fn test_python_kernel_session_and_websocket_communication() {
 }
 
 async fn run_python_kernel_test(python_cmd: &str) {
-    let server = get_test_server().await;
+    let server = create_test_server().await;
     let client = server.create_client().await;
 
     // Create a kernel session using Python with ipykernel
@@ -430,6 +456,9 @@ async fn run_python_kernel_test(python_cmd: &str) {
     if let Err(e) = ws_sender.send(Message::Close(None)).await {
         println!("Failed to send close message: {}", e);
     }
+
+    // Explicitly drop the server to ensure cleanup
+    drop(server);
 }
 
 async fn find_python_executable() -> Option<String> {
@@ -519,7 +548,7 @@ async fn test_multiple_kernel_sessions() {
         return;
     }
 
-    let server = get_test_server().await;
+    let server = create_test_server().await;
     let client = server.create_client().await;
 
     // Create multiple kernel sessions
@@ -577,6 +606,9 @@ async fn test_multiple_kernel_sessions() {
         "Successfully created {} unique kernel sessions",
         sessions.len()
     );
+
+    // Explicitly drop the server to ensure cleanup
+    drop(server);
 }
 
 #[tokio::test]
@@ -760,8 +792,7 @@ async fn test_server_starts_with_connection_file() {
     }
 
     // Clean up
-    let _ = child.kill();
-    let _ = child.wait();
+    cleanup_spawned_server(child);
     let _ = std::fs::remove_file(&connection_file_path);
 
     println!(
@@ -983,8 +1014,7 @@ async fn test_server_connection_file_with_auth_token() {
     }
 
     // Clean up
-    let _ = child.kill();
-    let _ = child.wait();
+    cleanup_spawned_server(child);
     let _ = std::fs::remove_file(&connection_file_path);
     let _ = std::fs::remove_file(&token_file_path);
 
@@ -1101,9 +1131,8 @@ async fn test_multiple_servers_different_ports() {
     }
 
     // Clean up
-    for mut server in servers {
-        let _ = server.kill();
-        let _ = server.wait();
+    for server in servers {
+        cleanup_spawned_server(server);
     }
 
     for connection_file_path in &connection_files {
