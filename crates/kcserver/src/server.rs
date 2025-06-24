@@ -980,7 +980,10 @@ where
 
         // Token validation
         if !self.validate_token(context) {
-            log::warn!("channels_upgrade: token validation failed for session {}", session_id);
+            log::warn!(
+                "channels_upgrade: token validation failed for session {}",
+                session_id
+            );
             return Ok(ChannelsUpgradeResponse::Unauthorized);
         }
 
@@ -1002,13 +1005,19 @@ where
         #[cfg(unix)]
         {
             if self.uses_domain_sockets {
-                log::info!("channels_upgrade: using domain sockets for session {}", session_id);
+                log::info!(
+                    "channels_upgrade: using domain sockets for session {}",
+                    session_id
+                );
                 // For Unix domain sockets, create a new socket and return its path
                 return self.create_domain_socket_channel(session_id).await;
             }
         }
 
-        log::info!("channels_upgrade: using WebSocket upgrade for session {}", session_id);
+        log::info!(
+            "channels_upgrade: using WebSocket upgrade for session {}",
+            session_id
+        );
         // For TCP connections, use the normal WebSocket upgrade response
         Ok(ChannelsUpgradeResponse::UpgradedConnection(
             session_id.clone(),
@@ -1619,7 +1628,10 @@ impl<C> Server<C> {
         use tokio::net::UnixListener;
         use uuid::Uuid;
 
-        log::info!("create_domain_socket_channel: starting for session {}", session_id);
+        log::info!(
+            "create_domain_socket_channel: starting for session {}",
+            session_id
+        );
 
         // Generate a unique socket path in a temp directory
         let temp_dir = env::temp_dir();
@@ -1627,26 +1639,45 @@ impl<C> Server<C> {
         let socket_name = format!("kc-{}.sock", Uuid::new_v4().simple());
         let socket_path = temp_dir.join(socket_name);
 
-        info!("Creating Unix domain socket for session '{}' at {:?}", session_id, socket_path);
+        info!(
+            "Creating Unix domain socket for session '{}' at {:?}",
+            session_id, socket_path
+        );
 
         // Remove existing socket file if it exists
         if socket_path.exists() {
             if let Err(e) = std::fs::remove_file(&socket_path) {
-                log::warn!("Failed to remove existing socket file '{:?}': {}", socket_path, e);
+                log::warn!(
+                    "Failed to remove existing socket file '{:?}': {}",
+                    socket_path,
+                    e
+                );
             }
         }
 
         // Create the Unix domain socket
         match UnixListener::bind(&socket_path) {
             Ok(listener) => {
-                log::info!("create_domain_socket_channel: successfully created listener for session {}", session_id);
-                
+                log::info!(
+                    "create_domain_socket_channel: successfully created listener for session {}",
+                    session_id
+                );
+
                 // Set appropriate permissions on the socket file (readable/writable by owner)
-                if let Err(e) = std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)) {
-                    log::warn!("Failed to set permissions on socket file '{:?}': {}", socket_path, e);
+                if let Err(e) =
+                    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+                {
+                    log::warn!(
+                        "Failed to set permissions on socket file '{:?}': {}",
+                        socket_path,
+                        e
+                    );
                 }
 
-                info!("Created Unix domain socket for session '{}' at {:?}", session_id, socket_path);
+                info!(
+                    "Created Unix domain socket for session '{}' at {:?}",
+                    session_id, socket_path
+                );
 
                 // Spawn a task to handle connections to this domain socket
                 let kernel_sessions = self.kernel_sessions.clone();
@@ -1661,11 +1692,16 @@ impl<C> Server<C> {
                         kernel_sessions,
                         client_sessions,
                         socket_path_for_task,
-                    ).await;
+                    )
+                    .await;
                 });
 
                 let path_string = socket_path.to_string_lossy().to_string();
-                log::info!("create_domain_socket_channel: returning path {} for session {}", path_string, session_id);
+                log::info!(
+                    "create_domain_socket_channel: returning path {} for session {}",
+                    path_string,
+                    session_id
+                );
 
                 // Return the socket path
                 Ok(ChannelsUpgradeResponse::UpgradedConnection(path_string))
@@ -1673,13 +1709,11 @@ impl<C> Server<C> {
             Err(e) => {
                 let error_msg = format!("Failed to create Unix domain socket: {}", e);
                 log::error!("create_domain_socket_channel: {}", error_msg);
-                Ok(ChannelsUpgradeResponse::InvalidRequest(
-                    models::Error {
-                        message: error_msg,
-                        code: "domain_socket_error".to_string(),
-                        details: None,
-                    }
-                ))
+                Ok(ChannelsUpgradeResponse::InvalidRequest(models::Error {
+                    message: error_msg,
+                    code: "domain_socket_error".to_string(),
+                    details: None,
+                }))
             }
         }
     }
@@ -1693,10 +1727,16 @@ impl<C> Server<C> {
         client_sessions: Arc<RwLock<Vec<ClientSession>>>,
         socket_path: PathBuf,
     ) {
-        info!("Starting to handle connections for Unix domain socket at {:?}", socket_path);
+        info!(
+            "Starting to handle connections for Unix domain socket at {:?}",
+            socket_path
+        );
 
         while let Ok((stream, _)) = listener.accept().await {
-            info!("Accepted connection on Unix domain socket for session '{}'", session_id);
+            info!(
+                "Accepted connection on Unix domain socket for session '{}'",
+                session_id
+            );
 
             // Check if the session already exists and disconnect the existing one
             {
@@ -1733,7 +1773,10 @@ impl<C> Server<C> {
                         ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
                     }
                     None => {
-                        log::error!("Session '{}' not found when creating domain socket client", session_id);
+                        log::error!(
+                            "Session '{}' not found when creating domain socket client",
+                            session_id
+                        );
                         continue;
                     }
                 }
@@ -1748,7 +1791,9 @@ impl<C> Server<C> {
             // Handle the domain socket connection
             let session_id_for_handler = session_id.clone();
             tokio::spawn(async move {
-                client_session.handle_domain_socket_connection(stream, session_id_for_handler).await;
+                client_session
+                    .handle_domain_socket_connection(stream, session_id_for_handler)
+                    .await;
             });
         }
 

@@ -264,9 +264,13 @@ impl ClientSession {
 
     /// Handle a Unix domain socket connection similarly to WebSocket but using raw sockets
     #[cfg(unix)]
-    pub async fn handle_domain_socket_connection(&self, mut stream: tokio::net::UnixStream, _session_id: String) {
+    pub async fn handle_domain_socket_connection(
+        &self,
+        mut stream: tokio::net::UnixStream,
+        _session_id: String,
+    ) {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        
+
         // Mark the session as connected
         {
             let mut state = self.state.write().await;
@@ -276,7 +280,10 @@ impl ClientSession {
                     self.client_id
                 );
             } else {
-                log::info!("[client {}] Connecting to Unix domain socket", self.client_id);
+                log::info!(
+                    "[client {}] Connecting to Unix domain socket",
+                    self.client_id
+                );
             }
             state.set_connected(true).await
         }
@@ -335,12 +342,12 @@ impl ClientSession {
                 },
                 _ = tick.tick() => {
                     // Send a simple ping over the domain socket
-                    let ping_msg = format!("{{\"type\":\"ping\",\"timestamp\":{}}}\n", 
+                    let ping_msg = format!("{{\"type\":\"ping\",\"timestamp\":{}}}\n",
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs());
-                    
+
                     match write_half.write_all(ping_msg.as_bytes()).await {
                         Ok(_) => {
                             if let Err(e) = write_half.flush().await {
@@ -357,12 +364,12 @@ impl ClientSession {
                 },
                 _ = self.disconnect.listen() => {
                     log::info!("[client {}] Disconnecting domain socket", self.client_id);
-                    
+
                     // Send a disconnect message over the domain socket
                     let close_msg = format!("{{\"type\":\"disconnect\",\"reason\":\"Another client is connecting to this session.\"}}\n");
                     let _ = write_half.write_all(close_msg.as_bytes()).await;
                     let _ = write_half.flush().await;
-                    
+
                     break;
                 }
             }

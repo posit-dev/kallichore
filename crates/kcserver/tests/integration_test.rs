@@ -26,12 +26,12 @@ use uuid::Uuid;
 #[cfg(unix)]
 mod unix_socket_tests {
     use super::*;
+    use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::time::Duration;
     use tempfile::tempdir;
-    use std::io::{Read, Write};
 
     struct UnixSocketTestServer {
         child: std::process::Child,
@@ -82,7 +82,9 @@ mod unix_socket_tests {
             cmd.stderr(Stdio::null());
             cmd.env("RUST_LOG", "error");
 
-            let child = cmd.spawn().expect("Failed to start kcserver with Unix socket");
+            let child = cmd
+                .spawn()
+                .expect("Failed to start kcserver with Unix socket");
 
             let test_server = UnixSocketTestServer {
                 child,
@@ -96,11 +98,13 @@ mod unix_socket_tests {
 
         async fn wait_for_ready(&self) {
             // Wait for the socket file to be created and accept connections
-            for _attempt in 0..60 { // Increased timeout
+            for _attempt in 0..60 {
+                // Increased timeout
                 if self.socket_path.exists() {
                     // Try to connect to the socket and send a simple HTTP request
                     if let Ok(mut stream) = UnixStream::connect(&self.socket_path) {
-                        let request = "GET /status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                        let request =
+                            "GET /status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
                         if stream.write_all(request.as_bytes()).is_ok() {
                             let mut buffer = [0; 1024];
                             if stream.read(&mut buffer).is_ok() {
@@ -112,10 +116,10 @@ mod unix_socket_tests {
                         }
                     }
                 }
-                
+
                 tokio::time::sleep(Duration::from_millis(250)).await; // Slower but more reliable
             }
-            
+
             panic!("Unix socket server failed to start within timeout");
         }
 
@@ -126,13 +130,13 @@ mod unix_socket_tests {
         // Simple method to test basic HTTP connectivity
         async fn test_http_status(&self) -> Result<String, Box<dyn std::error::Error>> {
             let mut stream = UnixStream::connect(&self.socket_path)?;
-            
+
             let request = "GET /status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
             stream.write_all(request.as_bytes())?;
-            
+
             let mut response = String::new();
             stream.read_to_string(&mut response)?;
-            
+
             Ok(response)
         }
     }
@@ -141,7 +145,7 @@ mod unix_socket_tests {
         fn drop(&mut self) {
             let _ = self.child.kill();
             let _ = self.child.wait();
-            
+
             // Clean up socket file
             if self.socket_path.exists() {
                 let _ = std::fs::remove_file(&self.socket_path);
@@ -161,9 +165,17 @@ mod unix_socket_tests {
             .expect("Failed to get HTTP response via Unix socket");
 
         // Check that we got a valid HTTP response
-        assert!(response.contains("HTTP/1.1"), "Expected HTTP response, got: {}", response);
-        assert!(response.contains("200"), "Expected HTTP 200 status, got: {}", response);
-        
+        assert!(
+            response.contains("HTTP/1.1"),
+            "Expected HTTP response, got: {}",
+            response
+        );
+        assert!(
+            response.contains("200"),
+            "Expected HTTP 200 status, got: {}",
+            response
+        );
+
         // The response should contain JSON with version info
         if let Some(json_start) = response.find("{") {
             let json_part = &response[json_start..];
@@ -171,13 +183,13 @@ mod unix_socket_tests {
                 let json_str = &json_part[..=json_end];
                 let status: serde_json::Value = serde_json::from_str(json_str)
                     .expect("Failed to parse JSON response from Unix socket");
-                
+
                 assert_eq!(
                     status["version"].as_str().unwrap_or(""),
                     env!("CARGO_PKG_VERSION"),
                     "Version mismatch in Unix socket response"
                 );
-                
+
                 assert!(
                     status["sessions"].is_number(),
                     "Sessions field should be a number in Unix socket response"
@@ -189,13 +201,15 @@ mod unix_socket_tests {
     #[tokio::test]
     async fn test_unix_socket_creates_socket_file() {
         let server = UnixSocketTestServer::start().await;
-        
+
         // Verify the socket file exists and is a socket
-        let metadata = std::fs::metadata(server.socket_path())
-            .expect("Socket file should exist");
-        
+        let metadata = std::fs::metadata(server.socket_path()).expect("Socket file should exist");
+
         use std::os::unix::fs::FileTypeExt;
-        assert!(metadata.file_type().is_socket(), "File should be a Unix domain socket");
+        assert!(
+            metadata.file_type().is_socket(),
+            "File should be a Unix domain socket"
+        );
     }
 
     #[tokio::test]
@@ -205,28 +219,41 @@ mod unix_socket_tests {
         // Test that when we make an HTTP request to channels_upgrade over Unix socket,
         // we get back a domain socket path instead of a WebSocket upgrade
         let socket_path = server.socket_path();
-        
+
         // Create a simple session first by making raw HTTP requests over the Unix socket
         let session_id = format!("domain-socket-test-{}", Uuid::new_v4());
-        
+
         // Create session via raw HTTP over Unix socket
         let create_session_result = create_session_via_unix_http(socket_path, &session_id).await;
-        assert!(create_session_result.is_ok(), "Failed to create session via Unix socket HTTP");
-        
+        assert!(
+            create_session_result.is_ok(),
+            "Failed to create session via Unix socket HTTP"
+        );
+
         // Start the session
         let start_session_result = start_session_via_unix_http(socket_path, &session_id).await;
-        assert!(start_session_result.is_ok(), "Failed to start session via Unix socket HTTP");
-        
+        assert!(
+            start_session_result.is_ok(),
+            "Failed to start session via Unix socket HTTP"
+        );
+
         // Now test channels upgrade - this should return a domain socket path
         let domain_socket_path = upgrade_channels_via_unix_http(socket_path, &session_id).await;
-        assert!(domain_socket_path.is_some(), "Failed to get domain socket path from channels upgrade");
-        
+        assert!(
+            domain_socket_path.is_some(),
+            "Failed to get domain socket path from channels upgrade"
+        );
+
         let domain_socket_path = domain_socket_path.unwrap();
         println!("Received domain socket path: {}", domain_socket_path);
 
         // Verify the domain socket file exists
         let socket_file_path = std::path::Path::new(&domain_socket_path);
-        assert!(socket_file_path.exists(), "Domain socket file should exist at {}", domain_socket_path);
+        assert!(
+            socket_file_path.exists(),
+            "Domain socket file should exist at {}",
+            domain_socket_path
+        );
 
         // Test basic communication over the domain socket
         test_domain_socket_communication(&domain_socket_path).await;
@@ -234,13 +261,17 @@ mod unix_socket_tests {
         println!("Domain socket communication test completed successfully");
     }
 
-    async fn create_session_via_unix_http(socket_path: &std::path::Path, session_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::net::UnixStream;
+    async fn create_session_via_unix_http(
+        socket_path: &std::path::Path,
+        session_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
 
         let mut stream = UnixStream::connect(socket_path)?;
-        
-        let session_json = format!(r#"{{
+
+        let session_json = format!(
+            r#"{{
             "session_id": "{}",
             "display_name": "Test Python Kernel (Domain Socket)",
             "language": "python",
@@ -254,21 +285,24 @@ mod unix_socket_tests {
             "interrupt_mode": "message",
             "protocol_version": "5.3",
             "run_in_shell": false
-        }}"#, session_id, std::env::current_dir().unwrap().to_string_lossy());
+        }}"#,
+            session_id,
+            std::env::current_dir().unwrap().to_string_lossy()
+        );
 
         let request = format!(
             "PUT /sessions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             session_json.len(),
             session_json
         );
-        
+
         stream.write_all(request.as_bytes())?;
-        
+
         let mut response = String::new();
         stream.read_to_string(&mut response)?;
-        
+
         println!("Session creation response: {}", response);
-        
+
         if response.contains("200 OK") || response.contains("201") {
             Ok(())
         } else {
@@ -276,24 +310,27 @@ mod unix_socket_tests {
         }
     }
 
-    async fn start_session_via_unix_http(socket_path: &std::path::Path, session_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::net::UnixStream;
+    async fn start_session_via_unix_http(
+        socket_path: &std::path::Path,
+        session_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
 
         let mut stream = UnixStream::connect(socket_path)?;
-        
+
         let request = format!(
             "POST /sessions/{}/start HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
             session_id
         );
-        
+
         stream.write_all(request.as_bytes())?;
-        
+
         let mut response = String::new();
         stream.read_to_string(&mut response)?;
-        
+
         println!("Session start response: {}", response);
-        
+
         if response.contains("200 OK") {
             Ok(())
         } else {
@@ -301,24 +338,27 @@ mod unix_socket_tests {
         }
     }
 
-    async fn upgrade_channels_via_unix_http(socket_path: &std::path::Path, session_id: &str) -> Option<String> {
-        use std::os::unix::net::UnixStream;
+    async fn upgrade_channels_via_unix_http(
+        socket_path: &std::path::Path,
+        session_id: &str,
+    ) -> Option<String> {
         use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
 
         let mut stream = UnixStream::connect(socket_path).ok()?;
-        
+
         let request = format!(
             "GET /sessions/{}/channels HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
             session_id
         );
-        
+
         stream.write_all(request.as_bytes()).ok()?;
-        
+
         let mut response = String::new();
         stream.read_to_string(&mut response).ok()?;
-        
+
         println!("Channels upgrade response: {}", response);
-        
+
         // Look for the domain socket path in the response
         // The response should contain the socket path as a JSON string
         if response.contains("200 OK") {
@@ -333,7 +373,7 @@ mod unix_socket_tests {
                 }
             }
         }
-        
+
         None
     }
 
@@ -384,7 +424,9 @@ mod unix_socket_tests {
 
         while start_time.elapsed() < timeout && message_count < 10 {
             let mut response_line = String::new();
-            match tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut response_line)).await {
+            match tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut response_line))
+                .await
+            {
                 Ok(Ok(0)) => {
                     println!("Domain socket closed by server");
                     break;
@@ -392,7 +434,7 @@ mod unix_socket_tests {
                 Ok(Ok(_)) => {
                     message_count += 1;
                     let trimmed_response = response_line.trim();
-                    
+
                     if trimmed_response.is_empty() {
                         continue;
                     }
@@ -403,7 +445,10 @@ mod unix_socket_tests {
                     if let Ok(ws_msg) = serde_json::from_str::<WebsocketMessage>(trimmed_response) {
                         match ws_msg {
                             WebsocketMessage::Jupyter(jupyter_msg) => {
-                                println!("  -> Jupyter message type: {}", jupyter_msg.header.msg_type);
+                                println!(
+                                    "  -> Jupyter message type: {}",
+                                    jupyter_msg.header.msg_type
+                                );
 
                                 if jupyter_msg.header.msg_type == "kernel_info_reply" {
                                     kernel_info_reply_received = true;
@@ -420,7 +465,10 @@ mod unix_socket_tests {
                         if trimmed_response.contains("\"type\":\"ping\"") {
                             println!("  -> Received ping message");
                         } else {
-                            println!("  -> Could not parse as WebsocketMessage: {}", trimmed_response);
+                            println!(
+                                "  -> Could not parse as WebsocketMessage: {}",
+                                trimmed_response
+                            );
                         }
                     }
                 }
