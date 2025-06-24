@@ -42,7 +42,13 @@ enum ListenerType {
     Unix(tokio::net::UnixListener),
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+enum ListenerType {
+    Tcp(std::net::TcpListener),
+    NamedPipe(String), // Store the pipe name for Windows named pipes
+}
+
+#[cfg(not(any(unix, windows)))]
 enum ListenerType {
     Tcp(std::net::TcpListener),
 }
@@ -480,9 +486,7 @@ async fn main() {
         log::info!("Wrote connection details to {}", connection_file_path);
     }
 
-    log::debug!("Starting Kallichore");
-
-    // Convert the listener type and pass to the server
+    log::debug!("Starting Kallichore");    // Convert the listener type and pass to the server
     let server_listener = match listener {
         ListenerType::Tcp(tcp_listener) => {
             tcp_listener
@@ -494,6 +498,8 @@ async fn main() {
         }
         #[cfg(unix)]
         ListenerType::Unix(unix_listener) => server::ServerListener::Unix(unix_listener),
+        #[cfg(windows)]
+        ListenerType::NamedPipe(pipe_name) => server::ServerListener::NamedPipe(pipe_name),
     };
 
     // Pass the listener to the server

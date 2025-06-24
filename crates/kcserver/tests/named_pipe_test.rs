@@ -15,76 +15,116 @@ mod windows_named_pipe_tests {
     struct NamedPipeTestServer {
         child: std::process::Child,
         pipe_name: String,
-    }
-
-    impl NamedPipeTestServer {
+    }    impl NamedPipeTestServer {
         async fn start() -> Self {
-            // Generate a unique pipe name
-            let pipe_name = format!(
-                r"\\.\pipe\kallichore-test-{}",
-                uuid::Uuid::new_v4().simple()
-            );
-
-            // Try to use pre-built binary first, fall back to cargo run
+            // Create a temporary connection file
+            let temp_file = tempfile::NamedTempFile::new()
+                .expect("Failed to create temp connection file");
+            let connection_file_path = temp_file.path().to_string_lossy().to_string();            // Try to use pre-built binary first, fall back to cargo run
             let binary_path = std::env::current_dir()
                 .unwrap()
                 .parent()
                 .unwrap()
                 .parent()
                 .unwrap()
-                .join("target/debug/kcserver");
+                .join("target/debug/kcserver.exe");
 
             let mut cmd = if binary_path.exists() {
+                println!("Using pre-built binary: {:?}", binary_path);
                 let mut c = Command::new(&binary_path);
                 c.args(&[
-                    "--named-pipe",
-                    &pipe_name,
+                    "--connection-file",
+                    &connection_file_path,
+                    "--transport",
+                    "named-pipe",
                     "--token",
                     "none", // Disable auth for testing
                 ]);
                 c
             } else {
+                println!("Pre-built binary not found, using cargo run");
                 let mut c = Command::new("cargo");
                 c.args(&[
                     "run",
                     "--bin",
                     "kcserver",
                     "--",
-                    "--named-pipe",
-                    &pipe_name,
+                    "--connection-file",
+                    &connection_file_path,
+                    "--transport",
+                    "named-pipe",
                     "--token",
                     "none", // Disable auth for testing
                 ]);
-                c
-            };
+                c            };
 
             // Reduce logging noise for faster startup
-            cmd.stdout(Stdio::null());
-            cmd.stderr(Stdio::null());
-            cmd.env("RUST_LOG", "error");
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+            cmd.env("RUST_LOG", "info");
 
-            let child = cmd
+            println!("Starting server with command: {:?}", cmd);
+            println!("Connection file path: {}", connection_file_path);            let child = cmd
                 .spawn()
-                .expect("Failed to start kcserver with named pipe");
-
-            let test_server = NamedPipeTestServer {
-                child,
-                pipe_name: pipe_name.clone(),
+                .expect("Failed to start kcserver with named pipe");// Wait longer for the server to start and write the connection file
+            let mut retries = 0;
+            let connection_info: serde_json::Value = loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                
+                println!("Attempt {}: Checking connection file...", retries + 1);
+                
+                match std::fs::read_to_string(&connection_file_path) {
+                    Ok(content) if !content.trim().is_empty() => {
+                        println!("Connection file content: {}", content);
+                        match serde_json::from_str(&content) {
+                            Ok(info) => break info,
+                            Err(_) if retries < 10 => {
+                                retries += 1;
+                                continue;
+                            }
+                            Err(e) => panic!("Failed to parse connection file: {}", e),
+                        }
+                    }
+                    Ok(content) => {
+                        println!("Connection file exists but is empty. Content: '{}'", content);
+                        if retries < 10 {
+                            retries += 1;
+                            continue;
+                        } else {
+                            panic!("Connection file is empty after 5 seconds");
+                        }
+                    }
+                    Err(e) if retries < 10 => {
+                        println!("Connection file doesn't exist yet: {}", e);
+                        retries += 1;
+                        continue;
+                    }
+                    Err(e) => panic!("Connection file error after 5 seconds: {}", e),
+                }
             };
 
-            test_server.wait_for_ready().await;
+            let pipe_name = connection_info["named_pipe"]
+                .as_str()
+                .expect("Missing named_pipe in connection file")
+                .to_string();            let test_server = NamedPipeTestServer {
+                child,
+                pipe_name,
+            };
+
             test_server
         }
 
+        #[allow(dead_code)]
         async fn wait_for_ready(&self) {
             // Wait a bit for the server to start up
-            // TODO: In a real implementation, we would check if the named pipe exists
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // The pipe name is already read from the connection file
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
 
         fn pipe_name(&self) -> &str {
             &self.pipe_name
         }
+
         async fn stop(mut self) {
             let _ = self.child.kill();
             let _ = self.child.wait();
