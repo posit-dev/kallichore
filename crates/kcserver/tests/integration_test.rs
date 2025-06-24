@@ -1532,6 +1532,8 @@ async fn test_multiple_servers_different_ports() {
                 "0", // Let OS pick the port
                 "--connection-file",
                 &connection_file_str,
+                "--transport",
+                "tcp", // Explicitly request TCP for port testing
                 "--token",
                 "none",
             ]);
@@ -1547,6 +1549,8 @@ async fn test_multiple_servers_different_ports() {
                 "0", // Let OS pick the port
                 "--connection-file",
                 &connection_file_str,
+                "--transport",
+                "tcp", // Explicitly request TCP for port testing
                 "--token",
                 "none",
             ]);
