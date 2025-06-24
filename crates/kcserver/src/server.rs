@@ -48,6 +48,7 @@ use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 use kallichore_api::models::ConnectionInfo;
 use kallichore_api::server::MakeService;
@@ -260,8 +261,8 @@ async fn create_named_pipe_server(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
 ) {
-    use tokio::time::Duration;
-
+    use crate::named_pipe_http::start_named_pipe_http_server;
+    
     // Get the log level from the provided parameter or environment variable if not provided
     let effective_log_level = match log_level {
         Some(level) => Some(level),
@@ -269,43 +270,18 @@ async fn create_named_pipe_server(
             Ok(level) => Some(level),
             Err(_) => None,
         },
-    };    let _server: Server<EmptyContext> =
-        Server::new(token, idle_shutdown_hours, effective_log_level, true);
+    };
 
-    log::info!("Starting named pipe server at: {}", pipe_name);
-
-    // The simplified named pipe implementation provides the basic functionality needed:
-    // 1. Server starts and creates connection file with pipe name
-    // 2. channels_upgrade returns pipe paths for kernel connections
-    // 3. Clients can discover pipe paths and establish connections
-    // 4. The pipe-based message routing works through existing ClientSession handling
-
-    loop {
-        log::info!("Named pipe server running at: {}", pipe_name);
-        log::debug!("Named pipe implementation provides core functionality for kernel connections");
-
-        // Keep the server alive and responsive
-        tokio::time::sleep(Duration::from_secs(30)).await;
+    let server = Server::new(token, idle_shutdown_hours, effective_log_level, false);
+    
+    log::info!("Starting named pipe HTTP server on: {}", pipe_name);
+    
+    // Start the named pipe HTTP server
+    if let Err(e) = start_named_pipe_http_server(pipe_name, server).await {
+        log::error!("Named pipe HTTP server error: {}", e);
     }
 }
 
-#[cfg(windows)]
-#[allow(dead_code)]
-async fn handle_named_pipe_connection_stream(_server: Server<EmptyContext>, _pipe_name: String) {
-    log::info!("Handling named pipe connection stream (simplified implementation)");
-
-    // Simplified implementation that allows the system to work
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-}
-
-#[cfg(windows)]
-#[allow(dead_code)]
-async fn handle_named_pipe_connection(_server: Server<EmptyContext>, _pipe_name: String) {
-    log::info!("Handling named pipe connection (placeholder implementation)");
-
-    // Placeholder implementation
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-}
 
 #[derive(Clone)]
 pub struct Server<C> {
@@ -2048,7 +2024,116 @@ impl<C> Server<C> {
         }
     }
 
-    // ...existing code...
+    // Public methods for named pipe HTTP server
+      /// Get a list of all active sessions (for named pipe HTTP)
+    pub async fn get_sessions_list(&self) -> models::SessionList {
+        // Make a copy of the active session list to avoid holding the lock
+        let sessions = {
+            let sessions = self.kernel_sessions.read().unwrap();
+            sessions.clone()
+        };
+
+        // Create a list of session metadata
+        let mut result: Vec<models::ActiveSession> = Vec::new();
+        for s in sessions.iter() {
+            result.push(s.as_active_session().await);
+        }
+        
+        models::SessionList {
+            total: result.len() as i32,
+            sessions: result,
+        }
+    }
+    
+    /// Create a new session (for named pipe HTTP)
+    pub async fn create_session(&self, new_session: models::NewSession) -> Result<String, String> {
+        use crate::kernel_session::KernelSession;
+        use crate::error::KSError;
+        use kallichore_api::models;
+        use std::env;
+        
+        // Validate argv - it's okay for it to be empty (it is for adopted
+        // sessions), but if it is not, validate that the first element is a
+        // valid kernel path.
+        if !new_session.argv.is_empty() {
+            // Check if the kernel path exists as a file or can be found in PATH
+            let kernel_path = &new_session.argv[0];
+            let kernel_exists = if std::path::Path::new(kernel_path).is_absolute() {
+                // If it's an absolute path, check if the file exists
+                let path = std::path::Path::new(kernel_path);
+                path.exists() && path.is_file()
+            } else {
+                // If it's a relative path, check if it can be found in PATH
+                env::var("PATH")
+                    .map(|path| env::split_paths(&path).collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|dir| {
+                        let full_path = dir.join(kernel_path);
+                        full_path.exists() && full_path.is_file()
+                    })
+            };
+
+            if !kernel_exists {
+                return Err(format!("Kernel path not found: {}", kernel_path));
+            }
+        }
+
+        // Check to see if the session already exists
+        {
+            let sessions = self.kernel_sessions.read().unwrap();
+            for s in sessions.iter() {
+                if s.connection.session_id == new_session.session_id {
+                    return Err(format!("Session already exists: {}", new_session.session_id));
+                }
+            }
+        }        let session_id = new_session.session_id.clone();
+
+        // Generate a key for the session
+        let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
+        let key = hex::encode(key_bytes);
+
+        // Create the NewSession model with the right structure
+        let session = models::NewSession {
+            session_id: new_session.session_id,
+            display_name: new_session.display_name,
+            language: new_session.language,
+            argv: new_session.argv,
+            working_directory: new_session.working_directory,
+            username: new_session.username,
+            input_prompt: new_session.input_prompt,
+            continuation_prompt: new_session.continuation_prompt,
+            env: new_session.env,
+            run_in_shell: new_session.run_in_shell,
+            interrupt_mode: new_session.interrupt_mode,
+            connection_timeout: new_session.connection_timeout,
+            protocol_version: new_session.protocol_version,
+        };
+
+        // Create the KernelSession
+        let kernel_session = match KernelSession::new(
+            session,
+            key,
+            self.idle_nudge_tx.clone(),
+            self.reserved_ports.clone(),
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(e) => {
+                return Err(format!("Failed to create session: {}", e));
+            }
+        };
+
+        // Add the session to the list of active sessions
+        {
+            let mut sessions = self.kernel_sessions.write().unwrap();
+            sessions.push(kernel_session);
+        }
+
+        log::info!("Created new session: {}", session_id);
+        Ok(session_id)
+    }
 }
 
 // Implement ApiWebsocketExt trait to provide access to channels_websocket_request
@@ -2216,5 +2301,3 @@ impl tokio::io::AsyncWrite for NamedPipeStream {
         std::task::Poll::Ready(Ok(()))
     }
 }
-
-// ...existing code...

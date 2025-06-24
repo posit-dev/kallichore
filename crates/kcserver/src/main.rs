@@ -25,6 +25,8 @@ mod jupyter_messages;
 mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
+#[cfg(windows)]
+mod named_pipe_http;
 mod registration_file;
 mod registration_socket;
 mod server;
