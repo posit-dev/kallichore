@@ -486,7 +486,7 @@ async fn main() {
         log::info!("Wrote connection details to {}", connection_file_path);
     }
 
-    log::debug!("Starting Kallichore");    // Convert the listener type and pass to the server
+    log::debug!("Starting Kallichore"); // Convert the listener type and pass to the server
     let server_listener = match listener {
         ListenerType::Tcp(tcp_listener) => {
             tcp_listener

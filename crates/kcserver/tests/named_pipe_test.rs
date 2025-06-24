@@ -15,12 +15,13 @@ mod windows_named_pipe_tests {
     struct NamedPipeTestServer {
         child: std::process::Child,
         pipe_name: String,
-    }    impl NamedPipeTestServer {
+    }
+    impl NamedPipeTestServer {
         async fn start() -> Self {
             // Create a temporary connection file
-            let temp_file = tempfile::NamedTempFile::new()
-                .expect("Failed to create temp connection file");
-            let connection_file_path = temp_file.path().to_string_lossy().to_string();            // Try to use pre-built binary first, fall back to cargo run
+            let temp_file =
+                tempfile::NamedTempFile::new().expect("Failed to create temp connection file");
+            let connection_file_path = temp_file.path().to_string_lossy().to_string(); // Try to use pre-built binary first, fall back to cargo run
             let binary_path = std::env::current_dir()
                 .unwrap()
                 .parent()
@@ -56,7 +57,8 @@ mod windows_named_pipe_tests {
                     "--token",
                     "none", // Disable auth for testing
                 ]);
-                c            };
+                c
+            };
 
             // Reduce logging noise for faster startup
             cmd.stdout(Stdio::piped());
@@ -64,15 +66,16 @@ mod windows_named_pipe_tests {
             cmd.env("RUST_LOG", "info");
 
             println!("Starting server with command: {:?}", cmd);
-            println!("Connection file path: {}", connection_file_path);            let child = cmd
+            println!("Connection file path: {}", connection_file_path);
+            let child = cmd
                 .spawn()
-                .expect("Failed to start kcserver with named pipe");// Wait longer for the server to start and write the connection file
+                .expect("Failed to start kcserver with named pipe"); // Wait longer for the server to start and write the connection file
             let mut retries = 0;
             let connection_info: serde_json::Value = loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
-                
+
                 println!("Attempt {}: Checking connection file...", retries + 1);
-                
+
                 match std::fs::read_to_string(&connection_file_path) {
                     Ok(content) if !content.trim().is_empty() => {
                         println!("Connection file content: {}", content);
@@ -86,7 +89,10 @@ mod windows_named_pipe_tests {
                         }
                     }
                     Ok(content) => {
-                        println!("Connection file exists but is empty. Content: '{}'", content);
+                        println!(
+                            "Connection file exists but is empty. Content: '{}'",
+                            content
+                        );
                         if retries < 10 {
                             retries += 1;
                             continue;
@@ -106,10 +112,8 @@ mod windows_named_pipe_tests {
             let pipe_name = connection_info["named_pipe"]
                 .as_str()
                 .expect("Missing named_pipe in connection file")
-                .to_string();            let test_server = NamedPipeTestServer {
-                child,
-                pipe_name,
-            };
+                .to_string();
+            let test_server = NamedPipeTestServer { child, pipe_name };
 
             test_server
         }
