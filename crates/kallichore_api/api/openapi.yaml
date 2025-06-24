@@ -314,7 +314,7 @@ paths:
       summary: Interrupt session
   /sessions/{session_id}/channels:
     get:
-      operationId: channels-websocket
+      operationId: channels-upgrade
       parameters:
       - explode: false
         in: path
@@ -325,7 +325,13 @@ paths:
         style: simple
       responses:
         "200":
-          description: Upgrade connection to a websocket
+          content:
+            application/json:
+              schema:
+                description: The path to the domain socket or the WebSocket URL for
+                  the session
+                type: string
+          description: Upgraded connection
         "400":
           content:
             application/json:
@@ -340,7 +346,7 @@ paths:
             application/json: {}
           description: Session not found
       security: []
-      summary: Upgrade to a WebSocket for channel communication
+      summary: Upgrade to a WebSocket or domain socket for channel communication
   /shutdown:
     post:
       operationId: shutdown-server

@@ -110,7 +110,7 @@ use swagger::auth::Authorization;
 
 use kallichore_api::server::MakeService;
 use kallichore_api::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ClientHeartbeatResponse,
+    AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
     ConnectionInfoResponse, DeleteSessionResponse, GetServerConfigurationResponse,
     GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
     NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
@@ -215,14 +215,14 @@ where
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
-    /// Upgrade to a WebSocket for channel communication
-    async fn channels_websocket(
+    /// Upgrade to a WebSocket or domain socket for channel communication
+    async fn channels_upgrade(
         &self,
         session_id: String,
         context: &C,
-    ) -> Result<ChannelsWebsocketResponse, ApiError> {
+    ) -> Result<ChannelsUpgradeResponse, ApiError> {
         info!(
-            "channels_websocket(\"{}\") - X-Span-ID: {:?}",
+            "channels_upgrade(\"{}\") - X-Span-ID: {:?}",
             session_id,
             context.get().0.clone()
         );

@@ -482,8 +482,8 @@
     },
     "/sessions/{session_id}/channels": {
       "get": {
-        "operationId": "channels-websocket",
-        "summary": "Upgrade to a WebSocket for channel communication",
+        "operationId": "channels-upgrade",
+        "summary": "Upgrade to a WebSocket or domain socket for channel communication",
         "security": [
           "bearerAuth"
         ],
@@ -499,7 +499,15 @@
         ],
         "responses": {
           "200": {
-            "description": "Upgrade connection to a websocket"
+            "description": "Upgraded connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "description": "The path to the domain socket or the WebSocket URL for the session"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid request",

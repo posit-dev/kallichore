@@ -65,7 +65,7 @@ use crate::websocket_service::WebsocketInterceptorMakeService;
 use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
-    models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
+    models, AdoptSessionResponse, ChannelsUpgradeResponse, ConnectionInfoResponse,
     DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
     NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
@@ -128,7 +128,6 @@ async fn create_tcp_server(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
 ) {
-
     // Get the log level from the provided parameter or environment variable if not provided
     let effective_log_level = match log_level {
         Some(level) => Some(level),
@@ -217,8 +216,7 @@ async fn create_unix_server(
 
     // Create the HTTP server for Unix domain socket using hyperlocal
     let incoming = hyperlocal::SocketIncoming::from_listener(listener);
-    let server_future = hyper::server::Server::builder(incoming)
-        .serve(service);
+    let server_future = hyper::server::Server::builder(incoming).serve(service);
 
     // Set up signal handling for graceful shutdown on SIGTERM and SIGINT
     let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
@@ -925,13 +923,15 @@ where
         ))
     }
 
-    async fn channels_websocket(
+    async fn channels_upgrade(
         &self,
         session_id: String,
         _context: &C,
-    ) -> Result<ChannelsWebsocketResponse, ApiError> {
+    ) -> Result<ChannelsUpgradeResponse, ApiError> {
         info!("upgrade to websocket: {}", session_id);
-        Ok(ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket)
+        Ok(ChannelsUpgradeResponse::UpgradedConnection(
+            session_id.clone(),
+        ))
     }
 
     async fn connection_info(

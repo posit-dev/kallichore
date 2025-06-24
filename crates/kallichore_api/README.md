@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2025-06-09T10:30:16.634931-07:00[America/Los_Angeles]
+- Build date: 2025-06-23T17:07:44.045615-07:00[America/Los_Angeles]
 - Generator version: 7.13.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -91,7 +91,7 @@ cargo run --example client GetServerConfiguration
 cargo run --example client ListSessions
 cargo run --example client ServerStatus
 cargo run --example client ShutdownServer
-cargo run --example client ChannelsWebsocket
+cargo run --example client ChannelsUpgrade
 cargo run --example client ConnectionInfo
 cargo run --example client DeleteSession
 cargo run --example client GetSession
@@ -142,7 +142,7 @@ Method | HTTP request | Description
 [**set-server-configuration**](docs/default_api.md#set-server-configuration) | **POST** /server_configuration | Change the server configuration
 [**shutdown-server**](docs/default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
 [**adopt-session**](docs/default_api.md#adopt-session) | **PUT** /sessions/{session_id}/adopt | Adopt an existing session
-[**channels-websocket**](docs/default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+[**channels-upgrade**](docs/default_api.md#channels-upgrade) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket or domain socket for channel communication
 [**connection-info**](docs/default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 [**delete-session**](docs/default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 [**get-session**](docs/default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details

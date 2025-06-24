@@ -21,7 +21,7 @@ pub use crate::context;
 type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
 
 use crate::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ClientHeartbeatResponse,
+    AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
     ConnectionInfoResponse, DeleteSessionResponse, GetServerConfigurationResponse,
     GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
     NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
@@ -903,7 +903,7 @@ where
                     }
                 }
 
-                // ChannelsWebsocket - GET /sessions/{session_id}/channels
+                // ChannelsUpgrade - GET /sessions/{session_id}/channels
                 hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
                     // Path parameters
                     let path: &str = uri.path();
@@ -928,9 +928,7 @@ where
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
-                    let result = api_impl
-                        .channels_websocket(param_session_id, &context)
-                        .await;
+                    let result = api_impl.channels_upgrade(param_session_id, &context).await;
                     let mut response = Response::new(Body::empty());
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
@@ -947,11 +945,19 @@ where
                     match result {
                         Ok(rsp) => {
                             match rsp {
-                                ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket => {
+                                ChannelsUpgradeResponse::UpgradedConnection(body) => {
                                     *response.status_mut() = StatusCode::from_u16(200)
                                         .expect("Unable to turn 200 into a StatusCode");
+                                    response.headers_mut().insert(
+                                                        CONTENT_TYPE,
+                                                        HeaderValue::from_str("application/json")
+                                                            .expect("Unable to create Content-Type header for application/json"));
+                                    // JSON Body
+                                    let body = serde_json::to_string(&body)
+                                        .expect("impossible to fail to serialize");
+                                    *response.body_mut() = Body::from(body);
                                 }
-                                ChannelsWebsocketResponse::InvalidRequest(body) => {
+                                ChannelsUpgradeResponse::InvalidRequest(body) => {
                                     *response.status_mut() = StatusCode::from_u16(400)
                                         .expect("Unable to turn 400 into a StatusCode");
                                     response.headers_mut().insert(
@@ -963,11 +969,11 @@ where
                                         .expect("impossible to fail to serialize");
                                     *response.body_mut() = Body::from(body);
                                 }
-                                ChannelsWebsocketResponse::Unauthorized => {
+                                ChannelsUpgradeResponse::Unauthorized => {
                                     *response.status_mut() = StatusCode::from_u16(401)
                                         .expect("Unable to turn 401 into a StatusCode");
                                 }
-                                ChannelsWebsocketResponse::SessionNotFound => {
+                                ChannelsUpgradeResponse::SessionNotFound => {
                                     *response.status_mut() = StatusCode::from_u16(404)
                                         .expect("Unable to turn 404 into a StatusCode");
                                 }
@@ -1689,9 +1695,9 @@ impl<T> RequestParser<T> for ApiRequestParser {
             hyper::Method::PUT if path.matched(paths::ID_SESSIONS_SESSION_ID_ADOPT) => {
                 Some("AdoptSession")
             }
-            // ChannelsWebsocket - GET /sessions/{session_id}/channels
+            // ChannelsUpgrade - GET /sessions/{session_id}/channels
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CHANNELS) => {
-                Some("ChannelsWebsocket")
+                Some("ChannelsUpgrade")
             }
             // ConnectionInfo - GET /sessions/{session_id}/connection_info
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_CONNECTION_INFO) => {
