@@ -262,6 +262,7 @@ async fn create_named_pipe_server(
     log_level: Option<String>,
 ) {
     use crate::named_pipe_http::start_named_pipe_http_server;
+    use swagger::{AuthData, Authorization, EmptyContext, Push, XSpanIdString};
 
     // Get the log level from the provided parameter or environment variable if not provided
     let effective_log_level = match log_level {
@@ -272,7 +273,14 @@ async fn create_named_pipe_server(
         },
     };
 
-    let server = Server::new(token, idle_shutdown_hours, effective_log_level, false);
+    // Create the server with a proper context type
+    // Define the context type we need
+    type NamedPipeContext = <<<EmptyContext as Push<XSpanIdString>>::Result as Push<
+        Option<AuthData>,
+    >>::Result as Push<Option<Authorization>>>::Result;
+
+    let server: Server<NamedPipeContext> =
+        Server::new(token, idle_shutdown_hours, effective_log_level, false);
 
     log::info!("Starting named pipe HTTP server on: {}", pipe_name);
 
@@ -2021,121 +2029,6 @@ impl<C> Server<C> {
                 }
             }
         }
-    }
-
-    // Public methods for named pipe HTTP server
-    /// Get a list of all active sessions (for named pipe HTTP)
-    pub async fn get_sessions_list(&self) -> models::SessionList {
-        // Make a copy of the active session list to avoid holding the lock
-        let sessions = {
-            let sessions = self.kernel_sessions.read().unwrap();
-            sessions.clone()
-        };
-
-        // Create a list of session metadata
-        let mut result: Vec<models::ActiveSession> = Vec::new();
-        for s in sessions.iter() {
-            result.push(s.as_active_session().await);
-        }
-
-        models::SessionList {
-            total: result.len() as i32,
-            sessions: result,
-        }
-    }
-
-    /// Create a new session (for named pipe HTTP)
-    pub async fn create_session(&self, new_session: models::NewSession) -> Result<String, String> {
-        use crate::error::KSError;
-        use crate::kernel_session::KernelSession;
-        use kallichore_api::models;
-        use std::env;
-
-        // Validate argv - it's okay for it to be empty (it is for adopted
-        // sessions), but if it is not, validate that the first element is a
-        // valid kernel path.
-        if !new_session.argv.is_empty() {
-            // Check if the kernel path exists as a file or can be found in PATH
-            let kernel_path = &new_session.argv[0];
-            let kernel_exists = if std::path::Path::new(kernel_path).is_absolute() {
-                // If it's an absolute path, check if the file exists
-                let path = std::path::Path::new(kernel_path);
-                path.exists() && path.is_file()
-            } else {
-                // If it's a relative path, check if it can be found in PATH
-                env::var("PATH")
-                    .map(|path| env::split_paths(&path).collect::<Vec<_>>())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .any(|dir| {
-                        let full_path = dir.join(kernel_path);
-                        full_path.exists() && full_path.is_file()
-                    })
-            };
-
-            if !kernel_exists {
-                return Err(format!("Kernel path not found: {}", kernel_path));
-            }
-        }
-
-        // Check to see if the session already exists
-        {
-            let sessions = self.kernel_sessions.read().unwrap();
-            for s in sessions.iter() {
-                if s.connection.session_id == new_session.session_id {
-                    return Err(format!(
-                        "Session already exists: {}",
-                        new_session.session_id
-                    ));
-                }
-            }
-        }
-        let session_id = new_session.session_id.clone();
-
-        // Generate a key for the session
-        let key_bytes = rand::Rng::gen::<[u8; 16]>(&mut rand::thread_rng());
-        let key = hex::encode(key_bytes);
-
-        // Create the NewSession model with the right structure
-        let session = models::NewSession {
-            session_id: new_session.session_id,
-            display_name: new_session.display_name,
-            language: new_session.language,
-            argv: new_session.argv,
-            working_directory: new_session.working_directory,
-            username: new_session.username,
-            input_prompt: new_session.input_prompt,
-            continuation_prompt: new_session.continuation_prompt,
-            env: new_session.env,
-            run_in_shell: new_session.run_in_shell,
-            interrupt_mode: new_session.interrupt_mode,
-            connection_timeout: new_session.connection_timeout,
-            protocol_version: new_session.protocol_version,
-        };
-
-        // Create the KernelSession
-        let kernel_session = match KernelSession::new(
-            session,
-            key,
-            self.idle_nudge_tx.clone(),
-            self.reserved_ports.clone(),
-        )
-        .await
-        {
-            Ok(session) => session,
-            Err(e) => {
-                return Err(format!("Failed to create session: {}", e));
-            }
-        };
-
-        // Add the session to the list of active sessions
-        {
-            let mut sessions = self.kernel_sessions.write().unwrap();
-            sessions.push(kernel_session);
-        }
-
-        log::info!("Created new session: {}", session_id);
-        Ok(session_id)
     }
 }
 
