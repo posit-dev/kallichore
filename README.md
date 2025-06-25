@@ -50,6 +50,123 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
 > [!IMPORTANT]
 > Because we have custom behavior attached to some of the endpoints, we have some manual edits applied to the generated code. These are generally fenced with `--- Start Kallichore ---` and `--- End Kallichore ---` comments. Be sure to reapply these edits (or just revert changes that delete them) if you regenerate the API.
 
+## Connection Methods
+
+Kallichore supports multiple transport mechanisms for client connections, allowing flexibility based on platform capabilities and security requirements. The server can be configured to use TCP, Unix domain sockets, or Windows named pipes.
+
+### TCP (Default)
+
+TCP is the default transport method that works across all platforms.
+
+#### Starting the server with TCP
+
+```bash
+# Use default port (random)
+./target/debug/kcserver
+
+# Use specific port
+./target/debug/kcserver --port 8080
+
+# Create a connection file with TCP
+./target/debug/kcserver --connection-file connection.json --transport tcp
+```
+
+#### Example TCP connection file
+
+When using `--connection-file`, the server writes connection details to the specified file:
+
+```json
+{
+  "port": 54321,
+  "base_path": "http://127.0.0.1:54321",
+  "socket_path": null,
+  "named_pipe": null,
+  "transport": "tcp",
+  "server_path": "/path/to/kcserver",
+  "server_pid": 12345,
+  "bearer_token": "your-auth-token",
+  "log_path": "/path/to/logfile.log"
+}
+```
+
+### Unix Domain Sockets (Unix/Linux/macOS)
+
+Unix domain sockets provide high-performance IPC for local connections on Unix-like systems. They offer better security than TCP as they use filesystem permissions.
+
+#### Starting the server with Unix sockets
+
+```bash
+# Use connection file with socket (default on Unix when using --connection-file)
+./target/debug/kcserver --connection-file connection.json
+
+# Explicitly specify socket transport
+./target/debug/kcserver --connection-file connection.json --transport socket
+
+# Use specific socket path
+./target/debug/kcserver --unix-socket /tmp/kallichore.sock
+```
+
+#### Example Unix socket connection file
+
+```json
+{
+  "port": null,
+  "base_path": null,
+  "socket_path": "/tmp/kallichore-12345.sock",
+  "named_pipe": null,
+  "transport": "socket",
+  "server_path": "/path/to/kcserver",
+  "server_pid": 12345,
+  "bearer_token": "your-auth-token",
+  "log_path": "/path/to/logfile.log"
+}
+```
+
+### Named Pipes (Windows)
+
+Named pipes are the Windows equivalent of Unix domain sockets, providing efficient local IPC on Windows systems.
+
+#### Starting the server with named pipes
+
+```bash
+# Use connection file with named pipe (default on Windows when using --connection-file)
+kcserver.exe --connection-file connection.json
+
+# Explicitly specify named pipe transport
+kcserver.exe --connection-file connection.json --transport named-pipe
+```
+
+#### Example named pipe connection file
+
+```json
+{
+  "port": null,
+  "base_path": null,
+  "socket_path": null,
+  "named_pipe": "\\\\.\\pipe\\kallichore-12345",
+  "transport": "named-pipe",
+  "server_path": "C:\\path\\to\\kcserver.exe",
+  "server_pid": 12345,
+  "bearer_token": "your-auth-token",
+  "log_path": "C:\\path\\to\\logfile.log"
+}
+```
+
+### Transport Selection Rules
+
+The server automatically selects the appropriate transport based on:
+
+1. **Explicit `--transport` flag**: Overrides all other settings
+2. **Connection file mode**: Defaults to `socket` on Unix, `named-pipe` on Windows, `tcp` elsewhere
+3. **Direct mode**: Uses `tcp` when no connection file is specified
+
+### Security Considerations
+
+- **TCP**: Binds to `127.0.0.1` (localhost only) by default for security
+- **Unix Sockets**: Use filesystem permissions for access control
+- **Named Pipes**: Use Windows security descriptors for access control
+- **Authentication**: All transports support bearer token authentication when enabled
+
 ## Repository Structure
 
 ```
