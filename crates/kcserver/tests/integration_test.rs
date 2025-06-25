@@ -39,14 +39,14 @@ mod unix_socket_tests {
     use std::time::Duration;
     use tempfile::tempdir;
 
-    struct UnixSocketTestServer {
+    pub struct UnixSocketTestServer {
         child: std::process::Child,
         socket_path: PathBuf,
         _temp_dir: tempfile::TempDir, // Keep temp dir alive
     }
 
     impl UnixSocketTestServer {
-        async fn start() -> Self {
+        pub async fn start() -> Self {
             let temp_dir = tempdir().expect("Failed to create temp directory");
             let socket_path = temp_dir.path().join("kallichore-test.sock");
 
@@ -129,7 +129,7 @@ mod unix_socket_tests {
             panic!("Unix socket server failed to start within timeout");
         }
 
-        fn socket_path(&self) -> &std::path::Path {
+        pub fn socket_path(&self) -> &std::path::Path {
             &self.socket_path
         }
 
@@ -230,7 +230,8 @@ mod unix_socket_tests {
         let session_id = format!("domain-socket-test-{}", Uuid::new_v4());
 
         // Create session via raw HTTP over Unix socket
-        let create_session_result = create_session_via_unix_http(socket_path, &session_id).await;
+        let create_session_result =
+            create_session_via_unix_http(socket_path, &session_id, "python3").await;
         assert!(
             create_session_result.is_ok(),
             "Failed to create session via Unix socket HTTP"
@@ -267,9 +268,10 @@ mod unix_socket_tests {
         println!("Domain socket communication test completed successfully");
     }
 
-    async fn create_session_via_unix_http(
+    pub async fn create_session_via_unix_http(
         socket_path: &std::path::Path,
         session_id: &str,
+        python_cmd: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
@@ -284,7 +286,7 @@ mod unix_socket_tests {
             "username": "testuser",
             "input_prompt": "In [{{}}]: ",
             "continuation_prompt": "   ...: ",
-            "argv": ["python3", "-m", "ipykernel_launcher", "-f", "{{connection_file}}"],
+            "argv": ["{}", "-m", "ipykernel_launcher", "-f", "{{connection_file}}"],
             "working_directory": "{}",
             "env": [],
             "connection_timeout": 3,
@@ -293,6 +295,7 @@ mod unix_socket_tests {
             "run_in_shell": false
         }}"#,
             session_id,
+            python_cmd,
             std::env::current_dir().unwrap().to_string_lossy()
         );
 
@@ -316,7 +319,7 @@ mod unix_socket_tests {
         }
     }
 
-    async fn start_session_via_unix_http(
+    pub async fn start_session_via_unix_http(
         socket_path: &std::path::Path,
         session_id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -344,7 +347,7 @@ mod unix_socket_tests {
         }
     }
 
-    async fn upgrade_channels_via_unix_http(
+    pub async fn upgrade_channels_via_unix_http(
         socket_path: &std::path::Path,
         session_id: &str,
     ) -> Option<String> {
@@ -597,7 +600,7 @@ async fn test_python_kernel_session_and_websocket_communication() {
                 return;
             }
 
-            run_python_kernel_test(&python_cmd).await;
+            run_python_kernel_websocket_test(&python_cmd).await;
         },
     )
     .await;
@@ -612,7 +615,455 @@ async fn test_python_kernel_session_and_websocket_communication() {
     }
 }
 
-async fn run_python_kernel_test(python_cmd: &str) {
+async fn run_python_kernel_websocket_test(python_cmd: &str) {
+    run_python_kernel_test_transport(python_cmd, TransportType::Websocket).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_python_kernel_session_and_domain_socket_communication() {
+    // Add a global timeout to prevent the test from hanging
+    let test_result = tokio::time::timeout(
+        Duration::from_secs(25), // 25 second max timeout for entire test
+        async {
+            // Use cached Python executable discovery
+            let python_cmd = if let Some(cmd) = get_python_executable().await {
+                cmd
+            } else {
+                println!("Skipping test: No Python executable found");
+                return;
+            };
+
+            // Check if ipykernel is available
+            if !is_ipykernel_available().await {
+                println!("Skipping test: ipykernel not available for {}", python_cmd);
+                return;
+            }
+
+            run_python_kernel_domain_socket_test(&python_cmd).await;
+        },
+    );
+
+    match test_result.await {
+        Ok(_) => {}
+        Err(_) => {
+            panic!("Python kernel domain socket test timed out after 25 seconds");
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn run_python_kernel_domain_socket_test(python_cmd: &str) {
+    // For Unix domain socket test, we need a different server setup
+    use unix_socket_tests::UnixSocketTestServer;
+
+    let server = UnixSocketTestServer::start().await;
+
+    // Since we're using a Unix socket server, we need to handle the HTTP API differently
+    // We'll make direct HTTP calls over the Unix socket like in the existing Unix socket tests
+    let session_id = format!("test-session-{}", Uuid::new_v4());
+
+    // Create session via raw HTTP over Unix socket (using existing helper functions)
+    unix_socket_tests::create_session_via_unix_http(server.socket_path(), &session_id, python_cmd)
+        .await
+        .expect("Failed to create session via Unix socket HTTP");
+
+    // Start the session
+    unix_socket_tests::start_session_via_unix_http(server.socket_path(), &session_id)
+        .await
+        .expect("Failed to start session via Unix socket HTTP");
+
+    // Perform channels upgrade to get domain socket path
+    let domain_socket_path =
+        unix_socket_tests::upgrade_channels_via_unix_http(server.socket_path(), &session_id)
+            .await
+            .expect("Failed to get domain socket path from channels upgrade");
+
+    println!("Domain socket path: {}", domain_socket_path);
+
+    // Verify the domain socket file exists
+    let socket_file_path = std::path::Path::new(&domain_socket_path);
+    assert!(
+        socket_file_path.exists(),
+        "Domain socket file should exist at {}",
+        domain_socket_path
+    );
+
+    // Connect to the domain socket
+    let stream = tokio::net::UnixStream::connect(&domain_socket_path)
+        .await
+        .expect("Failed to connect to domain socket");
+
+    let (read_half, write_half) = stream.into_split();
+    let reader = tokio::io::BufReader::new(read_half);
+    let mut comm = CommunicationChannel::DomainSocket {
+        reader,
+        writer: write_half,
+    };
+
+    // Wait a reasonable amount for the kernel to start
+    println!("Waiting for Python kernel to start up...");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Send a simple kernel_info_request
+    let kernel_info_request = JupyterMessage {
+        header: JupyterMessageHeader {
+            msg_id: Uuid::new_v4().to_string(),
+            msg_type: "kernel_info_request".to_string(),
+        },
+        parent_header: None,
+        channel: JupyterChannel::Shell,
+        content: serde_json::json!({}),
+        metadata: serde_json::json!({}),
+        buffers: vec![],
+    };
+
+    let ws_message = WebsocketMessage::Jupyter(kernel_info_request);
+
+    println!("Sending kernel_info_request to Python kernel over domain socket...");
+    comm.send_message(&ws_message)
+        .await
+        .expect("Failed to send kernel_info_request");
+
+    // Wait a bit for the kernel to respond to info request
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Now send an execute_request to test actual code execution
+    let execute_msg_id = Uuid::new_v4().to_string();
+    let execute_request = JupyterMessage {
+        header: JupyterMessageHeader {
+            msg_id: execute_msg_id.clone(),
+            msg_type: "execute_request".to_string(),
+        },
+        parent_header: None,
+        channel: JupyterChannel::Shell,
+        content: serde_json::json!({
+            "code": "print('Hello from Kallichore domain socket test!')\nresult = 3 + 4\nprint(f'3 + 4 = {result}')",
+            "silent": false,
+            "store_history": true,
+            "user_expressions": {},
+            "allow_stdin": false,
+            "stop_on_error": true
+        }),
+        metadata: serde_json::json!({}),
+        buffers: vec![],
+    };
+
+    let ws_message = WebsocketMessage::Jupyter(execute_request);
+
+    println!("Sending execute_request to Python kernel over domain socket...");
+    comm.send_message(&ws_message)
+        .await
+        .expect("Failed to send execute_request");
+
+    // Listen for responses for a limited time
+    let timeout = Duration::from_secs(15);
+    let start_time = std::time::Instant::now();
+    let mut message_count = 0;
+    let mut received_jupyter_messages = 0;
+    let mut received_kernel_messages = 0;
+    let mut kernel_info_reply_received = false;
+    let mut execute_reply_received = false;
+    let mut stream_output_received = false;
+    let mut expected_output_found = false;
+    let mut collected_output = String::new();
+
+    println!("Listening for Python kernel responses over domain socket...");
+
+    while start_time.elapsed() < timeout && message_count < 30 {
+        println!(
+            "Waiting for message... (elapsed: {:.1}s)",
+            start_time.elapsed().as_secs_f32()
+        );
+
+        match comm.receive_message().await {
+            Ok(Some(text)) => {
+                message_count += 1;
+
+                // Handle special cases first
+                if text == "ping" || text == "pong" || text == "timeout" || text == "empty" {
+                    println!("Received {} message", text);
+                    if text == "timeout" {
+                        continue;
+                    }
+                } else if text.starts_with("binary(") || text.starts_with("other:") {
+                    println!("Received {}", text);
+                } else {
+                    // Regular message
+                    println!("Received message {}: {}", message_count, text);
+
+                    // Try to parse as WebsocketMessage
+                    if let Ok(ws_msg) = serde_json::from_str::<WebsocketMessage>(&text) {
+                        match ws_msg {
+                            WebsocketMessage::Jupyter(jupyter_msg) => {
+                                received_jupyter_messages += 1;
+                                println!(
+                                    "  -> Jupyter message type: {}",
+                                    jupyter_msg.header.msg_type
+                                );
+
+                                // Check for kernel_info_reply
+                                if jupyter_msg.header.msg_type == "kernel_info_reply" {
+                                    kernel_info_reply_received = true;
+                                    println!("  ✅ Received kernel_info_reply over domain socket");
+                                }
+
+                                // Check for execute_reply
+                                if jupyter_msg.header.msg_type == "execute_reply" {
+                                    execute_reply_received = true;
+                                    println!("  ✅ Received execute_reply over domain socket");
+                                    if let Some(status) = jupyter_msg.content.get("status") {
+                                        println!("  -> Execution status: {}", status);
+
+                                        // Ensure the execution was successful
+                                        if status != "ok" {
+                                            panic!("Code execution failed with status: {}", status);
+                                        }
+
+                                        // If we have both successful execution and expected output, we can be confident
+                                        if status == "ok" && expected_output_found {
+                                            println!("  🎉 Domain socket execution completed successfully with expected output!");
+                                            break; // Exit when we have complete success
+                                        }
+                                    } else {
+                                        // Even without status, if we got execute_reply, it's good
+                                        if expected_output_found {
+                                            println!("  🎉 Domain socket execution completed with expected output!");
+                                            break;
+                                        }
+                                    }
+                                    if let Some(execution_count) =
+                                        jupyter_msg.content.get("execution_count")
+                                    {
+                                        println!("  -> Execution count: {}", execution_count);
+                                    }
+                                }
+
+                                // Check for stream output (stdout)
+                                if jupyter_msg.header.msg_type == "stream" {
+                                    stream_output_received = true;
+                                    if let Some(text) = jupyter_msg.content.get("text") {
+                                        let output_text = text.as_str().unwrap_or("");
+                                        println!(
+                                            "  ✅ Received stream output over domain socket: {}",
+                                            output_text
+                                        );
+
+                                        // Collect all output to check comprehensively
+                                        collected_output.push_str(output_text);
+
+                                        // Check if we got the expected output in the collected text
+                                        if collected_output
+                                            .contains("Hello from Kallichore domain socket test!")
+                                            && collected_output.contains("3 + 4 = 7")
+                                        {
+                                            expected_output_found = true;
+                                            println!("  🎉 Found expected domain socket output content in collected output!");
+                                            // Don't break here - let the test continue to get execute_reply
+                                        }
+                                    }
+                                }
+
+                                // Check for status messages (busy/idle)
+                                if jupyter_msg.header.msg_type == "status" {
+                                    if let Some(state) = jupyter_msg.content.get("execution_state")
+                                    {
+                                        println!("  -> Kernel state: {}", state);
+                                    }
+                                }
+                            }
+                            WebsocketMessage::Kernel(kernel_msg) => {
+                                received_kernel_messages += 1;
+                                println!("  -> Kernel message: {:?}", kernel_msg);
+                            }
+                        }
+                    } else if text.contains("\"type\":\"ping\"")
+                        || text.contains("\"type\":\"disconnect\"")
+                    {
+                        println!("  -> Server control message: {}", text);
+                    } else {
+                        println!("  -> Could not parse as WebsocketMessage: {}", text);
+                    }
+                }
+            }
+            Ok(None) => {
+                println!("Domain socket communication channel closed");
+                break;
+            }
+            Err(e) => {
+                println!("Domain socket communication error: {}", e);
+                break;
+            }
+        }
+    }
+
+    println!("Python kernel domain socket test completed:");
+    println!("  - Total messages: {}", message_count);
+    println!("  - Jupyter messages: {}", received_jupyter_messages);
+    println!("  - Kernel messages: {}", received_kernel_messages);
+    println!("  - Kernel info reply: {}", kernel_info_reply_received);
+    println!("  - Execute reply: {}", execute_reply_received);
+    println!("  - Stream output: {}", stream_output_received);
+    println!("  - Expected output found: {}", expected_output_found);
+    println!("  - Collected output: {:?}", collected_output);
+
+    // Make the test robust by requiring specific conditions to be met
+
+    // First, we must receive at least some communication from the kernel
+    assert!(
+        received_jupyter_messages > 0,
+        "Expected to receive Jupyter messages from the Python kernel over domain socket, but got {}. The kernel may not be starting or communicating properly.",
+        received_jupyter_messages
+    );
+
+    // We should get a kernel_info_reply to confirm the kernel is responsive
+    assert!(
+        kernel_info_reply_received,
+        "Expected to receive kernel_info_reply from Python kernel over domain socket, but didn't get one. The kernel is not responding to basic requests."
+    );
+
+    // We should get an execute_reply to confirm code execution capability
+    assert!(
+        execute_reply_received,
+        "Expected to receive execute_reply from Python kernel over domain socket, but didn't get one. The kernel is not executing code properly."
+    );
+
+    // We should get stream output from our print statements
+    assert!(
+        stream_output_received,
+        "Expected to receive stream output from Python kernel over domain socket, but didn't get any. The kernel is not producing stdout output."
+    );
+
+    // Most importantly, we should get the exact output we expect
+    assert!(
+        expected_output_found,
+        "Expected to find 'Hello from Kallichore domain socket test!' and '3 + 4 = 7' in the kernel output over domain socket, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        collected_output
+    );
+
+    // Properly close the communication channel
+    if let Err(e) = comm.close().await {
+        println!("Failed to close domain socket communication channel: {}", e);
+    }
+
+    println!("Domain socket communication test successful!");
+}
+
+#[derive(Clone)]
+#[allow(dead_code)]
+enum TransportType {
+    Websocket,
+    #[cfg(unix)]
+    DomainSocket,
+}
+
+enum CommunicationChannel {
+    Websocket {
+        sender: futures::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            Message,
+        >,
+        receiver: futures::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
+    },
+    #[cfg(unix)]
+    DomainSocket {
+        reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+        writer: tokio::net::unix::OwnedWriteHalf,
+    },
+}
+
+impl CommunicationChannel {
+    async fn send_message(
+        &mut self,
+        message: &WebsocketMessage,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let message_json = serde_json::to_string(message)?;
+
+        match self {
+            CommunicationChannel::Websocket { sender, .. } => {
+                sender.send(Message::Text(message_json)).await?;
+            }
+            #[cfg(unix)]
+            CommunicationChannel::DomainSocket { writer, .. } => {
+                use tokio::io::AsyncWriteExt;
+                let message_with_newline = format!("{}\n", message_json);
+                writer.write_all(message_with_newline.as_bytes()).await?;
+                writer.flush().await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn receive_message(
+        &mut self,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        match self {
+            CommunicationChannel::Websocket { receiver, .. } => {
+                use futures::StreamExt;
+                match tokio::time::timeout(Duration::from_millis(1000), receiver.next()).await {
+                    Ok(Some(Ok(Message::Text(text)))) => Ok(Some(text)),
+                    Ok(Some(Ok(Message::Ping(_)))) => Ok(Some("ping".to_string())),
+                    Ok(Some(Ok(Message::Pong(_)))) => Ok(Some("pong".to_string())),
+                    Ok(Some(Ok(Message::Binary(data)))) => {
+                        Ok(Some(format!("binary({} bytes)", data.len())))
+                    }
+                    Ok(Some(Ok(msg))) => Ok(Some(format!("other: {:?}", msg))),
+                    Ok(Some(Err(e))) => Err(e.into()),
+                    Ok(None) => Ok(None), // Stream closed
+                    Err(_) => Ok(Some("timeout".to_string())),
+                }
+            }
+            #[cfg(unix)]
+            CommunicationChannel::DomainSocket { reader, .. } => {
+                use tokio::io::AsyncBufReadExt;
+                let mut buffer = String::new();
+                match tokio::time::timeout(
+                    Duration::from_millis(1000),
+                    reader.read_line(&mut buffer),
+                )
+                .await
+                {
+                    Ok(Ok(0)) => Ok(None), // Stream closed
+                    Ok(Ok(_)) => {
+                        let trimmed = buffer.trim();
+                        if trimmed.is_empty() {
+                            Ok(Some("empty".to_string()))
+                        } else {
+                            Ok(Some(trimmed.to_string()))
+                        }
+                    }
+                    Ok(Err(e)) => Err(e.into()),
+                    Err(_) => Ok(Some("timeout".to_string())),
+                }
+            }
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match self {
+            CommunicationChannel::Websocket { sender, .. } => {
+                sender.send(Message::Close(None)).await?;
+            }
+            #[cfg(unix)]
+            CommunicationChannel::DomainSocket { writer, .. } => {
+                use tokio::io::AsyncWriteExt;
+                let close_msg =
+                    format!("{{\"type\":\"disconnect\",\"reason\":\"Test completed.\"}}\n");
+                let _ = writer.write_all(close_msg.as_bytes()).await;
+                let _ = writer.flush().await;
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn run_python_kernel_test_transport(python_cmd: &str, transport: TransportType) {
     let server = create_test_server().await;
     let client = server.create_client().await;
 
@@ -670,18 +1121,60 @@ async fn run_python_kernel_test(python_cmd: &str) {
 
     println!("Kernel start response: {:?}", start_response);
 
-    // Connect to the websocket for this session
-    let ws_url = format!(
-        "ws://localhost:{}/sessions/{}/channels",
-        server.port(),
-        session_id
-    );
+    // Create a communication channel based on transport type
+    let mut comm = match transport {
+        TransportType::Websocket => {
+            // Connect to the websocket for this session
+            let ws_url = format!(
+                "ws://localhost:{}/sessions/{}/channels",
+                server.port(),
+                session_id
+            );
 
-    let (ws_stream, _) = connect_async(&ws_url)
-        .await
-        .expect("Failed to connect to websocket");
+            let (ws_stream, _) = connect_async(&ws_url)
+                .await
+                .expect("Failed to connect to websocket");
 
-    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+            let (ws_sender, ws_receiver) = ws_stream.split();
+            CommunicationChannel::Websocket {
+                sender: ws_sender,
+                receiver: ws_receiver,
+            }
+        }
+        #[cfg(unix)]
+        TransportType::DomainSocket => {
+            // Perform channels upgrade to get domain socket path
+            let upgrade_response = client
+                .channels_upgrade(session_id.clone())
+                .await
+                .expect("Failed to upgrade to domain socket");
+
+            let socket_path = match upgrade_response {
+                kallichore_api::ChannelsUpgradeResponse::UpgradedConnection(path) => path,
+                kallichore_api::ChannelsUpgradeResponse::Unauthorized => panic!("Unauthorized"),
+                kallichore_api::ChannelsUpgradeResponse::SessionNotFound => {
+                    panic!("Session not found")
+                }
+                kallichore_api::ChannelsUpgradeResponse::InvalidRequest(err) => {
+                    panic!("Invalid request: {:?}", err)
+                }
+            };
+
+            println!("Domain socket path: {}", socket_path);
+
+            // Connect to the domain socket
+            let stream = tokio::net::UnixStream::connect(&socket_path)
+                .await
+                .expect("Failed to connect to domain socket");
+
+            let (read_half, write_half) = stream.into_split();
+            let reader = tokio::io::BufReader::new(read_half);
+            CommunicationChannel::DomainSocket {
+                reader,
+                writer: write_half,
+            }
+        }
+    };
 
     // Wait a reasonable amount for the kernel to start
     println!("Waiting for Python kernel to start up...");
@@ -701,13 +1194,11 @@ async fn run_python_kernel_test(python_cmd: &str) {
     };
 
     let ws_message = WebsocketMessage::Jupyter(kernel_info_request);
-    let message_json = serde_json::to_string(&ws_message).expect("Failed to serialize message");
 
     println!("Sending kernel_info_request to Python kernel...");
-    ws_sender
-        .send(Message::Text(message_json))
+    comm.send_message(&ws_message)
         .await
-        .expect("Failed to send websocket message");
+        .expect("Failed to send kernel_info_request");
 
     // Wait a bit for the kernel to respond to info request
     tokio::time::sleep(Duration::from_millis(500)).await; // Reduced from 1000ms
@@ -734,13 +1225,11 @@ async fn run_python_kernel_test(python_cmd: &str) {
     };
 
     let ws_message = WebsocketMessage::Jupyter(execute_request);
-    let message_json = serde_json::to_string(&ws_message).expect("Failed to serialize message");
 
     println!("Sending execute_request to Python kernel...");
-    ws_sender
-        .send(Message::Text(message_json))
+    comm.send_message(&ws_message)
         .await
-        .expect("Failed to send websocket message");
+        .expect("Failed to send execute_request");
 
     // Listen for any responses for a limited time
     let timeout = Duration::from_secs(15);
@@ -762,116 +1251,122 @@ async fn run_python_kernel_test(python_cmd: &str) {
             "Waiting for message... (elapsed: {:.1}s)",
             start_time.elapsed().as_secs_f32()
         );
-        match tokio::time::timeout(Duration::from_millis(1000), ws_receiver.next()).await {
-            // Reduced from 3 seconds
-            Ok(Some(Ok(Message::Text(text)))) => {
+
+        match comm.receive_message().await {
+            Ok(Some(text)) => {
                 message_count += 1;
-                println!("Received message {}: {}", message_count, text);
 
-                // Try to parse as WebsocketMessage
-                if let Ok(ws_msg) = serde_json::from_str::<WebsocketMessage>(&text) {
-                    match ws_msg {
-                        WebsocketMessage::Jupyter(jupyter_msg) => {
-                            received_jupyter_messages += 1;
-                            println!("  -> Jupyter message type: {}", jupyter_msg.header.msg_type);
+                // Handle special cases first
+                if text == "ping" || text == "pong" || text == "timeout" || text == "empty" {
+                    println!("Received {} message", text);
+                    if text == "timeout" {
+                        continue;
+                    }
+                } else if text.starts_with("binary(") || text.starts_with("other:") {
+                    println!("Received {}", text);
+                } else {
+                    // Regular message
+                    println!("Received message {}: {}", message_count, text);
 
-                            // Check for kernel_info_reply
-                            if jupyter_msg.header.msg_type == "kernel_info_reply" {
-                                kernel_info_reply_received = true;
-                                println!("  ✅ Received kernel_info_reply");
-                            }
+                    // Try to parse as WebsocketMessage
+                    if let Ok(ws_msg) = serde_json::from_str::<WebsocketMessage>(&text) {
+                        match ws_msg {
+                            WebsocketMessage::Jupyter(jupyter_msg) => {
+                                received_jupyter_messages += 1;
+                                println!(
+                                    "  -> Jupyter message type: {}",
+                                    jupyter_msg.header.msg_type
+                                );
 
-                            // Check for execute_reply
-                            if jupyter_msg.header.msg_type == "execute_reply" {
-                                execute_reply_received = true;
-                                println!("  ✅ Received execute_reply");
-                                if let Some(status) = jupyter_msg.content.get("status") {
-                                    println!("  -> Execution status: {}", status);
-
-                                    // Ensure the execution was successful
-                                    if status != "ok" {
-                                        panic!("Code execution failed with status: {}", status);
-                                    }
-
-                                    // If we have both successful execution and expected output, we can be confident
-                                    if status == "ok" && expected_output_found {
-                                        println!("  🎉 Execution completed successfully with expected output!");
-                                        break; // Exit when we have complete success
-                                    }
-                                } else {
-                                    // Even without status, if we got execute_reply, it's good
-                                    if expected_output_found {
-                                        println!("  🎉 Execution completed with expected output!");
-                                        break;
-                                    }
+                                // Check for kernel_info_reply
+                                if jupyter_msg.header.msg_type == "kernel_info_reply" {
+                                    kernel_info_reply_received = true;
+                                    println!("  ✅ Received kernel_info_reply");
                                 }
-                                if let Some(execution_count) =
-                                    jupyter_msg.content.get("execution_count")
-                                {
-                                    println!("  -> Execution count: {}", execution_count);
-                                }
-                            }
 
-                            // Check for stream output (stdout)
-                            if jupyter_msg.header.msg_type == "stream" {
-                                stream_output_received = true;
-                                if let Some(text) = jupyter_msg.content.get("text") {
-                                    let output_text = text.as_str().unwrap_or("");
-                                    println!("  ✅ Received stream output: {}", output_text);
+                                // Check for execute_reply
+                                if jupyter_msg.header.msg_type == "execute_reply" {
+                                    execute_reply_received = true;
+                                    println!("  ✅ Received execute_reply");
+                                    if let Some(status) = jupyter_msg.content.get("status") {
+                                        println!("  -> Execution status: {}", status);
 
-                                    // Collect all output to check comprehensively
-                                    collected_output.push_str(output_text);
+                                        // Ensure the execution was successful
+                                        if status != "ok" {
+                                            panic!("Code execution failed with status: {}", status);
+                                        }
 
-                                    // Check if we got the expected output in the collected text
-                                    if collected_output.contains("Hello from Kallichore test!")
-                                        && collected_output.contains("2 + 3 = 5")
+                                        // If we have both successful execution and expected output, we can be confident
+                                        if status == "ok" && expected_output_found {
+                                            println!("  🎉 Execution completed successfully with expected output!");
+                                            break; // Exit when we have complete success
+                                        }
+                                    } else {
+                                        // Even without status, if we got execute_reply, it's good
+                                        if expected_output_found {
+                                            println!(
+                                                "  🎉 Execution completed with expected output!"
+                                            );
+                                            break;
+                                        }
+                                    }
+                                    if let Some(execution_count) =
+                                        jupyter_msg.content.get("execution_count")
                                     {
-                                        expected_output_found = true;
-                                        println!("  🎉 Found expected output content in collected output!");
-                                        // Don't break here - let the test continue to get execute_reply
+                                        println!("  -> Execution count: {}", execution_count);
+                                    }
+                                }
+
+                                // Check for stream output (stdout)
+                                if jupyter_msg.header.msg_type == "stream" {
+                                    stream_output_received = true;
+                                    if let Some(text) = jupyter_msg.content.get("text") {
+                                        let output_text = text.as_str().unwrap_or("");
+                                        println!("  ✅ Received stream output: {}", output_text);
+
+                                        // Collect all output to check comprehensively
+                                        collected_output.push_str(output_text);
+
+                                        // Check if we got the expected output in the collected text
+                                        if collected_output.contains("Hello from Kallichore test!")
+                                            && collected_output.contains("2 + 3 = 5")
+                                        {
+                                            expected_output_found = true;
+                                            println!("  🎉 Found expected output content in collected output!");
+                                            // Don't break here - let the test continue to get execute_reply
+                                        }
+                                    }
+                                }
+
+                                // Check for status messages (busy/idle)
+                                if jupyter_msg.header.msg_type == "status" {
+                                    if let Some(state) = jupyter_msg.content.get("execution_state")
+                                    {
+                                        println!("  -> Kernel state: {}", state);
                                     }
                                 }
                             }
-
-                            // Check for status messages (busy/idle)
-                            if jupyter_msg.header.msg_type == "status" {
-                                if let Some(state) = jupyter_msg.content.get("execution_state") {
-                                    println!("  -> Kernel state: {}", state);
-                                }
+                            WebsocketMessage::Kernel(kernel_msg) => {
+                                received_kernel_messages += 1;
+                                println!("  -> Kernel message: {:?}", kernel_msg);
                             }
                         }
-                        WebsocketMessage::Kernel(kernel_msg) => {
-                            received_kernel_messages += 1;
-                            println!("  -> Kernel message: {:?}", kernel_msg);
-                        }
+                    } else if text.contains("\"type\":\"ping\"")
+                        || text.contains("\"type\":\"disconnect\"")
+                    {
+                        println!("  -> Server control message: {}", text);
+                    } else {
+                        println!("  -> Could not parse as WebsocketMessage: {}", text);
                     }
                 }
             }
-            Ok(Some(Ok(Message::Ping(_)))) => {
-                // Pings are normal, don't count them
-                println!("Received ping message");
-            }
-            Ok(Some(Ok(Message::Pong(_)))) => {
-                println!("Received pong message");
-            }
-            Ok(Some(Ok(Message::Binary(data)))) => {
-                println!("Received binary message ({} bytes)", data.len());
-            }
-            Ok(Some(Ok(msg))) => {
-                println!("Received other message type: {:?}", msg);
-            }
-            Ok(Some(Err(e))) => {
-                println!("Websocket error: {}", e);
-                break;
-            }
             Ok(None) => {
-                println!("Websocket closed");
+                println!("Communication channel closed");
                 break;
             }
-            Err(_) => {
-                // Timeout is normal if no messages
-                println!("Timeout waiting for message");
-                continue;
+            Err(e) => {
+                println!("Communication error: {}", e);
+                break;
             }
         }
     }
@@ -921,9 +1416,9 @@ async fn run_python_kernel_test(python_cmd: &str) {
     );
 
     // This test should complete without hanging even if kernel doesn't respond
-    // Properly close the websocket connection
-    if let Err(e) = ws_sender.send(Message::Close(None)).await {
-        println!("Failed to send close message: {}", e);
+    // Properly close the communication channel
+    if let Err(e) = comm.close().await {
+        println!("Failed to close communication channel: {}", e);
     }
 
     // Explicitly drop the server to ensure cleanup
