@@ -320,6 +320,10 @@ pub struct Server<C> {
     #[cfg(unix)]
     #[allow(dead_code)]
     uses_domain_sockets: bool,
+    // Track active domain socket paths for cleanup
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    active_domain_sockets: Arc<RwLock<Vec<PathBuf>>>,
     // Track whether this server is using named pipes
     #[cfg(windows)]
     #[allow(dead_code)]
@@ -364,6 +368,8 @@ impl<C> Server<C> {
             log_level,
             idle_config_update_tx,
             uses_domain_sockets,
+            #[cfg(unix)]
+            active_domain_sockets: Arc::new(RwLock::new(vec![])),
         }
     }
 
@@ -751,7 +757,6 @@ impl<C> Server<C> {
     /// Validate the bearer token in the context.
     ///
     /// # Arguments
-    ///
     /// - `context`: The context to validate.
     ///
     /// # Returns
@@ -1067,6 +1072,9 @@ where
         // Remove the session from the list
         sessions.remove(index.unwrap());
 
+        // Clean up any domain sockets associated with this session
+        self.cleanup_session_domain_sockets(&session_id);
+
         Ok(DeleteSessionResponse::SessionDeleted(
             serde_json::Value::Null,
         ))
@@ -1223,6 +1231,8 @@ where
                 system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[process_id]));
                 if let Some(process) = system.process(process_id) {
                     if process.kill() {
+                        // Clean up any domain sockets associated with this session
+                        self.cleanup_session_domain_sockets(&session_id);
                         Ok(KillSessionResponse::Killed(serde_json::Value::Null))
                     } else {
                         let err = KSError::ProcessNotFound(pid, session_id.clone());
@@ -1493,6 +1503,9 @@ where
         if !self.validate_token(context) {
             return Ok(ShutdownServerResponse::Unauthorized);
         }
+
+        // Clean up all domain sockets before shutting down
+        self.cleanup_all_domain_sockets();
 
         // Create a vector of all the kernel sessions that are currently running
         let running_sessions = {
@@ -1775,6 +1788,12 @@ impl<C> Server<C> {
                     session_id
                 );
 
+                // Register the socket path for cleanup
+                {
+                    let mut active_sockets = self.active_domain_sockets.write().unwrap();
+                    active_sockets.push(socket_path.clone());
+                }
+
                 // Set appropriate permissions on the socket file (readable/writable by owner)
                 if let Err(e) =
                     std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
@@ -1796,6 +1815,7 @@ impl<C> Server<C> {
                 let client_sessions = self.client_sessions.clone();
                 let socket_path_for_task = socket_path.clone();
                 let session_id_for_task = session_id.clone();
+                let active_sockets_for_cleanup = self.active_domain_sockets.clone();
 
                 tokio::spawn(async move {
                     Self::handle_domain_socket_connections(
@@ -1804,6 +1824,7 @@ impl<C> Server<C> {
                         kernel_sessions,
                         client_sessions,
                         socket_path_for_task,
+                        active_sockets_for_cleanup,
                     )
                     .await;
                 });
@@ -1838,6 +1859,7 @@ impl<C> Server<C> {
         kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
         client_sessions: Arc<RwLock<Vec<ClientSession>>>,
         socket_path: PathBuf,
+        active_sockets: Arc<RwLock<Vec<PathBuf>>>,
     ) {
         info!(
             "Starting to handle connections for Unix domain socket at {:?}",
@@ -1883,7 +1905,13 @@ impl<C> Server<C> {
                         let connection = session.connection.clone();
                         let state = session.state.clone();
                         let socket_path_str = socket_path.to_string_lossy().to_string();
-                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state, Some(socket_path_str))
+                        ClientSession::new(
+                            connection,
+                            ws_json_rx,
+                            ws_zmq_tx,
+                            state,
+                            Some(socket_path_str),
+                        )
                     }
                     None => {
                         log::error!(
@@ -1910,10 +1938,31 @@ impl<C> Server<C> {
             });
         }
 
-        // Clean up the socket file when we're done
+        // Clean up the socket file when we're done and unregister it
+        Self::cleanup_domain_socket(&socket_path, &active_sockets);
+    }
+
+    /// Clean up a Unix domain socket file and unregister it from active sockets
+    #[cfg(unix)]
+    fn cleanup_domain_socket(
+        socket_path: &PathBuf,
+        active_sockets: &Arc<RwLock<Vec<PathBuf>>>,
+    ) {
+        // Remove from active sockets list
+        {
+            let mut sockets = active_sockets.write().unwrap();
+            if let Some(pos) = sockets.iter().position(|path| path == socket_path) {
+                sockets.remove(pos);
+                log::debug!("Unregistered domain socket: {:?}", socket_path);
+            }
+        }
+
+        // Remove the socket file
         if socket_path.exists() {
             if let Err(e) = std::fs::remove_file(&socket_path) {
                 log::warn!("Failed to remove socket file '{:?}': {}", socket_path, e);
+            } else {
+                log::info!("Cleaned up domain socket file: {:?}", socket_path);
             }
         }
     }
@@ -2019,7 +2068,9 @@ impl<C> Server<C> {
                     let ws_json_rx = session.ws_json_rx.clone();
                     let connection = session.connection.clone();
                     let state = session.state.clone();
-                    Some(ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state, None))
+                    Some(ClientSession::new(
+                        connection, ws_json_rx, ws_zmq_tx, state, None,
+                    ))
                 }
                 None => {
                     log::error!("Kernel session {} not found for named pipe", session_id);
@@ -2078,6 +2129,9 @@ where
 /// Handle shutdown signal by gracefully shutting down all sessions and exiting
 #[cfg(unix)]
 async fn handle_shutdown_signal<C>(server: Server<C>) {
+    // Clean up all domain sockets first
+    server.cleanup_all_domain_sockets();
+
     // Get all running sessions
     let running_sessions = {
         let kernel_sessions = server.kernel_sessions.read().unwrap().clone();
@@ -2101,6 +2155,50 @@ async fn handle_shutdown_signal<C>(server: Server<C>) {
             log::error!("Error during shutdown: {}", e);
             // Force exit if graceful shutdown fails
             std::process::exit(1);
+        }
+    }
+}
+
+impl<C> Server<C> {
+    /// Clean up domain sockets associated with a specific session
+    fn cleanup_session_domain_sockets(&self, session_id: &str) {
+        #[cfg(unix)]
+        {
+            // Find and clean up any domain sockets associated with this session
+            // Note: We don't have a direct session_id -> socket_path mapping,
+            // but we clean up sockets when client sessions disconnect
+            let client_sessions = self.client_sessions.read().unwrap();
+            for client_session in client_sessions.iter() {
+                if client_session.connection.session_id == session_id {
+                    if let Some(socket_path_str) = &client_session.socket_path {
+                        let socket_path = PathBuf::from(socket_path_str);
+                        Self::cleanup_domain_socket(&socket_path, &self.active_domain_sockets);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Clean up all active domain sockets (called during server shutdown)
+    fn cleanup_all_domain_sockets(&self) {
+        #[cfg(unix)]
+        {
+            let active_sockets = self.active_domain_sockets.read().unwrap().clone();
+            for socket_path in active_sockets {
+                log::info!("Cleaning up domain socket on shutdown: {:?}", socket_path);
+                if socket_path.exists() {
+                    if let Err(e) = std::fs::remove_file(&socket_path) {
+                        log::warn!("Failed to remove socket file '{:?}' during shutdown: {}", socket_path, e);
+                    } else {
+                        log::info!("Successfully removed domain socket: {:?}", socket_path);
+                    }
+                }
+            }
+            // Clear the list
+            {
+                let mut sockets = self.active_domain_sockets.write().unwrap();
+                sockets.clear();
+            }
         }
     }
 }
