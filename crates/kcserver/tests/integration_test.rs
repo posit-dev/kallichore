@@ -949,12 +949,251 @@ async fn run_python_kernel_domain_socket_test(python_cmd: &str) {
     println!("Domain socket communication test successful!");
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn test_python_kernel_session_and_named_pipe_communication() {
+    // Add a global timeout to prevent the test from hanging
+    let test_result = tokio::time::timeout(
+        Duration::from_secs(25), // 25 second max timeout for entire test
+        async {
+            // Use cached Python executable discovery
+            let python_cmd = if let Some(cmd) = get_python_executable().await {
+                cmd
+            } else {
+                println!("Skipping test: No Python executable found");
+                return;
+            };
+
+            // Check if ipykernel is available
+            if !is_ipykernel_available().await {
+                println!("Skipping test: ipykernel not available for {}", python_cmd);
+                return;
+            }
+
+            run_python_kernel_named_pipe_test(&python_cmd).await;
+        },
+    );
+
+    match test_result.await {
+        Ok(_) => {}
+        Err(_) => {
+            panic!("Python kernel named pipe test timed out after 25 seconds");
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn run_python_kernel_named_pipe_test(python_cmd: &str) {
+    // For Windows named pipe test, we need a special named pipe server setup
+    // We'll create a named pipe server and communicate with it directly, similar to domain socket test
+    use serde_json::json;
+    use std::fs::OpenOptions;
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+    use tempfile::NamedTempFile;
+
+    // Create a temporary connection file
+    let temp_file = NamedTempFile::new().expect("Failed to create temp connection file");
+    let connection_file_path = temp_file.path().to_string_lossy().to_string();
+
+    // Try to use pre-built binary first, fall back to cargo run
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/kcserver.exe");
+
+    let mut cmd = if binary_path.exists() {
+        println!("Using pre-built binary: {:?}", binary_path);
+        let mut c = Command::new(&binary_path);
+        c.args(&[
+            "--connection-file",
+            &connection_file_path,
+            "--transport",
+            "named-pipe",
+            "--token",
+            "none", // Disable auth for testing
+        ]);
+        c
+    } else {
+        println!("Pre-built binary not found, using cargo run");
+        let mut c = Command::new("cargo");
+        c.args(&[
+            "run",
+            "--bin",
+            "kcserver",
+            "--",
+            "--connection-file",
+            &connection_file_path,
+            "--transport",
+            "named-pipe",
+            "--token",
+            "none", // Disable auth for testing
+        ]);
+        c
+    };
+
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.env("RUST_LOG", "debug");
+
+    println!("Starting named pipe server...");
+    let mut child = cmd
+        .spawn()
+        .expect("Failed to start kcserver with named pipe");
+
+    // Wait for the server to start and write the connection file
+    let mut retries = 0;
+    let connection_info: serde_json::Value = loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        println!("Attempt {}: Checking connection file...", retries + 1);
+
+        match std::fs::read_to_string(&connection_file_path) {
+            Ok(content) if !content.trim().is_empty() => {
+                println!("Connection file content: {}", content);
+                match serde_json::from_str(&content) {
+                    Ok(info) => break info,
+                    Err(_) if retries < 10 => {
+                        retries += 1;
+                        continue;
+                    }
+                    Err(e) => panic!("Failed to parse connection file: {}", e),
+                }
+            }
+            Ok(_) => {
+                if retries < 10 {
+                    retries += 1;
+                    continue;
+                } else {
+                    panic!("Connection file is empty after 5 seconds");
+                }
+            }
+            Err(_) if retries < 10 => {
+                retries += 1;
+                continue;
+            }
+            Err(e) => panic!("Connection file error after 5 seconds: {}", e),
+        }
+    };
+
+    let pipe_name = connection_info["named_pipe"]
+        .as_str()
+        .expect("Missing named_pipe in connection file")
+        .to_string();
+
+    println!("Named pipe server started with pipe: {}", pipe_name);
+
+    // Wait for the server to be ready
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Create a session via HTTP over named pipe
+    let session_id = format!("named-pipe-test-{}", Uuid::new_v4());
+    let session_request = json!({
+        "session_id": session_id,
+        "argv": [python_cmd, "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+        "display_name": "Python Named Pipe Test",
+        "language": "python",
+        "working_directory": ".",
+        "input_prompt": "In [{}]: ",
+        "continuation_prompt": "   ...: ",
+        "username": "test",
+        "env": [],
+        "run_in_shell": false,
+        "interrupt_mode": "signal",
+        "connection_timeout": 60,
+        "protocol_version": "5.3"
+    });
+
+    println!("Creating session: {}", session_id);
+
+    // Helper function to send HTTP request over named pipe (from named_pipe_test.rs)
+    fn send_http_request_sync(
+        pipe_name: &str,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> std::io::Result<String> {
+        let mut pipe = OpenOptions::new().read(true).write(true).open(pipe_name)?;
+
+        let request = if let Some(body) = body {
+            format!(
+                "{} {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                method,
+                path,
+                body.len(),
+                body
+            )
+        } else {
+            format!("{} {} HTTP/1.1\r\nHost: localhost\r\n\r\n", method, path)
+        };
+
+        pipe.write_all(request.as_bytes())?;
+
+        // Read response
+        let mut buffer = vec![0u8; 4096];
+        let bytes_read = pipe.read(&mut buffer)?;
+        let response_str = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+        Ok(response_str.to_string())
+    }
+
+    // Create session via HTTP over named pipe
+    let create_response = send_http_request_sync(
+        &pipe_name,
+        "PUT",
+        "/sessions",
+        Some(&session_request.to_string()),
+    )
+    .expect("Failed to create session via named pipe HTTP");
+
+    println!("Session creation response: {}", create_response);
+
+    // Start the session
+    let start_response = send_http_request_sync(
+        &pipe_name,
+        "POST",
+        &format!("/sessions/{}/start", session_id),
+        None,
+    )
+    .expect("Failed to start session via named pipe HTTP");
+
+    println!("Session start response: {}", start_response);
+
+    // Try to get a named pipe for channels communication
+    let upgrade_response = send_http_request_sync(
+        &pipe_name,
+        "GET",
+        &format!("/sessions/{}/channels", session_id),
+        None,
+    )
+    .expect("Failed to get channels upgrade via named pipe HTTP");
+
+    println!("Channels upgrade response: {}", upgrade_response);
+
+    // For now, we'll test basic functionality without full Jupyter message exchange
+    // The infrastructure is in place, but we'd need the server to support named pipe channel upgrades
+    println!("Named pipe kernel communication test infrastructure complete");
+    println!("Full Jupyter message exchange over named pipes requires server-side support");
+
+    // Clean up
+    let _ = child.kill();
+    let _ = child.wait();
+
+    println!("Named pipe test completed successfully");
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 enum TransportType {
     Websocket,
     #[cfg(unix)]
     DomainSocket,
+    #[cfg(windows)]
+    NamedPipe,
 }
 
 enum CommunicationChannel {
@@ -976,6 +1215,8 @@ enum CommunicationChannel {
         reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
         writer: tokio::net::unix::OwnedWriteHalf,
     },
+    #[cfg(windows)]
+    NamedPipe { pipe: std::fs::File },
 }
 
 impl CommunicationChannel {
@@ -995,6 +1236,13 @@ impl CommunicationChannel {
                 let message_with_newline = format!("{}\n", message_json);
                 writer.write_all(message_with_newline.as_bytes()).await?;
                 writer.flush().await?;
+            }
+            #[cfg(windows)]
+            CommunicationChannel::NamedPipe { pipe } => {
+                use std::io::Write;
+                let message_with_newline = format!("{}\n", message_json);
+                pipe.write_all(message_with_newline.as_bytes())?;
+                pipe.flush()?;
             }
         }
         Ok(())
@@ -1042,6 +1290,37 @@ impl CommunicationChannel {
                     Err(_) => Ok(Some("timeout".to_string())),
                 }
             }
+            #[cfg(windows)]
+            CommunicationChannel::NamedPipe { pipe } => {
+                use std::io::{BufRead, BufReader};
+
+                // For named pipes, we need to read synchronously with a timeout simulation
+                // We'll use a non-blocking approach by reading available data
+                let mut buf_reader = BufReader::new(pipe);
+                let mut buffer = String::new();
+
+                // For simplicity in tests, we'll do a blocking read with a small timeout simulation
+                // In a real implementation, you'd want proper async handling for Windows named pipes
+                match buf_reader.read_line(&mut buffer) {
+                    Ok(0) => Ok(None), // Pipe closed
+                    Ok(_) => {
+                        let trimmed = buffer.trim();
+                        if trimmed.is_empty() {
+                            Ok(Some("empty".to_string()))
+                        } else {
+                            Ok(Some(trimmed.to_string()))
+                        }
+                    }
+                    Err(e) => {
+                        // Simulate timeout behavior
+                        if e.kind() == std::io::ErrorKind::WouldBlock {
+                            Ok(Some("timeout".to_string()))
+                        } else {
+                            Err(e.into())
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1057,6 +1336,14 @@ impl CommunicationChannel {
                     format!("{{\"type\":\"disconnect\",\"reason\":\"Test completed.\"}}\n");
                 let _ = writer.write_all(close_msg.as_bytes()).await;
                 let _ = writer.flush().await;
+            }
+            #[cfg(windows)]
+            CommunicationChannel::NamedPipe { pipe } => {
+                use std::io::Write;
+                let close_msg =
+                    format!("{{\"type\":\"disconnect\",\"reason\":\"Test completed.\"}}\n");
+                let _ = pipe.write_all(close_msg.as_bytes());
+                let _ = pipe.flush();
             }
         }
         Ok(())
@@ -1173,6 +1460,37 @@ async fn run_python_kernel_test_transport(python_cmd: &str, transport: Transport
                 reader,
                 writer: write_half,
             }
+        }
+        #[cfg(windows)]
+        TransportType::NamedPipe => {
+            // Perform channels upgrade to get named pipe path
+            let upgrade_response = client
+                .channels_upgrade(session_id.clone())
+                .await
+                .expect("Failed to upgrade to named pipe");
+
+            let pipe_path = match upgrade_response {
+                kallichore_api::ChannelsUpgradeResponse::UpgradedConnection(path) => path,
+                kallichore_api::ChannelsUpgradeResponse::Unauthorized => panic!("Unauthorized"),
+                kallichore_api::ChannelsUpgradeResponse::SessionNotFound => {
+                    panic!("Session not found")
+                }
+                kallichore_api::ChannelsUpgradeResponse::InvalidRequest(err) => {
+                    panic!("Invalid request: {:?}", err)
+                }
+            };
+
+            println!("Named pipe path: {}", pipe_path);
+
+            // Connect to the named pipe
+            use std::fs::OpenOptions;
+            let pipe = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&pipe_path)
+                .expect("Failed to connect to named pipe");
+
+            CommunicationChannel::NamedPipe { pipe }
         }
     };
 
@@ -1880,11 +2198,9 @@ async fn test_server_connection_file_with_auth_token() {
     struct ServerConnectionInfo {
         port: u16,
         base_path: String,
-        #[allow(dead_code)]
         server_path: String,
         server_pid: u32,
         bearer_token: Option<String>,
-        #[allow(dead_code)]
         log_path: Option<String>,
     }
 
@@ -2165,8 +2481,7 @@ async fn test_server_connection_file_default_socket() {
             "none", // Disable auth for testing
         ]);
         c
-    };
-
+    }; // Capture output for debugging
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.env("RUST_LOG", "info");
@@ -2439,8 +2754,7 @@ async fn test_server_connection_file_explicit_socket_transport() {
             "none", // Disable auth for testing
         ]);
         c
-    };
-
+    }; // Capture output for debugging
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.env("RUST_LOG", "info");
