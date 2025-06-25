@@ -1694,7 +1694,7 @@ impl<C> Server<C> {
                         let ws_json_rx = session.ws_json_rx.clone();
                         let connection = session.connection.clone();
                         let state = session.state.clone();
-                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
+                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state, None)
                     };
 
                     // Add it to the list of client sessions
@@ -1882,7 +1882,8 @@ impl<C> Server<C> {
                         let ws_json_rx = session.ws_json_rx.clone();
                         let connection = session.connection.clone();
                         let state = session.state.clone();
-                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
+                        let socket_path_str = socket_path.to_string_lossy().to_string();
+                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state, Some(socket_path_str))
                     }
                     None => {
                         log::error!(
@@ -2018,7 +2019,7 @@ impl<C> Server<C> {
                     let ws_json_rx = session.ws_json_rx.clone();
                     let connection = session.connection.clone();
                     let state = session.state.clone();
-                    Some(ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state))
+                    Some(ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state, None))
                 }
                 None => {
                     log::error!("Kernel session {} not found for named pipe", session_id);

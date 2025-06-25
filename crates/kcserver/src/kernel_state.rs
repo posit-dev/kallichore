@@ -74,6 +74,9 @@ pub struct KernelState {
 
     /// The connection file for the kernel, or None if not set.
     pub connection_file: Option<ConnectionFile>,
+
+    /// The Unix domain socket path for the current client, if any.
+    pub client_socket_path: Option<String>,
 }
 
 impl KernelState {
@@ -101,6 +104,7 @@ impl KernelState {
             idle_since: Some(std::time::Instant::now()),
             busy_since: None,
             connection_file: None,
+            client_socket_path: None,
         }
     }
 
@@ -117,6 +121,11 @@ impl KernelState {
     pub async fn set_connected(&mut self, connected: bool) {
         self.connected = connected;
         self.nudge_idle().await;
+    }
+
+    /// Set the Unix domain socket path for the current client
+    pub fn set_client_socket_path(&mut self, socket_path: Option<String>) {
+        self.client_socket_path = socket_path;
     }
 
     /// Polls the working directory to see if it's changed.

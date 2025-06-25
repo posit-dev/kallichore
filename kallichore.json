@@ -1028,6 +1028,10 @@
           "busy_seconds": {
             "type": "integer",
             "description": "The number of seconds the session has been busy, or 0 if the session is idle"
+          },
+          "socket_path": {
+            "type": "string",
+            "description": "The path to the Unix domain socket used to send/receive data from the session, if applicable"
           }
         },
         "required": [

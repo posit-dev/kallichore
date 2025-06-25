@@ -1,7 +1,7 @@
 //
 // client_session.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -47,6 +47,9 @@ pub struct ClientSession {
     /// An event that can be triggered to disconnect the session; used when we
     /// need to reconnect a new client to the same kernel.
     pub disconnect: Arc<Event>,
+
+    /// The Unix domain socket path associated with this session, if any
+    pub socket_path: Option<String>,
 }
 
 // An atomic counter for generating unique client IDs
@@ -58,6 +61,7 @@ impl ClientSession {
         ws_json_rx: Receiver<WebsocketMessage>,
         ws_zmq_tx: Sender<JupyterMessage>,
         state: Arc<RwLock<KernelState>>,
+        socket_path: Option<String>,
     ) -> Self {
         // Derive a unique client ID for this connection by combining the
         // session ID and a counter
@@ -74,6 +78,7 @@ impl ClientSession {
             client_id: session_id,
             state,
             disconnect: Arc::new(Event::new()),
+            socket_path,
         }
     }
 
@@ -144,7 +149,9 @@ impl ClientSession {
             } else {
                 log::info!("[client {}] Connecting to websocket", self.client_id);
             }
-            state.set_connected(true).await
+            state.set_connected(true).await;
+            // Set the client socket path in the kernel state
+            state.set_client_socket_path(self.socket_path.clone());
         }
 
         // Interval timer for client pings
@@ -276,6 +283,8 @@ impl ClientSession {
         {
             let mut state = self.state.write().await;
             state.connected = false;
+            // Clear the client socket path when disconnecting
+            state.set_client_socket_path(None);
         }
     }
 
@@ -417,6 +426,8 @@ impl ClientSession {
         {
             let mut state = self.state.write().await;
             state.set_connected(true).await;
+            // Set the client socket path in the kernel state (None for named pipes)
+            state.set_client_socket_path(self.socket_path.clone());
         } // Create channels for bidirectional communication
         let (tx_to_pipe, mut rx_from_kernel) = tokio::sync::mpsc::channel::<String>(100);
         let (tx_to_kernel, rx_from_pipe) = tokio::sync::mpsc::channel::<String>(100);
@@ -540,6 +551,8 @@ impl ClientSession {
         {
             let mut state = self.state.write().await;
             state.set_connected(false).await;
+            // Clear the client socket path when disconnecting
+            state.set_client_socket_path(None);
         }
 
         // Notify that this client is disconnecting

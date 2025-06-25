@@ -697,6 +697,7 @@ components:
         argv:
         - argv
         - argv
+        socket_path: socket_path
         execution_queue:
           pending:
           - "{}"
@@ -767,6 +768,10 @@ components:
           description: "The number of seconds the session has been busy, or 0 if the\
             \ session is idle"
           type: integer
+        socket_path:
+          description: "The path to the Unix domain socket used to send/receive data\
+            \ from the session, if applicable"
+          type: string
       required:
       - argv
       - busy_seconds
@@ -839,6 +844,7 @@ components:
           argv:
           - argv
           - argv
+          socket_path: socket_path
           execution_queue:
             pending:
             - "{}"
@@ -864,6 +870,7 @@ components:
           argv:
           - argv
           - argv
+          socket_path: socket_path
           execution_queue:
             pending:
             - "{}"

@@ -75,6 +75,11 @@ pub struct ActiveSession {
     /// The number of seconds the session has been busy, or 0 if the session is idle
     #[serde(rename = "busy_seconds")]
     pub busy_seconds: i32,
+
+    /// The path to the Unix domain socket used to send/receive data from the session, if applicable
+    #[serde(rename = "socket_path")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<String>,
 }
 
 impl ActiveSession {
@@ -114,6 +119,7 @@ impl ActiveSession {
             status,
             idle_seconds,
             busy_seconds,
+            socket_path: None,
         }
     }
 }
@@ -160,6 +166,9 @@ impl std::string::ToString for ActiveSession {
             Some(self.idle_seconds.to_string()),
             Some("busy_seconds".to_string()),
             Some(self.busy_seconds.to_string()),
+            self.socket_path
+                .as_ref()
+                .map(|socket_path| ["socket_path".to_string(), socket_path.to_string()].join(",")),
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -194,6 +203,7 @@ impl std::str::FromStr for ActiveSession {
             pub status: Vec<models::Status>,
             pub idle_seconds: Vec<i32>,
             pub busy_seconds: Vec<i32>,
+            pub socket_path: Vec<String>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -291,6 +301,10 @@ impl std::str::FromStr for ActiveSession {
                     "busy_seconds" => intermediate_rep.busy_seconds.push(
                         <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "socket_path" => intermediate_rep.socket_path.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing ActiveSession".to_string(),
@@ -382,6 +396,7 @@ impl std::str::FromStr for ActiveSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "busy_seconds missing in ActiveSession".to_string())?,
+            socket_path: intermediate_rep.socket_path.into_iter().next(),
         })
     }
 }

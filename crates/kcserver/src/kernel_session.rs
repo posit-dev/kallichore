@@ -1139,6 +1139,7 @@ impl KernelSession {
             started: self.started.clone(),
             status: state.status,
             execution_queue: state.execution_queue.to_json(),
+            socket_path: state.client_socket_path.clone(),
         }
     }
 
