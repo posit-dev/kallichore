@@ -286,21 +286,117 @@ impl ClientSession {
         stream: tokio::net::UnixStream,
         _session_id: String,
     ) {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+
         log::info!(
             "[client {}] Handling Unix domain socket connection with WebSocket protocol",
             self.client_id
         );
 
-        // Convert the Unix domain socket to a WebSocket stream
-        let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+        // We need to peek at the first few bytes to determine if this is a WebSocket
+        // handshake request or if we should treat it as a raw WebSocket connection
+        let mut reader = BufReader::new(stream);
 
-        log::info!(
-            "[client {}] Successfully created WebSocket stream from Unix domain socket",
-            self.client_id
-        );
+        // Try to read the first line to see if it looks like an HTTP request
+        let mut first_line = String::new();
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            reader.read_line(&mut first_line),
+        )
+        .await
+        {
+            Ok(Ok(_)) if first_line.starts_with("GET ") => {
+                // This looks like an HTTP WebSocket upgrade request
+                log::debug!(
+                    "[client {}] Detected WebSocket handshake request",
+                    self.client_id
+                );
 
-        // Use the Unix-specific WebSocket handler
-        self.handle_websocket_unix_stream(ws_stream).await;
+                // Read the rest of the headers
+                let mut headers = std::collections::HashMap::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.is_err() {
+                        break;
+                    }
+                    let line = line.trim();
+                    if line.is_empty() {
+                        break; // End of headers
+                    }
+                    if let Some((key, value)) = line.split_once(':') {
+                        headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+                    }
+                }
+
+                // Generate WebSocket accept key
+                if let Some(websocket_key) = headers.get("sec-websocket-key") {
+                    let accept_key = derive_accept_key(websocket_key.as_bytes());
+
+                    // Send WebSocket handshake response
+                    let response = format!(
+                        "HTTP/1.1 101 Switching Protocols\r\n\
+                         Upgrade: websocket\r\n\
+                         Connection: Upgrade\r\n\
+                         Sec-WebSocket-Accept: {}\r\n\r\n",
+                        accept_key
+                    );
+
+                    let stream = reader.into_inner();
+                    if let Err(e) = stream.writable().await {
+                        log::error!("[client {}] Stream not writable: {}", self.client_id, e);
+                        return;
+                    }
+
+                    if let Err(e) = stream.try_write(response.as_bytes()) {
+                        log::error!(
+                            "[client {}] Failed to send WebSocket handshake response: {}",
+                            self.client_id,
+                            e
+                        );
+                        return;
+                    }
+
+                    log::debug!(
+                        "[client {}] Sent WebSocket handshake response",
+                        self.client_id
+                    );
+
+                    // Now treat it as a raw WebSocket connection (handshake complete)
+                    let ws_stream =
+                        WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+
+                    log::info!(
+                        "[client {}] Successfully created WebSocket stream from Unix domain socket (with handshake)",
+                        self.client_id
+                    );
+
+                    self.handle_websocket_unix_stream(ws_stream).await;
+                } else {
+                    log::error!(
+                        "[client {}] WebSocket upgrade request missing Sec-WebSocket-Key header",
+                        self.client_id
+                    );
+                }
+            }
+            _ => {
+                // No HTTP request detected, treat as raw WebSocket connection
+                log::debug!(
+                    "[client {}] No WebSocket handshake detected, using raw WebSocket protocol",
+                    self.client_id
+                );
+
+                let stream = reader.into_inner();
+                let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+
+                log::info!(
+                    "[client {}] Successfully created WebSocket stream from Unix domain socket (raw)",
+                    self.client_id
+                );
+
+                self.handle_websocket_unix_stream(ws_stream).await;
+            }
+        }
     }
 
     /// Handle a Windows named pipe stream connection (real implementation)
