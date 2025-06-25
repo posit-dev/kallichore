@@ -5,6 +5,11 @@
 //
 //
 
+#![allow(dead_code)]
+
+pub mod test_utils;
+pub mod transport;
+
 use kallichore_api::{ApiNoContext, Client, ContextWrapperExt};
 use kcshared::port_picker::pick_unused_tcp_port;
 use std::process::{Child, Command, Stdio};
