@@ -387,18 +387,22 @@ mod unix_socket_tests {
     }
 
     async fn test_domain_socket_communication(socket_path: &str) {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use futures::{SinkExt, StreamExt};
         use tokio::net::UnixStream;
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
         // Connect to the domain socket
-        let mut stream = UnixStream::connect(socket_path)
+        let stream = UnixStream::connect(socket_path)
             .await
             .expect("Failed to connect to domain socket");
 
-        let (read_half, mut write_half) = stream.split();
-        let mut reader = BufReader::new(read_half);
+        // Create WebSocket stream from Unix socket
+        let mut ws_stream = WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
 
-        // Send a simple kernel_info_request over the domain socket
+        println!("Connected to domain socket with WebSocket protocol");
+
+        // Send a simple kernel_info_request over the WebSocket
         let kernel_info_request = JupyterMessage {
             header: JupyterMessageHeader {
                 msg_id: Uuid::new_v4().to_string(),
@@ -413,17 +417,12 @@ mod unix_socket_tests {
 
         let ws_message = WebsocketMessage::Jupyter(kernel_info_request);
         let message_json = serde_json::to_string(&ws_message).expect("Failed to serialize message");
-        let message_with_newline = format!("{}\n", message_json);
 
-        println!("Sending kernel_info_request over domain socket...");
-        write_half
-            .write_all(message_with_newline.as_bytes())
+        println!("Sending kernel_info_request over domain socket WebSocket...");
+        ws_stream
+            .send(Message::Text(message_json))
             .await
-            .expect("Failed to write to domain socket");
-        write_half
-            .flush()
-            .await
-            .expect("Failed to flush domain socket");
+            .expect("Failed to send WebSocket message");
 
         // Wait for responses with timeout
         let timeout = Duration::from_secs(10);
@@ -432,61 +431,62 @@ mod unix_socket_tests {
         let mut kernel_info_reply_received = false;
 
         while start_time.elapsed() < timeout && message_count < 10 {
-            let mut response_line = String::new();
-            match tokio::time::timeout(Duration::from_secs(3), reader.read_line(&mut response_line))
-                .await
-            {
-                Ok(Ok(0)) => {
-                    println!("Domain socket closed by server");
+            match tokio::time::timeout(Duration::from_secs(3), ws_stream.next()).await {
+                Ok(Some(Ok(message))) => {
+                    message_count += 1;
+
+                    match message {
+                        Message::Text(text) => {
+                            println!("Received message {}: {}", message_count, text);
+
+                            // Try to parse as WebsocketMessage
+                            if let Ok(ws_msg) = serde_json::from_str::<WebsocketMessage>(&text) {
+                                match ws_msg {
+                                    WebsocketMessage::Jupyter(jupyter_msg) => {
+                                        println!(
+                                            "  -> Jupyter message type: {}",
+                                            jupyter_msg.header.msg_type
+                                        );
+
+                                        if jupyter_msg.header.msg_type == "kernel_info_reply" {
+                                            kernel_info_reply_received = true;
+                                            println!("  ✅ Received kernel_info_reply over domain socket WebSocket");
+                                            break; // Success!
+                                        }
+                                    }
+                                    WebsocketMessage::Kernel(kernel_msg) => {
+                                        println!("  -> Kernel message: {:?}", kernel_msg);
+                                    }
+                                }
+                            } else {
+                                println!("  -> Could not parse as WebsocketMessage: {}", text);
+                            }
+                        }
+                        Message::Ping(_) => {
+                            println!("  -> Received WebSocket ping");
+                        }
+                        Message::Pong(_) => {
+                            println!("  -> Received WebSocket pong");
+                        }
+                        Message::Close(_) => {
+                            println!("Domain socket WebSocket closed by server");
+                            break;
+                        }
+                        _ => {
+                            println!("  -> Received other WebSocket message type");
+                        }
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    println!("Error reading from domain socket WebSocket: {}", e);
                     break;
                 }
-                Ok(Ok(_)) => {
-                    message_count += 1;
-                    let trimmed_response = response_line.trim();
-
-                    if trimmed_response.is_empty() {
-                        continue;
-                    }
-
-                    println!("Received message {}: {}", message_count, trimmed_response);
-
-                    // Try to parse as WebsocketMessage
-                    if let Ok(ws_msg) = serde_json::from_str::<WebsocketMessage>(trimmed_response) {
-                        match ws_msg {
-                            WebsocketMessage::Jupyter(jupyter_msg) => {
-                                println!(
-                                    "  -> Jupyter message type: {}",
-                                    jupyter_msg.header.msg_type
-                                );
-
-                                if jupyter_msg.header.msg_type == "kernel_info_reply" {
-                                    kernel_info_reply_received = true;
-                                    println!("  ✅ Received kernel_info_reply over domain socket");
-                                    break; // Success!
-                                }
-                            }
-                            WebsocketMessage::Kernel(kernel_msg) => {
-                                println!("  -> Kernel message: {:?}", kernel_msg);
-                            }
-                        }
-                    } else {
-                        // It might be a ping or other simple message
-                        if trimmed_response.contains("\"type\":\"ping\"") {
-                            println!("  -> Received ping message");
-                        } else {
-                            println!(
-                                "  -> Could not parse as WebsocketMessage: {}",
-                                trimmed_response
-                            );
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    println!("Error reading from domain socket: {}", e);
+                Ok(None) => {
+                    println!("Domain socket WebSocket stream ended");
                     break;
                 }
                 Err(_) => {
-                    println!("Timeout waiting for domain socket response");
+                    println!("Timeout waiting for domain socket WebSocket response");
                     continue;
                 }
             }
@@ -494,10 +494,10 @@ mod unix_socket_tests {
 
         assert!(
             kernel_info_reply_received || message_count > 0,
-            "Expected to receive kernel_info_reply or any communication over domain socket"
+            "Expected to receive kernel_info_reply or any communication over domain socket WebSocket"
         );
 
-        println!("Domain socket communication test successful!");
+        println!("Domain socket WebSocket communication test successful!");
     }
 }
 
@@ -694,12 +694,16 @@ async fn run_python_kernel_domain_socket_test(python_cmd: &str) {
         .await
         .expect("Failed to connect to domain socket");
 
-    let (read_half, write_half) = stream.into_split();
-    let reader = tokio::io::BufReader::new(read_half);
-    let mut comm = CommunicationChannel::DomainSocket {
-        reader,
-        writer: write_half,
-    };
+    // Create WebSocket stream from Unix socket
+    let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        stream,
+        tokio_tungstenite::tungstenite::protocol::Role::Client,
+        None,
+    )
+    .await;
+
+    let (sender, receiver) = ws_stream.split();
+    let mut comm = CommunicationChannel::DomainSocket { sender, receiver };
 
     // Wait a reasonable amount for the kernel to start
     println!("Waiting for Python kernel to start up...");
@@ -1509,8 +1513,13 @@ enum CommunicationChannel {
     },
     #[cfg(unix)]
     DomainSocket {
-        reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
-        writer: tokio::net::unix::OwnedWriteHalf,
+        sender: futures::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+            Message,
+        >,
+        receiver: futures::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+        >,
     },
     #[cfg(windows)]
     NamedPipe {
@@ -1530,11 +1539,8 @@ impl CommunicationChannel {
                 sender.send(Message::Text(message_json)).await?;
             }
             #[cfg(unix)]
-            CommunicationChannel::DomainSocket { writer, .. } => {
-                use tokio::io::AsyncWriteExt;
-                let message_with_newline = format!("{}\n", message_json);
-                writer.write_all(message_with_newline.as_bytes()).await?;
-                writer.flush().await?;
+            CommunicationChannel::DomainSocket { sender, .. } => {
+                sender.send(Message::Text(message_json)).await?;
             }
             #[cfg(windows)]
             CommunicationChannel::NamedPipe { pipe } => {
@@ -1567,25 +1573,18 @@ impl CommunicationChannel {
                 }
             }
             #[cfg(unix)]
-            CommunicationChannel::DomainSocket { reader, .. } => {
-                use tokio::io::AsyncBufReadExt;
-                let mut buffer = String::new();
-                match tokio::time::timeout(
-                    Duration::from_millis(1000),
-                    reader.read_line(&mut buffer),
-                )
-                .await
-                {
-                    Ok(Ok(0)) => Ok(None), // Stream closed
-                    Ok(Ok(_)) => {
-                        let trimmed = buffer.trim();
-                        if trimmed.is_empty() {
-                            Ok(Some("empty".to_string()))
-                        } else {
-                            Ok(Some(trimmed.to_string()))
-                        }
+            CommunicationChannel::DomainSocket { receiver, .. } => {
+                use futures::StreamExt;
+                match tokio::time::timeout(Duration::from_millis(1000), receiver.next()).await {
+                    Ok(Some(Ok(Message::Text(text)))) => Ok(Some(text)),
+                    Ok(Some(Ok(Message::Ping(_)))) => Ok(Some("ping".to_string())),
+                    Ok(Some(Ok(Message::Pong(_)))) => Ok(Some("pong".to_string())),
+                    Ok(Some(Ok(Message::Binary(data)))) => {
+                        Ok(Some(format!("binary({} bytes)", data.len())))
                     }
-                    Ok(Err(e)) => Err(e.into()),
+                    Ok(Some(Ok(msg))) => Ok(Some(format!("other: {:?}", msg))),
+                    Ok(Some(Err(e))) => Err(e.into()),
+                    Ok(None) => Ok(None), // Stream closed
                     Err(_) => Ok(Some("timeout".to_string())),
                 }
             }
@@ -1628,12 +1627,8 @@ impl CommunicationChannel {
                 sender.send(Message::Close(None)).await?;
             }
             #[cfg(unix)]
-            CommunicationChannel::DomainSocket { writer, .. } => {
-                use tokio::io::AsyncWriteExt;
-                let close_msg =
-                    format!("{{\"type\":\"disconnect\",\"reason\":\"Test completed.\"}}\n");
-                let _ = writer.write_all(close_msg.as_bytes()).await;
-                let _ = writer.flush().await;
+            CommunicationChannel::DomainSocket { sender, .. } => {
+                sender.send(Message::Close(None)).await?;
             }
             #[cfg(windows)]
             CommunicationChannel::NamedPipe { pipe } => {
@@ -1752,12 +1747,16 @@ async fn run_python_kernel_test_transport(python_cmd: &str, transport: Transport
                 .await
                 .expect("Failed to connect to domain socket");
 
-            let (read_half, write_half) = stream.into_split();
-            let reader = tokio::io::BufReader::new(read_half);
-            CommunicationChannel::DomainSocket {
-                reader,
-                writer: write_half,
-            }
+            // Create WebSocket stream from Unix socket
+            let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                stream,
+                tokio_tungstenite::tungstenite::protocol::Role::Client,
+                None,
+            )
+            .await;
+
+            let (sender, receiver) = ws_stream.split();
+            CommunicationChannel::DomainSocket { sender, receiver }
         }
         #[cfg(windows)]
         TransportType::NamedPipe => {

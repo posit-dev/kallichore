@@ -19,6 +19,7 @@ use kcshared::websocket_message::WebsocketMessage;
 use once_cell::sync::Lazy;
 use tokio::select;
 use tokio::sync::RwLock;
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
@@ -112,7 +113,23 @@ impl ClientSession {
         }
     }
 
-    pub async fn handle_channel_ws(&self, mut ws_stream: WebSocketStream<Upgraded>) {
+    pub async fn handle_channel_ws(&self, ws_stream: WebSocketStream<Upgraded>) {
+        self.handle_websocket_stream(ws_stream).await;
+    }
+
+    #[cfg(unix)]
+    async fn handle_websocket_unix_stream(
+        &self,
+        ws_stream: WebSocketStream<tokio::net::UnixStream>,
+    ) {
+        self.handle_websocket_stream(ws_stream).await;
+    }
+
+    // Generic method to handle WebSocket streams regardless of the underlying transport
+    async fn handle_websocket_stream<S>(&self, mut ws_stream: WebSocketStream<S>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         // Mark the session as connected
         {
             let mut state = self.state.write().await;
@@ -262,131 +279,28 @@ impl ClientSession {
         }
     }
 
-    /// Handle a Unix domain socket connection similarly to WebSocket but using raw sockets
+    /// Handle a Unix domain socket connection with WebSocket protocol support
     #[cfg(unix)]
     pub async fn handle_domain_socket_connection(
         &self,
-        mut stream: tokio::net::UnixStream,
+        stream: tokio::net::UnixStream,
         _session_id: String,
     ) {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        log::info!(
+            "[client {}] Handling Unix domain socket connection with WebSocket protocol",
+            self.client_id
+        );
 
-        // Mark the session as connected
-        {
-            let mut state = self.state.write().await;
-            if state.connected {
-                log::warn!(
-                    "[client {}] Received domain socket connection request for already-connected session.",
-                    self.client_id
-                );
-            } else {
-                log::info!(
-                    "[client {}] Connecting to Unix domain socket",
-                    self.client_id
-                );
-            }
-            state.set_connected(true).await
-        }
+        // Convert the Unix domain socket to a WebSocket stream
+        let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
 
-        // Split the stream for reading and writing
-        let (read_half, mut write_half) = stream.split();
-        let mut reader = BufReader::new(read_half);
+        log::info!(
+            "[client {}] Successfully created WebSocket stream from Unix domain socket",
+            self.client_id
+        );
 
-        // Interval timer for client pings
-        let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(10));
-
-        // Loop to handle messages from the domain socket and the ZMQ channel
-        loop {
-            let mut buffer = String::new();
-            select! {
-                line_result = reader.read_line(&mut buffer) => {
-                    match line_result {
-                        Ok(0) => {
-                            log::info!("[client {}] Domain socket closed by client", self.client_id);
-                            break;
-                        }
-                        Ok(_) => {
-                            if !buffer.trim().is_empty() {
-                                self.handle_domain_socket_message(buffer.trim().to_string()).await;
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("[client {}] Failed to read from domain socket: {}", self.client_id, e);
-                            break;
-                        }
-                    }
-                },
-                json = self.ws_json_rx.recv() => {
-                    match json {
-                        Ok(json) => {
-                            let json_str = serde_json::to_string(&json).unwrap();
-                            let message = format!("{}\n", json_str);
-                            match write_half.write_all(message.as_bytes()).await {
-                                Ok(_) => {
-                                    if let Err(e) = write_half.flush().await {
-                                        log::error!("[client {}] Failed to flush domain socket: {}", self.client_id, e);
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!("[client {}] Failed to write to domain socket: {}", self.client_id, e);
-                                    break;
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            log::error!("[client {}] Failed to receive message for domain socket: {}", self.client_id, e);
-                            break;
-                        }
-                    }
-                },
-                _ = tick.tick() => {
-                    // Send a simple ping over the domain socket
-                    let ping_msg = format!("{{\"type\":\"ping\",\"timestamp\":{}}}\n",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs());
-
-                    match write_half.write_all(ping_msg.as_bytes()).await {
-                        Ok(_) => {
-                            if let Err(e) = write_half.flush().await {
-                                log::error!("[client {}] Failed to flush ping to domain socket: {}", self.client_id, e);
-                                break;
-                            }
-                            log::trace!("[client {}] Sent ping over domain socket", self.client_id);
-                        }
-                        Err(e) => {
-                            log::error!("[client {}] Failed to send ping to domain socket: {}", self.client_id, e);
-                            break;
-                        }
-                    }
-                },
-                _ = self.disconnect.listen() => {
-                    log::info!("[client {}] Disconnecting domain socket", self.client_id);
-
-                    // Send a disconnect message over the domain socket
-                    let close_msg = format!("{{\"type\":\"disconnect\",\"reason\":\"Another client is connecting to this session.\"}}\n");
-                    let _ = write_half.write_all(close_msg.as_bytes()).await;
-                    let _ = write_half.flush().await;
-
-                    break;
-                }
-            }
-        }
-
-        // Mark the session as disconnected
-        {
-            let mut state = self.state.write().await;
-            state.connected = false;
-        }
-    }
-
-    /// Handle a message received from the domain socket
-    #[cfg(unix)]
-    async fn handle_domain_socket_message(&self, data: String) {
-        // This is similar to handle_ws_message but for domain socket text
-        self.handle_ws_message(data).await;
+        // Use the Unix-specific WebSocket handler
+        self.handle_websocket_unix_stream(ws_stream).await;
     }
 
     /// Handle a Windows named pipe stream connection (real implementation)

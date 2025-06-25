@@ -114,7 +114,8 @@ Kallichore supports three different transport mechanisms for client connections:
 ### Unix Domain Sockets
 - **Platform**: Unix-like systems only (macOS, Linux)
 - **Usage**: `--transport socket`
-- **Description**: Unix domain sockets for inter-process communication
+- **Description**: Unix domain sockets for inter-process communication with WebSocket protocol support
+- **Protocol**: WebSocket over Unix domain sockets (supports `ws+unix:` URLs)
 - **Best for**: High performance local communication, reduced overhead
 - **Note**: Not supported on Windows
 
@@ -130,12 +131,20 @@ Example usage:
 # TCP (default)
 ./target/debug/kcserver --port 8080
 
-# Unix domain socket (macOS/Linux)
+# Unix domain socket with WebSocket protocol (macOS/Linux)
 ./target/debug/kcserver --transport socket
 
 # Named pipe (Windows)
 ./target/debug/kcserver --transport named-pipe
 ```
+
+### WebSocket Protocol Support
+
+**Unix Domain Sockets**: Starting with this version, Unix domain socket kernel client sessions use the WebSocket protocol instead of raw JSON. This enables clients to connect using `ws+unix:` URLs and provides a consistent WebSocket interface across all transport types.
+
+**Client Connection Examples**:
+- TCP WebSocket: `ws://localhost:8080/sessions/{session_id}/channels`
+- Unix Socket WebSocket: `ws+unix:/path/to/socket:/sessions/{session_id}/channels` (conceptual - actual connection via domain socket path)
 
 ## Testing
 
