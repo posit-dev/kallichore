@@ -26,7 +26,7 @@ mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
 #[cfg(windows)]
-mod named_pipe_http;
+mod named_pipe_connection;
 mod registration_file;
 mod registration_socket;
 mod server;

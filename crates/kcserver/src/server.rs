@@ -261,8 +261,7 @@ async fn create_named_pipe_server(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
 ) {
-    use crate::named_pipe_http::start_named_pipe_http_server;
-    use swagger::{AuthData, Authorization, EmptyContext, Push, XSpanIdString};
+    use crate::named_pipe_connection::NamedPipeIncoming;
 
     // Get the log level from the provided parameter or environment variable if not provided
     let effective_log_level = match log_level {
@@ -273,20 +272,32 @@ async fn create_named_pipe_server(
         },
     };
 
-    // Create the server with a proper context type
-    // Define the context type we need
-    type NamedPipeContext = <<<EmptyContext as Push<XSpanIdString>>::Result as Push<
-        Option<AuthData>,
-    >>::Result as Push<Option<Authorization>>>::Result;
+    // Create the server
+    let server = Server::new(token, idle_shutdown_hours, effective_log_level, true);
 
-    let server: Server<NamedPipeContext> =
-        Server::new(token, idle_shutdown_hours, effective_log_level, false);
+    // For named pipes, use the regular API service instead of the websocket interceptor
+    // since named pipes handle channels differently, similar to Unix domain sockets
+    let service = kallichore_api::server::MakeService::new(server);
+    let service = MakeAllowAllAuthenticator::new(service, "cosmo");
+    let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
 
     log::info!("Starting named pipe HTTP server on: {}", pipe_name);
 
-    // Start the named pipe HTTP server
-    if let Err(e) = start_named_pipe_http_server(pipe_name, server).await {
-        log::error!("Named pipe HTTP server error: {}", e);
+    // Create the named pipe incoming connection stream
+    let incoming = match NamedPipeIncoming::new(pipe_name.clone()) {
+        Ok(incoming) => incoming,
+        Err(e) => {
+            log::error!("Failed to create named pipe incoming: {}", e);
+            return;
+        }
+    };
+
+    // Create the HTTP server for named pipe using our custom incoming implementation
+    let server_future = hyper::server::Server::builder(incoming).serve(service);
+
+    // Wait for the server to complete
+    if let Err(e) = server_future.await {
+        log::error!("Named pipe server error: {}", e);
     }
 }
 
