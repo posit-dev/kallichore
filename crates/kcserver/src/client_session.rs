@@ -19,6 +19,7 @@ use kcshared::websocket_message::WebsocketMessage;
 use once_cell::sync::Lazy;
 use tokio::select;
 use tokio::sync::RwLock;
+#[cfg(unix)]
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
