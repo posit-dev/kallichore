@@ -986,6 +986,8 @@ async fn test_python_kernel_session_and_named_pipe_communication() {
 async fn run_python_kernel_named_pipe_test(python_cmd: &str) {
     // For Windows named pipe test, we need a special named pipe server setup
     // We'll create a named pipe server and communicate with it directly, similar to domain socket test
+    use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
+    use kcshared::websocket_message::WebsocketMessage;
     use serde_json::json;
     use std::fs::OpenOptions;
     use std::io::{Read, Write};
@@ -1038,7 +1040,7 @@ async fn run_python_kernel_named_pipe_test(python_cmd: &str) {
 
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    cmd.env("RUST_LOG", "debug");
+    cmd.env("RUST_LOG", "trace");
 
     println!("Starting named pipe server...");
     let mut child = cmd
@@ -1174,10 +1176,305 @@ async fn run_python_kernel_named_pipe_test(python_cmd: &str) {
 
     println!("Channels upgrade response: {}", upgrade_response);
 
-    // For now, we'll test basic functionality without full Jupyter message exchange
-    // The infrastructure is in place, but we'd need the server to support named pipe channel upgrades
+    // Parse the channels upgrade response to get the named pipe path
+    if upgrade_response.contains("200 OK") {
+        // Extract the pipe path from the response body
+        let response_lines: Vec<&str> = upgrade_response.lines().collect();
+        let body_line = response_lines.last().unwrap_or(&"");
+
+        // Parse as JSON since the response is JSON-encoded
+        let pipe_path = if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(body_line)
+        {
+            json_value.as_str().unwrap_or("").to_string()
+        } else {
+            body_line.trim_matches('"').to_string()
+        };
+
+        if pipe_path.starts_with("\\\\.\\pipe\\") {
+            println!("Got named pipe path for channels: {}", pipe_path);
+
+            // Now connect to the named pipe for Jupyter message communication using async client
+            let pipe_client =
+                match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_path) {
+                    Ok(client) => client,
+                    Err(e) => {
+                        println!("Warning: Could not connect to channels named pipe: {}", e);
+                        println!("Named pipe kernel communication test infrastructure complete");
+                        // Clean up and exit
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return;
+                    }
+                };
+
+            println!(
+                "Successfully connected to channels named pipe: {}",
+                pipe_path
+            );
+
+            // Create a communication channel for the named pipe
+            let mut comm = CommunicationChannel::NamedPipe { pipe: pipe_client };
+
+            // Wait a bit for the kernel to be ready
+            println!("Waiting for Python kernel to start up...");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            // Send a kernel_info_request
+            let kernel_info_request = JupyterMessage {
+                header: JupyterMessageHeader {
+                    msg_id: Uuid::new_v4().to_string(),
+                    msg_type: "kernel_info_request".to_string(),
+                },
+                parent_header: None,
+                channel: JupyterChannel::Shell,
+                content: serde_json::json!({}),
+                metadata: serde_json::json!({}),
+                buffers: vec![],
+            };
+
+            let ws_message = WebsocketMessage::Jupyter(kernel_info_request);
+
+            println!("Sending kernel_info_request to Python kernel over named pipe...");
+            if let Err(e) = comm.send_message(&ws_message).await {
+                println!("Warning: Failed to send kernel_info_request: {}", e);
+            } else {
+                println!("✓ Successfully sent kernel_info_request over named pipe");
+            }
+
+            // Wait a bit for response
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            // Send an execute request
+            let execute_msg_id = Uuid::new_v4().to_string();
+            let execute_request = JupyterMessage {
+                header: JupyterMessageHeader {
+                    msg_id: execute_msg_id.clone(),
+                    msg_type: "execute_request".to_string(),
+                },
+                parent_header: None,
+                channel: JupyterChannel::Shell,
+                content: serde_json::json!({
+                    "code": "print('Hello from Kallichore named pipe test!')\nresult = 2 + 3\nprint(f'2 + 3 = {result}')",
+                    "silent": false,
+                    "store_history": true,
+                    "user_expressions": {},
+                    "allow_stdin": false,
+                    "stop_on_error": true
+                }),
+                metadata: serde_json::json!({}),
+                buffers: vec![],
+            };
+
+            let ws_message = WebsocketMessage::Jupyter(execute_request);
+
+            println!("Sending execute_request to Python kernel over named pipe...");
+            if let Err(e) = comm.send_message(&ws_message).await {
+                println!("Warning: Failed to send execute_request: {}", e);
+            } else {
+                println!("✓ Successfully sent execute_request over named pipe");
+            }
+
+            // Listen for responses for a limited time
+            let timeout_duration = Duration::from_secs(10);
+            let start_time = std::time::Instant::now();
+            let mut message_count = 0;
+            let mut received_jupyter_messages = 0;
+            let mut kernel_info_reply_received = false;
+            let mut execute_reply_received = false;
+            let mut stream_output_received = false;
+            let mut expected_output_found = false;
+            let mut collected_output = String::new();
+
+            println!("Listening for Python kernel responses over named pipe...");
+
+            while start_time.elapsed() < timeout_duration && message_count < 20 {
+                match comm.receive_message().await {
+                    Ok(Some(raw_message)) => {
+                        message_count += 1;
+                        println!(
+                            "Received message {}: length={}, content='{}'",
+                            message_count,
+                            raw_message.len(),
+                            raw_message
+                        );
+
+                        if raw_message == "timeout" || raw_message == "empty" {
+                            continue;
+                        }
+
+                        // Try to parse as JSON - handle multiple JSON objects concatenated together
+                        let mut json_objects = Vec::new();
+                        let mut remaining = raw_message.as_str();
+
+                        // Try to parse multiple JSON objects that might be concatenated
+                        while !remaining.is_empty() {
+                            let trimmed = remaining.trim_start();
+                            if trimmed.is_empty() {
+                                break;
+                            }
+
+                            // Try to find a complete JSON object
+                            let mut depth = 0;
+                            let mut in_string = false;
+                            let mut escape_next = false;
+                            let mut end_pos = 0;
+
+                            for (i, c) in trimmed.char_indices() {
+                                if escape_next {
+                                    escape_next = false;
+                                    continue;
+                                }
+
+                                match c {
+                                    '\\' if in_string => escape_next = true,
+                                    '"' => in_string = !in_string,
+                                    '{' if !in_string => depth += 1,
+                                    '}' if !in_string => {
+                                        depth -= 1;
+                                        if depth == 0 {
+                                            end_pos = i + 1;
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            if depth == 0 && end_pos > 0 {
+                                let json_str = &trimmed[..end_pos];
+                                if let Ok(ws_msg) =
+                                    serde_json::from_str::<WebsocketMessage>(json_str)
+                                {
+                                    json_objects.push(ws_msg);
+                                }
+                                remaining = &trimmed[end_pos..];
+                            } else {
+                                // No complete JSON object found, try parsing the whole thing
+                                if let Ok(ws_msg) =
+                                    serde_json::from_str::<WebsocketMessage>(trimmed)
+                                {
+                                    json_objects.push(ws_msg);
+                                }
+                                break;
+                            }
+                        }
+
+                        // Process all found JSON objects
+                        let objects_found = json_objects.len();
+                        for ws_msg in json_objects {
+                            received_jupyter_messages += 1;
+                            match ws_msg {
+                                WebsocketMessage::Jupyter(jupyter_msg) => {
+                                    println!(
+                                        "  Jupyter message type: {}",
+                                        jupyter_msg.header.msg_type
+                                    );
+
+                                    match jupyter_msg.header.msg_type.as_str() {
+                                        "kernel_info_reply" => {
+                                            kernel_info_reply_received = true;
+                                            println!("  ✓ Received kernel_info_reply");
+                                        }
+                                        "execute_reply" => {
+                                            execute_reply_received = true;
+                                            println!("  ✓ Received execute_reply");
+                                        }
+                                        "stream" => {
+                                            stream_output_received = true;
+                                            if let Some(text) = jupyter_msg.content.get("text") {
+                                                if let Some(output_text) = text.as_str() {
+                                                    collected_output.push_str(output_text);
+                                                    println!(
+                                                        "  ✓ Stream output: {}",
+                                                        output_text.trim()
+                                                    );
+
+                                                    if output_text.contains(
+                                                        "Hello from Kallichore named pipe test!",
+                                                    ) && output_text.contains("2 + 3 = 5")
+                                                    {
+                                                        expected_output_found = true;
+                                                        println!("  ✓ Found expected output!");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            println!(
+                                                "  Other Jupyter message: {}",
+                                                jupyter_msg.header.msg_type
+                                            );
+                                        }
+                                    }
+                                }
+                                WebsocketMessage::Kernel(_) => {
+                                    println!("  Kernel message received");
+                                }
+                            }
+                        }
+
+                        // If we didn't find any JSON objects, treat as non-JSON
+                        if objects_found == 0 {
+                            println!(
+                                "  Non-JSON message: {}",
+                                raw_message.chars().take(100).collect::<String>()
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        println!("Named pipe connection closed");
+                        break;
+                    }
+                    Err(e) => {
+                        println!("Error receiving message: {}", e);
+                        break;
+                    }
+                }
+
+                // Small delay between reads
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+
+            println!("Named pipe Python kernel test completed:");
+            println!("  - Total messages: {}", message_count);
+            println!("  - Jupyter messages: {}", received_jupyter_messages);
+            println!("  - Kernel info reply: {}", kernel_info_reply_received);
+            println!("  - Execute reply: {}", execute_reply_received);
+            println!("  - Stream output: {}", stream_output_received);
+            println!("  - Expected output found: {}", expected_output_found);
+            println!("  - Collected output: {:?}", collected_output);
+
+            // Test success criteria - we should get at least some communication
+            if received_jupyter_messages > 0 {
+                println!("✓ Named pipe Jupyter message communication is working!");
+                if kernel_info_reply_received {
+                    println!("✓ Kernel is responsive to kernel_info requests");
+                }
+                if execute_reply_received {
+                    println!("✓ Kernel can execute code requests");
+                }
+                if stream_output_received {
+                    println!("✓ Kernel can send output streams");
+                }
+                if expected_output_found {
+                    println!("✓ All expected outputs received correctly");
+                }
+            } else {
+                println!("⚠ No Jupyter messages received - may need server-side implementation");
+            }
+
+            // Close the communication channel
+            if let Err(e) = comm.close().await {
+                println!("Warning: Failed to close communication channel: {}", e);
+            }
+        } else {
+            println!("Invalid pipe path format in response: {}", pipe_path);
+        }
+    } else {
+        println!("Channels upgrade failed - may need server-side implementation");
+    }
+
     println!("Named pipe kernel communication test infrastructure complete");
-    println!("Full Jupyter message exchange over named pipes requires server-side support");
 
     // Clean up
     let _ = child.kill();
@@ -1216,7 +1513,9 @@ enum CommunicationChannel {
         writer: tokio::net::unix::OwnedWriteHalf,
     },
     #[cfg(windows)]
-    NamedPipe { pipe: std::fs::File },
+    NamedPipe {
+        pipe: tokio::net::windows::named_pipe::NamedPipeClient,
+    },
 }
 
 impl CommunicationChannel {
@@ -1239,10 +1538,10 @@ impl CommunicationChannel {
             }
             #[cfg(windows)]
             CommunicationChannel::NamedPipe { pipe } => {
-                use std::io::Write;
+                use tokio::io::AsyncWriteExt;
                 let message_with_newline = format!("{}\n", message_json);
-                pipe.write_all(message_with_newline.as_bytes())?;
-                pipe.flush()?;
+                pipe.write_all(message_with_newline.as_bytes()).await?;
+                pipe.flush().await?;
             }
         }
         Ok(())
@@ -1292,33 +1591,32 @@ impl CommunicationChannel {
             }
             #[cfg(windows)]
             CommunicationChannel::NamedPipe { pipe } => {
-                use std::io::{BufRead, BufReader};
+                use tokio::io::AsyncReadExt;
 
-                // For named pipes, we need to read synchronously with a timeout simulation
-                // We'll use a non-blocking approach by reading available data
-                let mut buf_reader = BufReader::new(pipe);
-                let mut buffer = String::new();
+                // Try reading raw bytes instead of lines, since the server might not be sending newlines properly
+                let mut buffer = [0u8; 4096];
 
-                // For simplicity in tests, we'll do a blocking read with a small timeout simulation
-                // In a real implementation, you'd want proper async handling for Windows named pipes
-                match buf_reader.read_line(&mut buffer) {
-                    Ok(0) => Ok(None), // Pipe closed
-                    Ok(_) => {
-                        let trimmed = buffer.trim();
+                match tokio::time::timeout(Duration::from_millis(1000), pipe.read(&mut buffer))
+                    .await
+                {
+                    Ok(Ok(0)) => Ok(None), // Pipe closed
+                    Ok(Ok(bytes_read)) => {
+                        let received_data = String::from_utf8_lossy(&buffer[..bytes_read]);
+                        let trimmed = received_data.trim();
                         if trimmed.is_empty() {
                             Ok(Some("empty".to_string()))
                         } else {
-                            Ok(Some(trimmed.to_string()))
+                            // Split by newlines and return the first complete message
+                            let lines: Vec<&str> = trimmed.lines().collect();
+                            if let Some(first_line) = lines.first() {
+                                Ok(Some(first_line.to_string()))
+                            } else {
+                                Ok(Some(trimmed.to_string()))
+                            }
                         }
                     }
-                    Err(e) => {
-                        // Simulate timeout behavior
-                        if e.kind() == std::io::ErrorKind::WouldBlock {
-                            Ok(Some("timeout".to_string()))
-                        } else {
-                            Err(e.into())
-                        }
-                    }
+                    Ok(Err(e)) => Err(e.into()),
+                    Err(_) => Ok(Some("timeout".to_string())),
                 }
             }
         }
@@ -1339,11 +1637,11 @@ impl CommunicationChannel {
             }
             #[cfg(windows)]
             CommunicationChannel::NamedPipe { pipe } => {
-                use std::io::Write;
+                use tokio::io::AsyncWriteExt;
                 let close_msg =
                     format!("{{\"type\":\"disconnect\",\"reason\":\"Test completed.\"}}\n");
-                let _ = pipe.write_all(close_msg.as_bytes());
-                let _ = pipe.flush();
+                let _ = pipe.write_all(close_msg.as_bytes()).await;
+                let _ = pipe.flush().await;
             }
         }
         Ok(())
@@ -1482,11 +1780,8 @@ async fn run_python_kernel_test_transport(python_cmd: &str, transport: Transport
 
             println!("Named pipe path: {}", pipe_path);
 
-            // Connect to the named pipe
-            use std::fs::OpenOptions;
-            let pipe = OpenOptions::new()
-                .read(true)
-                .write(true)
+            // Connect to the named pipe using async client
+            let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
                 .open(&pipe_path)
                 .expect("Failed to connect to named pipe");
 

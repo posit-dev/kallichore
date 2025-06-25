@@ -1978,68 +1978,71 @@ impl<C> Server<C> {
         );
 
         // Create a real named pipe server using Windows APIs
-        let pipe_server = match NamedPipeServer::new(&pipe_name).await {
-            Ok(server) => server,
-            Err(e) => {
-                log::error!("Failed to create named pipe server {}: {}", pipe_name, e);
-                return;
-            }
-        };
+        let pipe_server =
+            match tokio::net::windows::named_pipe::ServerOptions::new().create(&pipe_name) {
+                Ok(server) => server,
+                Err(e) => {
+                    log::error!("Failed to create named pipe server {}: {}", pipe_name, e);
+                    return;
+                }
+            };
 
         log::info!("Named pipe server created successfully: {}", pipe_name);
 
-        loop {
-            match pipe_server.accept().await {
-                Ok(stream) => {
-                    log::info!("Client connected to named pipe: {}", pipe_name);
-                    // Find the kernel session for this session_id
-                    let client_session = {
-                        let sessions = kernel_sessions.read().unwrap();
-                        let session = sessions
-                            .iter()
-                            .find(|s| s.connection.session_id == session_id)
-                            .cloned();
-
-                        match session {
-                            Some(session) => {
-                                let ws_zmq_tx = session.ws_zmq_tx.clone();
-                                let ws_json_rx = session.ws_json_rx.clone();
-                                let connection = session.connection.clone();
-                                let state = session.state.clone();
-                                Some(ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state))
-                            }
-                            None => {
-                                log::error!(
-                                    "Kernel session {} not found for named pipe",
-                                    session_id
-                                );
-                                None
-                            }
-                        }
-                    };
-                    let client_session = match client_session {
-                        Some(session) => session,
-                        None => continue,
-                    };
-
-                    // Add to client sessions list
-                    {
-                        let mut sessions = client_sessions.write().unwrap();
-                        sessions.push(client_session.clone());
-                    } // Handle the named pipe connection
-                    let session_id_clone = session_id.clone();
-                    tokio::spawn(async move {
-                        client_session
-                            .handle_named_pipe_stream(stream, session_id_clone)
-                            .await;
-                    });
-                }
-                Err(e) => {
-                    log::error!("Failed to accept named pipe connection: {}", e);
-                    break;
-                }
+        // Wait for a client to connect
+        match pipe_server.connect().await {
+            Ok(()) => {
+                log::info!("Client connected to named pipe: {}", pipe_name);
+            }
+            Err(e) => {
+                log::error!(
+                    "Failed to connect client on named pipe {}: {}",
+                    pipe_name,
+                    e
+                );
+                return;
             }
         }
+
+        // Find the kernel session for this session_id
+        let client_session = {
+            let sessions = kernel_sessions.read().unwrap();
+            let session = sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+                .cloned();
+
+            match session {
+                Some(session) => {
+                    let ws_zmq_tx = session.ws_zmq_tx.clone();
+                    let ws_json_rx = session.ws_json_rx.clone();
+                    let connection = session.connection.clone();
+                    let state = session.state.clone();
+                    Some(ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state))
+                }
+                None => {
+                    log::error!("Kernel session {} not found for named pipe", session_id);
+                    None
+                }
+            }
+        };
+
+        let client_session = match client_session {
+            Some(session) => session,
+            None => return,
+        };
+
+        // Add to client sessions list
+        {
+            let mut sessions = client_sessions.write().unwrap();
+            sessions.push(client_session.clone());
+        }
+
+        // Handle the named pipe connection
+        let session_id_clone = session_id.clone();
+        client_session
+            .handle_named_pipe_stream(pipe_server, session_id_clone)
+            .await;
     }
 }
 
@@ -2098,113 +2101,5 @@ async fn handle_shutdown_signal<C>(server: Server<C>) {
             // Force exit if graceful shutdown fails
             std::process::exit(1);
         }
-    }
-}
-
-/// Windows Named Pipe Server implementation
-#[cfg(windows)]
-struct NamedPipeServer {
-    pipe_path: String,
-}
-
-#[cfg(windows)]
-impl NamedPipeServer {
-    async fn new(pipe_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        log::info!("Creating named pipe server at: {}", pipe_path);
-
-        // Validate the pipe path format
-        if !pipe_path.starts_with("\\\\.\\pipe\\") {
-            return Err(format!("Invalid pipe path format: {}", pipe_path).into());
-        }
-
-        Ok(NamedPipeServer {
-            pipe_path: pipe_path.to_string(),
-        })
-    }
-
-    async fn accept(&self) -> Result<NamedPipeStream, Box<dyn std::error::Error + Send + Sync>> {
-        // For now, create a new pipe instance each time
-        // In a real implementation, this would use Windows CreateNamedPipe API
-        log::debug!(
-            "Waiting for client connection on named pipe: {}",
-            self.pipe_path
-        );
-
-        // Simulate connection acceptance
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        Ok(NamedPipeStream::new(&self.pipe_path).await?)
-    }
-}
-
-/// Windows Named Pipe Stream implementation
-#[cfg(windows)]
-struct NamedPipeStream {
-    pipe_path: String,
-    connected: bool,
-}
-
-#[cfg(windows)]
-impl NamedPipeStream {
-    async fn new(pipe_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        log::debug!("Creating named pipe stream for: {}", pipe_path);
-
-        Ok(NamedPipeStream {
-            pipe_path: pipe_path.to_string(),
-            connected: true,
-        })
-    }
-}
-
-#[cfg(windows)]
-impl tokio::io::AsyncRead for NamedPipeStream {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        // For now, simulate reading data
-        if !self.connected {
-            return std::task::Poll::Ready(Ok(()));
-        }
-
-        // Simulate some data being available
-        let data = b"test message from named pipe";
-        let len = std::cmp::min(data.len(), buf.remaining());
-        buf.put_slice(&data[..len]);
-
-        std::task::Poll::Ready(Ok(()))
-    }
-}
-
-#[cfg(windows)]
-impl tokio::io::AsyncWrite for NamedPipeStream {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        // For now, simulate writing data
-        log::debug!(
-            "Writing {} bytes to named pipe: {}",
-            buf.len(),
-            self.pipe_path
-        );
-        std::task::Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        self.connected = false;
-        std::task::Poll::Ready(Ok(()))
     }
 }
