@@ -10,8 +10,8 @@
 mod common;
 
 use common::test_utils::{
-    create_execute_request, create_session_with_client,
-    create_test_session, get_python_executable, is_ipykernel_available,
+    create_execute_request, create_session_with_client, create_test_session, get_python_executable,
+    is_ipykernel_available,
 };
 use common::transport::{run_communication_test, CommunicationChannel, TransportType};
 use common::TestServer;
@@ -125,7 +125,7 @@ async fn run_python_kernel_test_transport(python_cmd: &str, transport: Transport
     let results = run_communication_test(&mut comm, timeout, max_messages).await;
 
     results.print_summary();
-    
+
     // Assert only the essential functionality for faster tests
     assert!(
         results.execute_reply_received,
@@ -507,7 +507,7 @@ async fn run_python_kernel_test_domain_socket(python_cmd: &str) {
     let results = run_communication_test(&mut comm, timeout, max_messages).await;
 
     results.print_summary();
-    
+
     // Assert only the essential functionality for faster domain socket tests
     assert!(
         results.execute_reply_received,

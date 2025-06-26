@@ -159,14 +159,48 @@ impl CommunicationChannel {
         socket_path: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let stream = tokio::net::UnixStream::connect(socket_path).await?;
-        let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
-            stream,
-            tokio_tungstenite::tungstenite::protocol::Role::Client,
-            None,
-        )
-        .await;
-        let (sender, receiver) = ws_stream.split();
-        Ok(CommunicationChannel::DomainSocket { sender, receiver })
+        
+        // Try to create a proper WebSocket connection with handshake
+        let request = format!(
+            "GET / HTTP/1.1\r\n\
+             Host: localhost\r\n\
+             Connection: Upgrade\r\n\
+             Upgrade: websocket\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n"
+        );
+        
+        use tokio::io::{AsyncWriteExt, AsyncReadExt};
+        let mut stream = stream;
+        stream.write_all(request.as_bytes()).await?;
+        
+        // Read the response headers
+        let mut buffer = [0; 1024];
+        let bytes_read = stream.read(&mut buffer).await?;
+        let response = String::from_utf8_lossy(&buffer[..bytes_read]);
+        
+        if response.contains("101 Switching Protocols") {
+            // WebSocket handshake successful, create WebSocket stream
+            let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                stream,
+                tokio_tungstenite::tungstenite::protocol::Role::Client,
+                None,
+            )
+            .await;
+            let (sender, receiver) = ws_stream.split();
+            Ok(CommunicationChannel::DomainSocket { sender, receiver })
+        } else {
+            // Fallback to raw socket without WebSocket protocol
+            println!("WebSocket handshake failed, response: {}", response);
+            let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                stream,
+                tokio_tungstenite::tungstenite::protocol::Role::Client,
+                None,
+            )
+            .await;
+            let (sender, receiver) = ws_stream.split();
+            Ok(CommunicationChannel::DomainSocket { sender, receiver })
+        }
     }
 
     #[cfg(windows)]
@@ -312,13 +346,15 @@ pub async fn run_communication_test(
         match comm.receive_message().await {
             Ok(Some(text)) => {
                 results.process_message(&text);
-                
+
                 // Exit early if we have all the essential results for fast tests
                 // Wait for a few messages after getting expected output to ensure we're done
-                if results.execute_reply_received 
-                    && results.stream_output_received 
-                    && results.expected_output_found 
-                    && results.message_count >= 15 { // Give it some buffer messages
+                if results.execute_reply_received
+                    && results.stream_output_received
+                    && results.expected_output_found
+                    && results.message_count >= 15
+                {
+                    // Give it some buffer messages
                     println!("All essential test results received, exiting early");
                     break;
                 }
