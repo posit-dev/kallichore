@@ -33,6 +33,90 @@ pub enum TestServerMode {
     DomainSocket,
 }
 
+// Common server configuration for reducing duplication
+struct ServerConfig {
+    args: Vec<String>,
+    expected_output_pattern: Option<String>, // For extracting info from server output
+}
+
+impl ServerConfig {
+    fn tcp(port: u16) -> Self {
+        Self {
+            args: vec![
+                "--port".to_string(),
+                port.to_string(),
+                "--token".to_string(),
+                "none".to_string(),
+            ],
+            expected_output_pattern: None,
+        }
+    }
+
+    #[cfg(windows)]
+    fn named_pipe(connection_file_path: &str) -> Self {
+        Self {
+            args: vec![
+                "--connection-file".to_string(),
+                connection_file_path.to_string(),
+                "--transport".to_string(),
+                "named-pipe".to_string(),
+                "--token".to_string(),
+                "none".to_string(),
+            ],
+            expected_output_pattern: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn unix_socket(socket_path: &str) -> Self {
+        Self {
+            args: vec![
+                "--unix-socket".to_string(),
+                socket_path.to_string(),
+                "--token".to_string(),
+                "none".to_string(),
+            ],
+            expected_output_pattern: None,
+        }
+    }
+}
+
+// Common server creation logic to reduce duplication
+async fn create_server_process(config: ServerConfig) -> Child {
+    // Try to use pre-built binary first, fall back to cargo run
+    let binary_path = std::env::current_dir()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/kcserver")
+        .with_extension(if cfg!(windows) { "exe" } else { "" });
+
+    let mut cmd = if binary_path.exists() {
+        println!("Using pre-built binary at: {:?}", binary_path);
+        let mut c = Command::new(&binary_path);
+        c.args(&config.args);
+        c
+    } else {
+        println!("Pre-built binary not found, using cargo run");
+        let mut c = Command::new("cargo");
+        let mut args = vec!["run".to_string(), "--bin".to_string(), "kcserver".to_string(), "--".to_string()];
+        args.extend(config.args);
+        c.args(&args);
+        c
+    };
+
+    // Capture output for debugging if needed
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    // Reduce log level for faster startup but still capture errors
+    cmd.env("RUST_LOG", "warn");
+
+    cmd.spawn().expect("Failed to start kcserver")
+}
+
 #[allow(dead_code)]
 pub struct TestServer {
     child: Child,
@@ -62,52 +146,8 @@ impl TestServer {
 
     async fn start_http_server() -> Self {
         let port = pick_unused_tcp_port().expect("Failed to pick unused port");
-
-        // Try to use pre-built binary first, fall back to cargo run
-        let binary_path = std::env::current_dir()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target/debug/kcserver")
-            .with_extension(if cfg!(windows) { "exe" } else { "" });
-
-        let mut cmd = if binary_path.exists() {
-            println!("Using pre-built binary at: {:?}", binary_path);
-            let mut c = Command::new(&binary_path);
-            c.args(&[
-                "--port",
-                &port.to_string(),
-                "--token",
-                "none", // Disable auth for testing
-            ]);
-            c
-        } else {
-            println!("Pre-built binary not found, using cargo run");
-            let mut c = Command::new("cargo");
-            c.args(&[
-                "run",
-                "--bin",
-                "kcserver",
-                "--",
-                "--port",
-                &port.to_string(),
-                "--token",
-                "none", // Disable auth for testing
-            ]);
-            c
-        };
-
-        // Capture output for debugging if needed
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        // Reduce log level for faster startup but still capture errors
-        cmd.env("RUST_LOG", "warn");
-
-        let child = cmd.spawn().expect("Failed to start kcserver");
-
+        let config = ServerConfig::tcp(port);
+        let child = create_server_process(config).await;
         let base_url = format!("http://localhost:{}", port);
 
         let test_server = TestServer {
@@ -133,56 +173,8 @@ impl TestServer {
         let temp_file = NamedTempFile::new().expect("Failed to create temp connection file");
         let connection_file_path = temp_file.path().to_string_lossy().to_string();
 
-        // Try to use pre-built binary first, fall back to cargo run
-        let binary_path = std::env::current_dir()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target/debug/kcserver")
-            .with_extension("exe");
-
-        let mut cmd = if binary_path.exists() {
-            println!("Using pre-built binary at: {:?}", binary_path);
-            let mut c = Command::new(&binary_path);
-            c.args(&[
-                "--connection-file",
-                &connection_file_path,
-                "--transport",
-                "named-pipe",
-                "--token",
-                "none", // Disable auth for testing
-            ]);
-            c
-        } else {
-            println!("Pre-built binary not found, using cargo run");
-            let mut c = Command::new("cargo");
-            c.args(&[
-                "run",
-                "--bin",
-                "kcserver",
-                "--",
-                "--connection-file",
-                &connection_file_path,
-                "--transport",
-                "named-pipe",
-                "--token",
-                "none", // Disable auth for testing
-            ]);
-            c
-        };
-
-        // Capture output for debugging if needed
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        // Reduce log level for faster startup but still capture errors
-        cmd.env("RUST_LOG", "warn");
-
-        let child = cmd
-            .spawn()
-            .expect("Failed to start kcserver with named pipe");
+        let config = ServerConfig::named_pipe(&connection_file_path);
+        let child = create_server_process(config).await;
 
         // Wait for the connection file to be created and read the pipe name from it
         let mut pipe_name = None;
@@ -239,51 +231,8 @@ impl TestServer {
             .path()
             .join(format!("kallichore-test-{}.sock", Uuid::new_v4().simple()));
 
-        // Try to use pre-built binary first, fall back to cargo run
-        let binary_path = std::env::current_dir()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target/debug/kcserver");
-
-        let mut cmd = if binary_path.exists() {
-            println!("Using pre-built binary at: {:?}", binary_path);
-            let mut c = Command::new(&binary_path);
-            c.args(&[
-                "--unix-socket",
-                socket_path.to_str().unwrap(),
-                "--token",
-                "none", // Disable auth for testing
-            ]);
-            c
-        } else {
-            println!("Pre-built binary not found, using cargo run");
-            let mut c = Command::new("cargo");
-            c.args(&[
-                "run",
-                "--bin",
-                "kcserver",
-                "--",
-                "--unix-socket",
-                socket_path.to_str().unwrap(),
-                "--token",
-                "none", // Disable auth for testing
-            ]);
-            c
-        };
-
-        // Capture output for debugging if needed
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        // Reduce log level for faster startup but still capture errors
-        cmd.env("RUST_LOG", "warn");
-
-        let child = cmd
-            .spawn()
-            .expect("Failed to start kcserver with domain socket");
+        let config = ServerConfig::unix_socket(socket_path.to_str().unwrap());
+        let child = create_server_process(config).await;
 
         // Wait for the socket file to be created
         for _attempt in 0..100 {
