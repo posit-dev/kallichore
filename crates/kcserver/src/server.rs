@@ -177,11 +177,8 @@ impl ServerConfig {
 }
 
 // Generic server runner that handles signal management
-async fn run_server_with_signals<T, C>(
-    server_future: T,
-    server: Server<C>,
-    server_type: &str,
-) where
+async fn run_server_with_signals<T, C>(server_future: T, server: Server<C>, server_type: &str)
+where
     T: Future<Output = Result<(), hyper::Error>>,
 {
     #[cfg(unix)]
@@ -1751,7 +1748,6 @@ impl<C> Server<C> {
     ) -> Result<ChannelsUpgradeResponse, ApiError> {
         use std::os::unix::fs::PermissionsExt;
         use tokio::net::UnixListener;
-        use uuid::Uuid;
 
         log::info!(
             "create_domain_socket_channel: starting for session {}",
@@ -1760,8 +1756,8 @@ impl<C> Server<C> {
 
         // Generate a unique socket path in a temp directory
         let temp_dir = env::temp_dir();
-        // Use a shorter name to avoid hitting Unix domain socket path length limits
-        let socket_name = format!("kc-{}.sock", Uuid::new_v4().simple());
+        let server_pid = std::process::id();
+        let socket_name = format!("kc.{}.{}.sock", server_pid, session_id);
         let socket_path = temp_dir.join(socket_name);
 
         info!(

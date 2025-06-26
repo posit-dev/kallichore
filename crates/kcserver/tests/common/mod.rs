@@ -101,7 +101,12 @@ async fn create_server_process(config: ServerConfig) -> Child {
     } else {
         println!("Pre-built binary not found, using cargo run");
         let mut c = Command::new("cargo");
-        let mut args = vec!["run".to_string(), "--bin".to_string(), "kcserver".to_string(), "--".to_string()];
+        let mut args = vec![
+            "run".to_string(),
+            "--bin".to_string(),
+            "kcserver".to_string(),
+            "--".to_string(),
+        ];
         args.extend(config.args);
         c.args(&args);
         c
