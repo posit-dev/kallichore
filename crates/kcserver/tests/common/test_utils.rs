@@ -63,7 +63,7 @@ pub fn create_test_session(session_id: String, python_cmd: &str) -> NewSession {
         argv: vec![
             python_cmd.to_string(),
             "-m".to_string(),
-            "ipykernel_launcher".to_string(),
+            "ipykernel".to_string(), // Use ipykernel instead of ipykernel_launcher
             "-f".to_string(),
             "{connection_file}".to_string(),
         ],
@@ -213,6 +213,16 @@ pub async fn create_session_with_client(
     }
 }
 
+/// Create a session request JSON string for the integration test
+pub async fn create_session_request_json(session_id: &str, python_cmd: &str) -> Option<String> {
+    let ipykernel_module = get_ipykernel_module(python_cmd).await?;
+    
+    Some(format!(
+        r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "{}", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "run_in_shell": false}}"#,
+        session_id, python_cmd, ipykernel_module
+    ))
+}
+
 async fn find_python_executable() -> Option<String> {
     let candidates = if cfg!(windows) {
         vec!["python", "python3", "py"]
@@ -242,11 +252,26 @@ async fn find_python_executable() -> Option<String> {
                             .next()
                             .unwrap_or(candidate)
                             .to_string();
-                        println!("Full Python path: {}", full_path);
-                        return Some(full_path);
+                        
+                        // Check if this Python has ipykernel available
+                        if check_ipykernel_available(&full_path).await {
+                            println!("Python at {} has ipykernel - using it", full_path);
+                            return Some(full_path);
+                        } else {
+                            println!("Python at {} does not have ipykernel - skipping", full_path);
+                            continue;
+                        }
                     }
                 }
-                return Some(candidate.to_string());
+                
+                // Fallback: check the candidate directly (without full path)
+                if check_ipykernel_available(candidate).await {
+                    println!("Python at {} has ipykernel - using it", candidate);
+                    return Some(candidate.to_string());
+                } else {
+                    println!("Python at {} does not have ipykernel - skipping", candidate);
+                    continue;
+                }
             }
             _ => continue,
         }
@@ -277,4 +302,33 @@ async fn check_ipykernel_available(python_cmd: &str) -> bool {
             false
         }
     }
+}
+
+/// Get the correct ipykernel module name for the given Python executable
+pub async fn get_ipykernel_module(python_cmd: &str) -> Option<String> {
+    // Try ipykernel_launcher first (older installations)
+    let launcher_check = tokio::process::Command::new(python_cmd)
+        .args(&["-c", "import ipykernel_launcher; print('launcher_available')"])
+        .output()
+        .await;
+        
+    if let Ok(output) = launcher_check {
+        if output.status.success() {
+            return Some("ipykernel_launcher".to_string());
+        }
+    }
+    
+    // Try ipykernel module directly (newer installations)
+    let kernel_check = tokio::process::Command::new(python_cmd)
+        .args(&["-c", "import ipykernel; print('kernel_available')"])
+        .output()
+        .await;
+        
+    if let Ok(output) = kernel_check {
+        if output.status.success() {
+            return Some("ipykernel".to_string());
+        }
+    }
+    
+    None
 }
