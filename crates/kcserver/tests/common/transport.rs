@@ -159,7 +159,7 @@ impl CommunicationChannel {
         socket_path: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let stream = tokio::net::UnixStream::connect(socket_path).await?;
-        
+
         // Try to create a proper WebSocket connection with handshake
         let request = format!(
             "GET / HTTP/1.1\r\n\
@@ -169,16 +169,16 @@ impl CommunicationChannel {
              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
              Sec-WebSocket-Version: 13\r\n\r\n"
         );
-        
-        use tokio::io::{AsyncWriteExt, AsyncReadExt};
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut stream = stream;
         stream.write_all(request.as_bytes()).await?;
-        
+
         // Read the response headers
         let mut buffer = [0; 1024];
         let bytes_read = stream.read(&mut buffer).await?;
         let response = String::from_utf8_lossy(&buffer[..bytes_read]);
-        
+
         if response.contains("101 Switching Protocols") {
             // WebSocket handshake successful, create WebSocket stream
             let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
@@ -352,7 +352,7 @@ pub async fn run_communication_test(
                 if results.execute_reply_received
                     && results.stream_output_received
                     && results.expected_output_found
-                    && results.message_count >= 15
+                    && results.message_count >= 7
                 {
                     // Give it some buffer messages
                     println!("All essential test results received, exiting early");

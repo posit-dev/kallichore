@@ -24,15 +24,43 @@ type ClientContext = swagger::make_context_ty!(
     XSpanIdString
 );
 
+#[derive(Clone)]
+pub enum TestServerMode {
+    Http,
+    #[cfg(windows)]
+    NamedPipe,
+    #[cfg(unix)]
+    DomainSocket,
+}
+
 #[allow(dead_code)]
 pub struct TestServer {
     child: Child,
     base_url: String,
     port: u16,
+    mode: TestServerMode,
+    #[cfg(windows)]
+    pipe_name: Option<String>,
+    #[cfg(unix)]
+    socket_path: Option<String>,
 }
 
 impl TestServer {
     pub async fn start() -> Self {
+        Self::start_with_mode(TestServerMode::Http).await
+    }
+
+    pub async fn start_with_mode(mode: TestServerMode) -> Self {
+        match mode {
+            TestServerMode::Http => Self::start_http_server().await,
+            #[cfg(windows)]
+            TestServerMode::NamedPipe => Self::start_named_pipe_server().await,
+            #[cfg(unix)]
+            TestServerMode::DomainSocket => Self::start_domain_socket_server().await,
+        }
+    }
+
+    async fn start_http_server() -> Self {
         let port = pick_unused_tcp_port().expect("Failed to pick unused port");
 
         // Try to use pre-built binary first, fall back to cargo run
@@ -86,50 +114,296 @@ impl TestServer {
             child,
             base_url,
             port,
+            mode: TestServerMode::Http,
+            #[cfg(windows)]
+            pipe_name: None,
+            #[cfg(unix)]
+            socket_path: None,
         };
 
         test_server.wait_for_ready().await;
         test_server
     }
-    async fn wait_for_ready(&self) {
-        let client = self.create_client().await;
 
-        // Increased timeout for Windows and debug builds
-        for attempt in 0..60 {
-            match timeout(Duration::from_millis(500), client.server_status()).await {
-                Ok(Ok(_)) => {
-                    println!("Server ready after {} attempts", attempt + 1);
-                    return;
-                }
-                Ok(Err(e)) => {
-                    if attempt > 45 {
-                        println!("Server status error on attempt {}: {:?}", attempt, e);
-                    }
-                }
-                Err(_) => {
-                    if attempt > 45 {
-                        println!("Server status timeout on attempt {}", attempt);
+    #[cfg(windows)]
+    async fn start_named_pipe_server() -> Self {
+        use tempfile::NamedTempFile;
+
+        // Create a temporary connection file
+        let temp_file = NamedTempFile::new().expect("Failed to create temp connection file");
+        let connection_file_path = temp_file.path().to_string_lossy().to_string();
+
+        // Try to use pre-built binary first, fall back to cargo run
+        let binary_path = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target/debug/kcserver")
+            .with_extension("exe");
+
+        let mut cmd = if binary_path.exists() {
+            println!("Using pre-built binary at: {:?}", binary_path);
+            let mut c = Command::new(&binary_path);
+            c.args(&[
+                "--connection-file",
+                &connection_file_path,
+                "--transport",
+                "named-pipe",
+                "--token",
+                "none", // Disable auth for testing
+            ]);
+            c
+        } else {
+            println!("Pre-built binary not found, using cargo run");
+            let mut c = Command::new("cargo");
+            c.args(&[
+                "run",
+                "--bin",
+                "kcserver",
+                "--",
+                "--connection-file",
+                &connection_file_path,
+                "--transport",
+                "named-pipe",
+                "--token",
+                "none", // Disable auth for testing
+            ]);
+            c
+        };
+
+        // Capture output for debugging if needed
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        // Reduce log level for faster startup but still capture errors
+        cmd.env("RUST_LOG", "warn");
+
+        let child = cmd
+            .spawn()
+            .expect("Failed to start kcserver with named pipe");
+
+        // Wait for the connection file to be created and read the pipe name from it
+        let mut pipe_name = None;
+        for _attempt in 0..100 {
+            if std::path::Path::new(&connection_file_path).exists() {
+                if let Ok(content) = std::fs::read_to_string(&connection_file_path) {
+                    if !content.trim().is_empty() {
+                        if let Ok(connection_info) =
+                            serde_json::from_str::<serde_json::Value>(&content)
+                        {
+                            if let Some(pipe_path) =
+                                connection_info.get("named_pipe").and_then(|v| v.as_str())
+                            {
+                                pipe_name = Some(pipe_path.to_string());
+                                break;
+                            }
+                        }
                     }
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        panic!("Server failed to start within timeout");
+        let pipe_name = pipe_name.expect("Failed to get pipe name from connection file");
+        println!("Named pipe server started with pipe: {}", pipe_name);
+
+        // For named pipe mode, we need to communicate via the pipe
+        let base_url = format!("pipe://{}", pipe_name);
+
+        let test_server = TestServer {
+            child,
+            base_url,
+            port: 0, // Not used for named pipe mode
+            mode: TestServerMode::NamedPipe,
+            pipe_name: Some(pipe_name),
+            #[cfg(unix)]
+            socket_path: None,
+        };
+
+        // Wait a bit for the server to be ready
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        test_server
+    }
+
+    #[cfg(unix)]
+    async fn start_domain_socket_server() -> Self {
+        use tempfile::tempdir;
+        use uuid::Uuid;
+
+        // Create a temporary directory for the socket
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let socket_path = temp_dir
+            .path()
+            .join(format!("kallichore-test-{}.sock", Uuid::new_v4().simple()));
+
+        // Try to use pre-built binary first, fall back to cargo run
+        let binary_path = std::env::current_dir()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target/debug/kcserver");
+
+        let mut cmd = if binary_path.exists() {
+            println!("Using pre-built binary at: {:?}", binary_path);
+            let mut c = Command::new(&binary_path);
+            c.args(&[
+                "--unix-socket",
+                socket_path.to_str().unwrap(),
+                "--token",
+                "none", // Disable auth for testing
+            ]);
+            c
+        } else {
+            println!("Pre-built binary not found, using cargo run");
+            let mut c = Command::new("cargo");
+            c.args(&[
+                "run",
+                "--bin",
+                "kcserver",
+                "--",
+                "--unix-socket",
+                socket_path.to_str().unwrap(),
+                "--token",
+                "none", // Disable auth for testing
+            ]);
+            c
+        };
+
+        // Capture output for debugging if needed
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        // Reduce log level for faster startup but still capture errors
+        cmd.env("RUST_LOG", "warn");
+
+        let child = cmd
+            .spawn()
+            .expect("Failed to start kcserver with domain socket");
+
+        // Wait for the socket file to be created
+        for _attempt in 0..100 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let base_url = format!("unix://{}", socket_path.to_string_lossy());
+
+        let test_server = TestServer {
+            child,
+            base_url,
+            port: 0, // Not used for domain socket mode
+            mode: TestServerMode::DomainSocket,
+            #[cfg(windows)]
+            pipe_name: None,
+            socket_path: Some(socket_path.to_string_lossy().to_string()),
+        };
+
+        // Wait a bit for the server to be ready
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        test_server
+    }
+    async fn wait_for_ready(&self) {
+        match self.mode {
+            TestServerMode::Http => {
+                let client = self.create_client().await;
+
+                // Increased timeout for Windows and debug builds
+                for attempt in 0..60 {
+                    match timeout(Duration::from_millis(500), client.server_status()).await {
+                        Ok(Ok(_)) => {
+                            println!("Server ready after {} attempts", attempt + 1);
+                            return;
+                        }
+                        Ok(Err(e)) => {
+                            if attempt > 45 {
+                                println!("Server status error on attempt {}: {:?}", attempt, e);
+                            }
+                        }
+                        Err(_) => {
+                            if attempt > 45 {
+                                println!("Server status timeout on attempt {}", attempt);
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+
+                panic!("HTTP server failed to start within timeout");
+            }
+            #[cfg(windows)]
+            TestServerMode::NamedPipe => {
+                // For named pipe servers, we just wait a bit since they don't have HTTP endpoints
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                println!("Named pipe server should be ready");
+            }
+            #[cfg(unix)]
+            TestServerMode::DomainSocket => {
+                // For domain socket servers, we just wait a bit since they don't have HTTP endpoints
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                println!("Domain socket server should be ready");
+            }
+        }
     }
 
     pub async fn create_client(&self) -> Box<dyn ApiNoContext<ClientContext> + Send + Sync> {
-        #[allow(trivial_casts)]
-        let context: ClientContext = swagger::make_context!(
-            ContextBuilder,
-            EmptyContext,
-            None as Option<AuthData>,
-            XSpanIdString::default()
-        );
+        match self.mode {
+            TestServerMode::Http => {
+                #[allow(trivial_casts)]
+                let context: ClientContext = swagger::make_context!(
+                    ContextBuilder,
+                    EmptyContext,
+                    None as Option<AuthData>,
+                    XSpanIdString::default()
+                );
 
-        let client = Client::try_new_http(&self.base_url).expect("Failed to create HTTP client");
+                let client =
+                    Client::try_new_http(&self.base_url).expect("Failed to create HTTP client");
 
-        Box::new(client.with_context(context))
+                Box::new(client.with_context(context))
+            }
+            #[cfg(windows)]
+            TestServerMode::NamedPipe => {
+                // For named pipe mode, we need a special client that can communicate over named pipes
+                // For now, we'll create a dummy client that won't be used for HTTP operations
+                // The actual communication will be done directly via named pipe
+                #[allow(trivial_casts)]
+                let context: ClientContext = swagger::make_context!(
+                    ContextBuilder,
+                    EmptyContext,
+                    None as Option<AuthData>,
+                    XSpanIdString::default()
+                );
+
+                // Create a placeholder HTTP client - this won't work for actual requests
+                // but the named pipe tests should use direct pipe communication
+                let client = Client::try_new_http("http://localhost:1")
+                    .expect("Failed to create placeholder client");
+                Box::new(client.with_context(context))
+            }
+            #[cfg(unix)]
+            TestServerMode::DomainSocket => {
+                // Similar to named pipe mode
+                #[allow(trivial_casts)]
+                let context: ClientContext = swagger::make_context!(
+                    ContextBuilder,
+                    EmptyContext,
+                    None as Option<AuthData>,
+                    XSpanIdString::default()
+                );
+
+                let client = Client::try_new_http("http://localhost:1")
+                    .expect("Failed to create placeholder client");
+                Box::new(client.with_context(context))
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -140,6 +414,23 @@ impl TestServer {
     #[allow(dead_code)]
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    pub fn pipe_name(&self) -> Option<&str> {
+        self.pipe_name.as_deref()
+    }
+
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    pub fn socket_path(&self) -> Option<&str> {
+        self.socket_path.as_deref()
+    }
+
+    #[allow(dead_code)]
+    pub fn mode(&self) -> &TestServerMode {
+        &self.mode
     }
 }
 

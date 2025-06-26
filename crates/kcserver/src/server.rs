@@ -1944,10 +1944,7 @@ impl<C> Server<C> {
 
     /// Clean up a Unix domain socket file and unregister it from active sockets
     #[cfg(unix)]
-    fn cleanup_domain_socket(
-        socket_path: &PathBuf,
-        active_sockets: &Arc<RwLock<Vec<PathBuf>>>,
-    ) {
+    fn cleanup_domain_socket(socket_path: &PathBuf, active_sockets: &Arc<RwLock<Vec<PathBuf>>>) {
         // Remove from active sockets list
         {
             let mut sockets = active_sockets.write().unwrap();
@@ -2189,7 +2186,11 @@ impl<C> Server<C> {
                 log::info!("Cleaning up domain socket on shutdown: {:?}", socket_path);
                 if socket_path.exists() {
                     if let Err(e) = std::fs::remove_file(&socket_path) {
-                        log::warn!("Failed to remove socket file '{:?}' during shutdown: {}", socket_path, e);
+                        log::warn!(
+                            "Failed to remove socket file '{:?}' during shutdown: {}",
+                            socket_path,
+                            e
+                        );
                     } else {
                         log::info!("Successfully removed domain socket: {:?}", socket_path);
                     }
