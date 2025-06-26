@@ -1755,10 +1755,34 @@ impl<C> Server<C> {
         );
 
         // Generate a unique socket path in a temp directory
-        let temp_dir = env::temp_dir();
+        // Use /tmp directly to keep path short and truncate session_id if needed
+        let temp_dir = std::path::Path::new("/tmp");
         let server_pid = std::process::id();
-        let socket_name = format!("kc.{}.{}.sock", server_pid, session_id);
-        let socket_path = temp_dir.join(socket_name);
+        
+        // Truncate session_id to 8 characters to keep socket path short
+        let short_session_id = if session_id.len() > 8 {
+            &session_id[..8]
+        } else {
+            &session_id
+        };
+        
+        let socket_name = format!("kc.{}.{}.sock", server_pid, short_session_id);
+        let mut socket_path = temp_dir.join(socket_name);
+        
+        // Ensure the socket path doesn't exceed the Unix domain socket limit (typically 108 chars)
+        if socket_path.to_string_lossy().len() > 100 {
+            // Fallback to an even shorter name using just a hash
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            
+            let mut hasher = DefaultHasher::new();
+            session_id.hash(&mut hasher);
+            server_pid.hash(&mut hasher);
+            let hash = hasher.finish();
+            
+            let socket_name = format!("kc.{:x}.sock", hash);
+            socket_path = temp_dir.join(socket_name);
+        }
 
         info!(
             "Creating Unix domain socket for session '{}' at {:?}",
