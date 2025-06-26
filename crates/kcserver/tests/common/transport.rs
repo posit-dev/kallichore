@@ -47,7 +47,13 @@ pub enum CommunicationChannel {
     },
     #[cfg(windows)]
     NamedPipe {
-        pipe: tokio::net::windows::named_pipe::NamedPipeClient,
+        sender: futures::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<tokio::net::windows::named_pipe::NamedPipeClient>,
+            Message,
+        >,
+        receiver: futures::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<tokio::net::windows::named_pipe::NamedPipeClient>,
+        >,
     },
 }
 
@@ -67,11 +73,8 @@ impl CommunicationChannel {
                 sender.send(Message::Text(message_json)).await?;
             }
             #[cfg(windows)]
-            CommunicationChannel::NamedPipe { pipe } => {
-                use tokio::io::AsyncWriteExt;
-                let message_with_newline = format!("{}\n", message_json);
-                pipe.write_all(message_with_newline.as_bytes()).await?;
-                pipe.flush().await?;
+            CommunicationChannel::NamedPipe { sender, .. } => {
+                sender.send(Message::Text(message_json)).await?;
             }
         }
         Ok(())
@@ -108,18 +111,18 @@ impl CommunicationChannel {
                 None => Ok(None),
             },
             #[cfg(windows)]
-            CommunicationChannel::NamedPipe { pipe } => {
-                use tokio::io::AsyncReadExt;
-                let mut buffer = vec![0; 4096];
-                match pipe.read(&mut buffer).await {
-                    Ok(0) => Ok(None), // EOF
-                    Ok(n) => {
-                        let text = String::from_utf8_lossy(&buffer[..n]).trim().to_string();
-                        Ok(Some(text))
-                    }
-                    Err(e) => Err(Box::new(e)),
+            CommunicationChannel::NamedPipe { receiver, .. } => match receiver.next().await {
+                Some(Ok(Message::Text(text))) => Ok(Some(text)),
+                Some(Ok(Message::Binary(data))) => {
+                    Ok(Some(format!("binary({} bytes)", data.len())))
                 }
-            }
+                Some(Ok(Message::Ping(_))) => Ok(Some("ping".to_string())),
+                Some(Ok(Message::Pong(_))) => Ok(Some("pong".to_string())),
+                Some(Ok(Message::Close(_))) => Ok(None),
+                Some(Ok(Message::Frame(_))) => Ok(Some("frame".to_string())),
+                Some(Err(e)) => Err(Box::new(e)),
+                None => Ok(None),
+            },
         }
     }
 
@@ -134,8 +137,8 @@ impl CommunicationChannel {
                 let _ = sender.send(Message::Close(None)).await;
             }
             #[cfg(windows)]
-            CommunicationChannel::NamedPipe { pipe: _ } => {
-                // Named pipe will close when dropped
+            CommunicationChannel::NamedPipe { sender, .. } => {
+                let _ = sender.send(Message::Close(None)).await;
             }
         }
         Ok(())
@@ -204,12 +207,59 @@ impl CommunicationChannel {
     }
 
     #[cfg(windows)]
-    /// Create a named pipe communication channel
+    /// Create a named pipe communication channel with WebSocket handshake
     pub async fn create_named_pipe(
         pipe_path: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let pipe = tokio::net::windows::named_pipe::ClientOptions::new().open(pipe_path)?;
-        Ok(CommunicationChannel::NamedPipe { pipe })
+
+        // Send WebSocket handshake request
+        let request = format!(
+            "GET / HTTP/1.1\r\n\
+             Host: localhost\r\n\
+             Connection: Upgrade\r\n\
+             Upgrade: websocket\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n"
+        );
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut pipe = pipe;
+        pipe.write_all(request.as_bytes()).await?;
+
+        // Read the response headers
+        let mut buffer = [0; 1024];
+        let bytes_read = pipe.read(&mut buffer).await?;
+        let response = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+        if response.contains("101 Switching Protocols") {
+            // WebSocket handshake successful, create WebSocket stream
+            let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                pipe,
+                tokio_tungstenite::tungstenite::protocol::Role::Client,
+                None,
+            )
+            .await;
+            let (sender, receiver) = ws_stream.split();
+            Ok(CommunicationChannel::NamedPipe { 
+                sender,
+                receiver,
+            })
+        } else {
+            // Fallback to raw pipe without WebSocket protocol
+            println!("WebSocket handshake failed on named pipe, response: {}", response);
+            let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                pipe,
+                tokio_tungstenite::tungstenite::protocol::Role::Client,
+                None,
+            )
+            .await;
+            let (sender, receiver) = ws_stream.split();
+            Ok(CommunicationChannel::NamedPipe { 
+                sender,
+                receiver,
+            })
+        }
     }
 }
 
