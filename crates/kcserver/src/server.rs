@@ -177,7 +177,7 @@ impl ServerConfig {
 }
 
 // Generic server runner that handles signal management
-async fn run_server_with_signals<T, C>(server_future: T, server: Server<C>, server_type: &str)
+async fn run_server_with_signals<T, C>(server_future: T, _server: Server<C>, server_type: &str)
 where
     T: Future<Output = Result<(), hyper::Error>>,
 {
@@ -198,11 +198,11 @@ where
             }
             _ = sigterm.recv() => {
                 log::info!("Received SIGTERM signal, initiating graceful shutdown");
-                handle_shutdown_signal(server).await;
+                handle_shutdown_signal(_server).await;
             }
             _ = sigint.recv() => {
                 log::info!("Received SIGINT signal, initiating graceful shutdown");
-                handle_shutdown_signal(server).await;
+                handle_shutdown_signal(_server).await;
             }
         }
     }
