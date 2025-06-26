@@ -2161,9 +2161,10 @@ async fn handle_shutdown_signal<C>(server: Server<C>) {
 
 impl<C> Server<C> {
     /// Clean up domain sockets associated with a specific session
-    fn cleanup_session_domain_sockets(&self, session_id: &str) {
+    fn cleanup_session_domain_sockets(&self, _session_id: &str) {
         #[cfg(unix)]
         {
+            let session_id = _session_id;
             // Find and clean up any domain sockets associated with this session
             // Note: We don't have a direct session_id -> socket_path mapping,
             // but we clean up sockets when client sessions disconnect
