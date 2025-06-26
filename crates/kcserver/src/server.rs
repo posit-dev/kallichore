@@ -133,40 +133,57 @@ pub async fn create(
     create_tcp_server(listener, token, idle_shutdown_hours, log_level).await;
 }
 
-async fn create_tcp_server(
-    listener: tokio::net::TcpListener,
+// Common server setup logic to reduce duplication
+struct ServerConfig {
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
-) {
-    // Get the log level from the provided parameter or environment variable if not provided
-    let effective_log_level = match log_level {
-        Some(level) => Some(level),
-        None => match env::var("RUST_LOG") {
-            Ok(level) => Some(level),
-            Err(_) => None,
-        },
-    };
+    uses_domain_sockets_or_pipes: bool,
+}
 
-    let server = Server::new(token, idle_shutdown_hours, effective_log_level, false);
+impl ServerConfig {
+    fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+        uses_domain_sockets_or_pipes: bool,
+    ) -> Self {
+        Self {
+            token,
+            idle_shutdown_hours,
+            log_level,
+            uses_domain_sockets_or_pipes,
+        }
+    }
 
-    #[cfg(unix)]
-    let server_clone = server.clone();
+    fn effective_log_level(&self) -> Option<String> {
+        match &self.log_level {
+            Some(level) => Some(level.clone()),
+            None => match env::var("RUST_LOG") {
+                Ok(level) => Some(level),
+                Err(_) => None,
+            },
+        }
+    }
 
-    let service = WebsocketInterceptorMakeService::new(server);
+    fn create_server<C>(&self) -> Server<C> {
+        Server::new(
+            self.token.clone(),
+            self.idle_shutdown_hours,
+            self.effective_log_level(),
+            self.uses_domain_sockets_or_pipes,
+        )
+    }
+}
 
-    let service = MakeAllowAllAuthenticator::new(service, "cosmo");
-
-    #[allow(unused_mut)]
-    let mut service =
-        kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
-
-    // Create the HTTP server from the TcpListener
-    let server_future = hyper::server::Server::from_tcp(listener.into_std().unwrap())
-        .expect("Failed to create server from TcpListener")
-        .serve(service);
-
-    // Set up signal handling for graceful shutdown on SIGTERM and SIGINT (Unix only)
+// Generic server runner that handles signal management
+async fn run_server_with_signals<T, C>(
+    server_future: T,
+    server: Server<C>,
+    server_type: &str,
+) where
+    T: Future<Output = Result<(), hyper::Error>>,
+{
     #[cfg(unix)]
     {
         let mut sigterm =
@@ -179,16 +196,16 @@ async fn create_tcp_server(
             result = server_future => {
                 // Server completed normally (unlikely in this case)
                 if let Err(e) = result {
-                    log::error!("Server error: {}", e);
+                    log::error!("{} server error: {}", server_type, e);
                 }
             }
             _ = sigterm.recv() => {
                 log::info!("Received SIGTERM signal, initiating graceful shutdown");
-                handle_shutdown_signal(server_clone).await;
+                handle_shutdown_signal(server).await;
             }
             _ = sigint.recv() => {
                 log::info!("Received SIGINT signal, initiating graceful shutdown");
-                handle_shutdown_signal(server_clone).await;
+                handle_shutdown_signal(server).await;
             }
         }
     }
@@ -197,9 +214,30 @@ async fn create_tcp_server(
     #[cfg(not(unix))]
     {
         if let Err(e) = server_future.await {
-            log::error!("Server error: {}", e);
+            log::error!("{} server error: {}", server_type, e);
         }
     }
+}
+
+async fn create_tcp_server(
+    listener: tokio::net::TcpListener,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+) {
+    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, false);
+    let server = config.create_server();
+
+    let service = WebsocketInterceptorMakeService::new(server.clone());
+    let service = MakeAllowAllAuthenticator::new(service, "cosmo");
+    let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+
+    // Create the HTTP server from the TcpListener
+    let server_future = hyper::server::Server::from_tcp(listener.into_std().unwrap())
+        .expect("Failed to create server from TcpListener")
+        .serve(service);
+
+    run_server_with_signals(server_future, server, "TCP").await;
 }
 
 #[cfg(unix)]
@@ -209,21 +247,12 @@ async fn create_unix_server(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
 ) {
-    // Get the log level from the provided parameter or environment variable if not provided
-    let effective_log_level = match log_level {
-        Some(level) => Some(level),
-        None => match env::var("RUST_LOG") {
-            Ok(level) => Some(level),
-            Err(_) => None,
-        },
-    };
-
-    let server = Server::new(token, idle_shutdown_hours, effective_log_level, true);
-    let server_clone = server.clone();
+    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, true);
+    let server = config.create_server();
 
     // For domain sockets, use the regular API service instead of the websocket interceptor
     // since domain sockets handle channels differently
-    let service = kallichore_api::server::MakeService::new(server);
+    let service = kallichore_api::server::MakeService::new(server.clone());
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
 
@@ -231,27 +260,7 @@ async fn create_unix_server(
     let incoming = hyperlocal::SocketIncoming::from_listener(listener);
     let server_future = hyper::server::Server::builder(incoming).serve(service);
 
-    // Set up signal handling for graceful shutdown on SIGTERM and SIGINT
-    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
-    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
-
-    // Wait for either the server to complete or a SIGTERM/SIGINT signal
-    tokio::select! {
-        result = server_future => {
-            // Server completed normally (unlikely in this case)
-            if let Err(e) = result {
-                log::error!("Unix socket server error: {}", e);
-            }
-        }
-        _ = sigterm.recv() => {
-            log::info!("Received SIGTERM signal, initiating graceful shutdown");
-            handle_shutdown_signal(server_clone).await;
-        }
-        _ = sigint.recv() => {
-            log::info!("Received SIGINT signal, initiating graceful shutdown");
-            handle_shutdown_signal(server_clone).await;
-        }
-    }
+    run_server_with_signals(server_future, server, "Unix socket").await;
 }
 
 #[cfg(windows)]
@@ -263,17 +272,8 @@ async fn create_named_pipe_server(
 ) {
     use crate::named_pipe_connection::NamedPipeIncoming;
 
-    // Get the log level from the provided parameter or environment variable if not provided
-    let effective_log_level = match log_level {
-        Some(level) => Some(level),
-        None => match env::var("RUST_LOG") {
-            Ok(level) => Some(level),
-            Err(_) => None,
-        },
-    };
-
-    // Create the server
-    let server = Server::new(token, idle_shutdown_hours, effective_log_level, true);
+    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, true);
+    let server = config.create_server();
 
     // For named pipes, use the regular API service instead of the websocket interceptor
     // since named pipes handle channels differently, similar to Unix domain sockets
@@ -295,7 +295,7 @@ async fn create_named_pipe_server(
     // Create the HTTP server for named pipe using our custom incoming implementation
     let server_future = hyper::server::Server::builder(incoming).serve(service);
 
-    // Wait for the server to complete
+    // Named pipes on Windows don't support Unix-style signals, so just run the server
     if let Err(e) = server_future.await {
         log::error!("Named pipe server error: {}", e);
     }
