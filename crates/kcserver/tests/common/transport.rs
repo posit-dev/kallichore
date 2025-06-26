@@ -312,6 +312,16 @@ pub async fn run_communication_test(
         match comm.receive_message().await {
             Ok(Some(text)) => {
                 results.process_message(&text);
+                
+                // Exit early if we have all the essential results for fast tests
+                // Wait for a few messages after getting expected output to ensure we're done
+                if results.execute_reply_received 
+                    && results.stream_output_received 
+                    && results.expected_output_found 
+                    && results.message_count >= 15 { // Give it some buffer messages
+                    println!("All essential test results received, exiting early");
+                    break;
+                }
             }
             Ok(None) => {
                 println!("Communication channel closed");
