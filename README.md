@@ -52,11 +52,13 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
 
 ## Connection Methods
 
-Kallichore supports multiple transport mechanisms for client connections, allowing flexibility based on platform capabilities and security requirements. The server can be configured to use TCP, Unix domain sockets, or Windows named pipes.
+Kallichore supports multiple transport mechanisms for client connections. The server can be configured to use TCP, Unix domain sockets, or Windows named pipes.
 
 ### TCP (Default)
 
-TCP is the default transport method that works across all platforms.
+TCP is the default transport method that works across all platforms. In TCP mode, the supervisor listens on a local TCP port and accepts RPCs over HTTP. This is suitable for remote connections and works on all operating systems.
+
+Connections to individual kernels are made with WebSockets, which are established over the HTTP connection.
 
 #### Starting the server with TCP
 
@@ -79,8 +81,6 @@ When using `--connection-file`, the server writes connection details to the spec
 {
   "port": 54321,
   "base_path": "http://127.0.0.1:54321",
-  "socket_path": null,
-  "named_pipe": null,
   "transport": "tcp",
   "server_path": "/path/to/kcserver",
   "server_pid": 12345,
@@ -91,7 +91,9 @@ When using `--connection-file`, the server writes connection details to the spec
 
 ### Unix Domain Sockets (Unix/Linux/macOS)
 
-Unix domain sockets provide high-performance IPC for local connections on Unix-like systems. They offer better security than TCP as they use filesystem permissions.
+Unix domain sockets provide high-performance IPC for local connections on Unix-like systems. They offer better security than TCP, since they use filesystem permissions. However, they are not available on Windows and are not suitable for remote connections.
+
+When using domain sockets, the server listens on a specific socket file instead of a TCP port. When connecting to individual kernels, each kernel gets a dedicated Unix socket for communication.
 
 #### Starting the server with Unix sockets
 
@@ -110,10 +112,7 @@ Unix domain sockets provide high-performance IPC for local connections on Unix-l
 
 ```json
 {
-  "port": null,
-  "base_path": null,
   "socket_path": "/tmp/kallichore-12345.sock",
-  "named_pipe": null,
   "transport": "socket",
   "server_path": "/path/to/kcserver",
   "server_pid": 12345,
@@ -124,7 +123,9 @@ Unix domain sockets provide high-performance IPC for local connections on Unix-l
 
 ### Named Pipes (Windows)
 
-Named pipes are the Windows equivalent of Unix domain sockets, providing efficient local IPC on Windows systems.
+Named pipes are the Windows equivalent of Unix domain sockets, providing efficient local IPC on Windows systems. They are not available on Unix-like systems and are only used for local connections.
+
+When using named pipes, the server listens on a named pipe path instead of a TCP port or Unix socket. Each kernel session also gets its own named pipe for communication.
 
 #### Starting the server with named pipes
 
@@ -140,9 +141,6 @@ kcserver.exe --connection-file connection.json --transport named-pipe
 
 ```json
 {
-  "port": null,
-  "base_path": null,
-  "socket_path": null,
   "named_pipe": "\\\\.\\pipe\\kallichore-12345",
   "transport": "named-pipe",
   "server_path": "C:\\path\\to\\kcserver.exe",
