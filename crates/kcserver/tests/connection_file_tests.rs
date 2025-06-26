@@ -193,7 +193,7 @@ async fn test_server_starts_with_connection_file() {
         "Successfully tested server with connection file. Port: {}",
         port
     );
-    
+
     // Clean up
     cleanup_spawned_server(child);
 }

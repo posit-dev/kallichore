@@ -185,7 +185,7 @@ mod unix_socket_tests {
     #[tokio::test]
     async fn test_unix_socket_domain_socket_channels() {
         use crate::common::test_utils::{get_python_executable, is_ipykernel_available};
-        
+
         // Check if Python and ipykernel are available
         if !is_ipykernel_available().await {
             println!("Skipping domain socket test: Python or ipykernel not available");
@@ -272,14 +272,17 @@ mod unix_socket_tests {
         let bytes_read = stream
             .read(&mut buffer)
             .expect("Failed to read channels upgrade response");
-        
+
         let channels_response = String::from_utf8_lossy(&buffer[..bytes_read]);
         println!("Channels upgrade response: {}", channels_response);
 
         // The channels upgrade should succeed
-        assert!(channels_response.contains("HTTP/1.1 101 Switching Protocols") 
+        assert!(
+            channels_response.contains("HTTP/1.1 101 Switching Protocols")
                 || channels_response.contains("HTTP/1.1 200 OK"),
-                "Expected successful WebSocket upgrade, got: {}", channels_response);
+            "Expected successful WebSocket upgrade, got: {}",
+            channels_response
+        );
 
         println!("Domain socket WebSocket communication test successful!");
     }

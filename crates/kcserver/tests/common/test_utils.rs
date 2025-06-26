@@ -216,7 +216,7 @@ pub async fn create_session_with_client(
 /// Create a session request JSON string for the integration test
 pub async fn create_session_request_json(session_id: &str, python_cmd: &str) -> Option<String> {
     let ipykernel_module = get_ipykernel_module(python_cmd).await?;
-    
+
     Some(format!(
         r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "{}", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "run_in_shell": false}}"#,
         session_id, python_cmd, ipykernel_module
@@ -252,7 +252,7 @@ async fn find_python_executable() -> Option<String> {
                             .next()
                             .unwrap_or(candidate)
                             .to_string();
-                        
+
                         // Check if this Python has ipykernel available
                         if check_ipykernel_available(&full_path).await {
                             println!("Python at {} has ipykernel - using it", full_path);
@@ -263,7 +263,7 @@ async fn find_python_executable() -> Option<String> {
                         }
                     }
                 }
-                
+
                 // Fallback: check the candidate directly (without full path)
                 if check_ipykernel_available(candidate).await {
                     println!("Python at {} has ipykernel - using it", candidate);
@@ -308,27 +308,30 @@ async fn check_ipykernel_available(python_cmd: &str) -> bool {
 pub async fn get_ipykernel_module(python_cmd: &str) -> Option<String> {
     // Try ipykernel_launcher first (older installations)
     let launcher_check = tokio::process::Command::new(python_cmd)
-        .args(&["-c", "import ipykernel_launcher; print('launcher_available')"])
+        .args(&[
+            "-c",
+            "import ipykernel_launcher; print('launcher_available')",
+        ])
         .output()
         .await;
-        
+
     if let Ok(output) = launcher_check {
         if output.status.success() {
             return Some("ipykernel_launcher".to_string());
         }
     }
-    
+
     // Try ipykernel module directly (newer installations)
     let kernel_check = tokio::process::Command::new(python_cmd)
         .args(&["-c", "import ipykernel; print('kernel_available')"])
         .output()
         .await;
-        
+
     if let Ok(output) = kernel_check {
         if output.status.success() {
             return Some("ipykernel".to_string());
         }
     }
-    
+
     None
 }

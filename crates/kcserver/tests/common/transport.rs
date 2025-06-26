@@ -8,8 +8,8 @@
 
 use futures::{SinkExt, StreamExt};
 use kcshared::websocket_message::WebsocketMessage;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 use std::time::Duration;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -82,35 +82,31 @@ impl CommunicationChannel {
         &mut self,
     ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
         match self {
-            CommunicationChannel::Websocket { receiver, .. } => {
-                match receiver.next().await {
-                    Some(Ok(Message::Text(text))) => Ok(Some(text)),
-                    Some(Ok(Message::Binary(data))) => {
-                        Ok(Some(format!("binary({} bytes)", data.len())))
-                    }
-                    Some(Ok(Message::Ping(_))) => Ok(Some("ping".to_string())),
-                    Some(Ok(Message::Pong(_))) => Ok(Some("pong".to_string())),
-                    Some(Ok(Message::Close(_))) => Ok(None),
-                    Some(Ok(Message::Frame(_))) => Ok(Some("frame".to_string())),
-                    Some(Err(e)) => Err(Box::new(e)),
-                    None => Ok(None),
+            CommunicationChannel::Websocket { receiver, .. } => match receiver.next().await {
+                Some(Ok(Message::Text(text))) => Ok(Some(text)),
+                Some(Ok(Message::Binary(data))) => {
+                    Ok(Some(format!("binary({} bytes)", data.len())))
                 }
-            }
+                Some(Ok(Message::Ping(_))) => Ok(Some("ping".to_string())),
+                Some(Ok(Message::Pong(_))) => Ok(Some("pong".to_string())),
+                Some(Ok(Message::Close(_))) => Ok(None),
+                Some(Ok(Message::Frame(_))) => Ok(Some("frame".to_string())),
+                Some(Err(e)) => Err(Box::new(e)),
+                None => Ok(None),
+            },
             #[cfg(unix)]
-            CommunicationChannel::DomainSocket { receiver, .. } => {
-                match receiver.next().await {
-                    Some(Ok(Message::Text(text))) => Ok(Some(text)),
-                    Some(Ok(Message::Binary(data))) => {
-                        Ok(Some(format!("binary({} bytes)", data.len())))
-                    }
-                    Some(Ok(Message::Ping(_))) => Ok(Some("ping".to_string())),
-                    Some(Ok(Message::Pong(_))) => Ok(Some("pong".to_string())),
-                    Some(Ok(Message::Close(_))) => Ok(None),
-                    Some(Ok(Message::Frame(_))) => Ok(Some("frame".to_string())),
-                    Some(Err(e)) => Err(Box::new(e)),
-                    None => Ok(None),
+            CommunicationChannel::DomainSocket { receiver, .. } => match receiver.next().await {
+                Some(Ok(Message::Text(text))) => Ok(Some(text)),
+                Some(Ok(Message::Binary(data))) => {
+                    Ok(Some(format!("binary({} bytes)", data.len())))
                 }
-            }
+                Some(Ok(Message::Ping(_))) => Ok(Some("ping".to_string())),
+                Some(Ok(Message::Pong(_))) => Ok(Some("pong".to_string())),
+                Some(Ok(Message::Close(_))) => Ok(None),
+                Some(Ok(Message::Frame(_))) => Ok(Some("frame".to_string())),
+                Some(Err(e)) => Err(Box::new(e)),
+                None => Ok(None),
+            },
             #[cfg(windows)]
             CommunicationChannel::NamedPipe { pipe } => {
                 use tokio::io::AsyncReadExt;
@@ -146,7 +142,9 @@ impl CommunicationChannel {
     }
 
     /// Create a websocket communication channel
-    pub async fn create_websocket(ws_url: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn create_websocket(
+        ws_url: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (ws_stream, _) = connect_async(ws_url).await?;
         let (ws_sender, ws_receiver) = ws_stream.split();
         Ok(CommunicationChannel::Websocket {
@@ -157,7 +155,9 @@ impl CommunicationChannel {
 
     #[cfg(unix)]
     /// Create a domain socket communication channel
-    pub async fn create_domain_socket(socket_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn create_domain_socket(
+        socket_path: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let stream = tokio::net::UnixStream::connect(socket_path).await?;
         let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
             stream,
@@ -171,9 +171,10 @@ impl CommunicationChannel {
 
     #[cfg(windows)]
     /// Create a named pipe communication channel
-    pub async fn create_named_pipe(pipe_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
-            .open(pipe_path)?;
+    pub async fn create_named_pipe(
+        pipe_path: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let pipe = tokio::net::windows::named_pipe::ClientOptions::new().open(pipe_path)?;
         Ok(CommunicationChannel::NamedPipe { pipe })
     }
 }
@@ -238,7 +239,9 @@ impl CommunicationTestResults {
         }
 
         // Check for expected output
-        if self.collected_output.contains("Hello from Kallichore test!")
+        if self
+            .collected_output
+            .contains("Hello from Kallichore test!")
             && self.collected_output.contains("2 + 3 = 5")
         {
             self.expected_output_found = true;
