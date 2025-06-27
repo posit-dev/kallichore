@@ -120,11 +120,26 @@ fn determine_transport(args: &Args) -> String {
 
 /// Generate a socket path for Unix domain sockets
 #[cfg(unix)]
-fn generate_socket_path() -> String {
+fn generate_socket_path(socket_dir: Option<&String>) -> String {
     use std::env;
-    let temp_dir = env::temp_dir();
+
+    let socket_directory = if let Some(dir) = socket_dir {
+        // Use the explicitly provided socket directory
+        std::path::PathBuf::from(dir)
+    } else {
+        // Try XDG runtime directory first, then fall back to temp directory
+        if let Ok(xdg_runtime_dir) = env::var("XDG_RUNTIME_DIR") {
+            std::path::PathBuf::from(xdg_runtime_dir)
+        } else {
+            env::temp_dir()
+        }
+    };
+
     let socket_name = format!("kallichore-{}.sock", std::process::id());
-    temp_dir.join(socket_name).to_string_lossy().to_string()
+    socket_directory
+        .join(socket_name)
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Generate a named pipe name for Windows
@@ -162,7 +177,7 @@ fn create_listener(args: &Args, transport_type: &str) -> (ListenerType, ServerCo
         "tcp" => create_tcp_listener_with_info(args.port),
         #[cfg(unix)]
         "socket" => {
-            let socket_path = generate_socket_path();
+            let socket_path = generate_socket_path(args.socket_dir.as_ref());
             create_unix_listener(&socket_path)
         }
         #[cfg(windows)]
@@ -294,7 +309,14 @@ struct Args {
     #[arg(short, long)]
     log_level: Option<String>,
 
-    /// The path to a Unix domain socket to bind the server to (Unix only).
+    /// The path in which new Unix domain sockets will be created (Unix only).
+    /// If not specified, defaults to the XDG runtime directory or the system's
+    /// temporary directory.
+    #[cfg(unix)]
+    #[arg(long)]
+    socket_dir: Option<String>,
+
+    /// The path to an existing Unix domain socket to bind the server to (Unix only).
     /// If specified, the server will listen on this socket instead of TCP.
     #[cfg(unix)]
     #[arg(long)]
@@ -510,6 +532,8 @@ async fn main() {
         token,
         args.idle_shutdown_hours,
         args.log_level,
+        #[cfg(unix)]
+        args.socket_dir,
     )
     .await;
 }

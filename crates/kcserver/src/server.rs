@@ -100,14 +100,32 @@ pub async fn create_with_listener(
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
+    #[cfg(unix)] socket_dir: Option<String>,
 ) {
     match listener {
         ServerListener::Tcp(tcp_listener) => {
+            #[cfg(unix)]
+            create_tcp_server(
+                tcp_listener,
+                token,
+                idle_shutdown_hours,
+                log_level,
+                socket_dir,
+            )
+            .await;
+            #[cfg(not(unix))]
             create_tcp_server(tcp_listener, token, idle_shutdown_hours, log_level).await;
         }
         #[cfg(unix)]
         ServerListener::Unix(unix_listener) => {
-            create_unix_server(unix_listener, token, idle_shutdown_hours, log_level).await;
+            create_unix_server(
+                unix_listener,
+                token,
+                idle_shutdown_hours,
+                log_level,
+                socket_dir,
+            )
+            .await;
         }
         #[cfg(windows)]
         ServerListener::NamedPipe(pipe_name) => {
@@ -130,6 +148,9 @@ pub async fn create(
     let listener = tokio::net::TcpListener::from_std(listener)
         .expect("Failed to convert to tokio TcpListener");
 
+    #[cfg(unix)]
+    create_tcp_server(listener, token, idle_shutdown_hours, log_level, None).await;
+    #[cfg(not(unix))]
     create_tcp_server(listener, token, idle_shutdown_hours, log_level).await;
 }
 
@@ -139,6 +160,8 @@ struct ServerConfig {
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
     uses_domain_sockets_or_pipes: bool,
+    #[cfg(unix)]
+    socket_dir: Option<String>,
 }
 
 impl ServerConfig {
@@ -147,12 +170,15 @@ impl ServerConfig {
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         uses_domain_sockets_or_pipes: bool,
+        #[cfg(unix)] socket_dir: Option<String>,
     ) -> Self {
         Self {
             token,
             idle_shutdown_hours,
             log_level,
             uses_domain_sockets_or_pipes,
+            #[cfg(unix)]
+            socket_dir,
         }
     }
 
@@ -172,6 +198,8 @@ impl ServerConfig {
             self.idle_shutdown_hours,
             self.effective_log_level(),
             self.uses_domain_sockets_or_pipes,
+            #[cfg(unix)]
+            self.socket_dir.clone(),
         )
     }
 }
@@ -221,7 +249,11 @@ async fn create_tcp_server(
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
+    #[cfg(unix)] socket_dir: Option<String>,
 ) {
+    #[cfg(unix)]
+    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, false, socket_dir);
+    #[cfg(not(unix))]
     let config = ServerConfig::new(token, idle_shutdown_hours, log_level, false);
     let server = config.create_server();
 
@@ -243,8 +275,9 @@ async fn create_unix_server(
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
+    socket_dir: Option<String>,
 ) {
-    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, true);
+    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, true, socket_dir);
     let server = config.create_server();
 
     // For domain sockets, use the regular API service instead of the websocket interceptor
@@ -321,6 +354,10 @@ pub struct Server<C> {
     #[cfg(unix)]
     #[allow(dead_code)]
     active_domain_sockets: Arc<RwLock<Vec<PathBuf>>>,
+    // Track the socket directory for Unix domain sockets
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    socket_dir: Option<String>,
     // Track whether this server is using named pipes
     #[cfg(windows)]
     #[allow(dead_code)]
@@ -334,6 +371,7 @@ impl<C> Server<C> {
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         uses_domain_sockets: bool,
+        socket_dir: Option<String>,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -367,6 +405,8 @@ impl<C> Server<C> {
             uses_domain_sockets,
             #[cfg(unix)]
             active_domain_sockets: Arc::new(RwLock::new(vec![])),
+            #[cfg(unix)]
+            socket_dir,
         }
     }
 
@@ -1754,9 +1794,8 @@ impl<C> Server<C> {
             session_id
         );
 
-        // Generate a unique socket path in a temp directory
-        // Use /tmp directly to keep path short and truncate session_id if needed
-        let temp_dir = std::path::Path::new("/tmp");
+        // Get the socket directory from the server config
+        let socket_directory = self.get_socket_directory();
         let server_pid = std::process::id();
 
         // Truncate session_id to 8 characters to keep socket path short
@@ -1767,7 +1806,7 @@ impl<C> Server<C> {
         };
 
         let socket_name = format!("kc.{}.{}.sock", server_pid, short_session_id);
-        let mut socket_path = temp_dir.join(socket_name);
+        let mut socket_path = socket_directory.join(socket_name);
 
         // Ensure the socket path doesn't exceed the Unix domain socket limit (typically 108 chars)
         if socket_path.to_string_lossy().len() > 100 {
@@ -1781,7 +1820,7 @@ impl<C> Server<C> {
             let hash = hasher.finish();
 
             let socket_name = format!("kc.{:x}.sock", hash);
-            socket_path = temp_dir.join(socket_name);
+            socket_path = socket_directory.join(socket_name);
         }
 
         info!(
@@ -2220,6 +2259,24 @@ impl<C> Server<C> {
             {
                 let mut sockets = self.active_domain_sockets.write().unwrap();
                 sockets.clear();
+            }
+        }
+    }
+
+    /// Get the socket directory to use for Unix domain sockets
+    #[cfg(unix)]
+    fn get_socket_directory(&self) -> PathBuf {
+        use std::env;
+
+        if let Some(ref dir) = self.socket_dir {
+            // Use the explicitly provided socket directory
+            PathBuf::from(dir)
+        } else {
+            // Try XDG runtime directory first, then fall back to temp directory
+            if let Ok(xdg_runtime_dir) = env::var("XDG_RUNTIME_DIR") {
+                PathBuf::from(xdg_runtime_dir)
+            } else {
+                env::temp_dir()
             }
         }
     }
