@@ -5,36 +5,29 @@
 //
 //
 
-//! Named pipe connection implementation for direct hyper integration on Windows
+//! Named pipe connection implementation for direct hyper integration on
+//! Windows. This allows us to use a named pipe as a transport for hyper-based
+//! servers, similar to how `hyperlocal` works with Unix domain sockets.
 
-#[cfg(windows)]
 use std::future::Future;
-#[cfg(windows)]
 use std::io;
-#[cfg(windows)]
 use std::pin::Pin;
-#[cfg(windows)]
 use std::task::{Context, Poll};
-#[cfg(windows)]
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-#[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
 /// A wrapper around Windows named pipe that implements AsyncRead and AsyncWrite
 /// for direct integration with hyper
-#[cfg(windows)]
 pub struct NamedPipeConnection {
     pipe: NamedPipeServer,
 }
 
-#[cfg(windows)]
 impl NamedPipeConnection {
     pub fn new(pipe: NamedPipeServer) -> Self {
         Self { pipe }
     }
 }
 
-#[cfg(windows)]
 impl AsyncRead for NamedPipeConnection {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -45,7 +38,6 @@ impl AsyncRead for NamedPipeConnection {
     }
 }
 
-#[cfg(windows)]
 impl AsyncWrite for NamedPipeConnection {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -68,13 +60,11 @@ impl AsyncWrite for NamedPipeConnection {
 }
 
 /// Incoming connection stream for named pipes, similar to hyperlocal's SocketIncoming
-#[cfg(windows)]
 pub struct NamedPipeIncoming {
     pipe_name: String,
     connect_future: Option<Pin<Box<dyn Future<Output = io::Result<NamedPipeServer>> + Send>>>,
 }
 
-#[cfg(windows)]
 impl NamedPipeIncoming {
     pub fn new(pipe_name: String) -> io::Result<Self> {
         Ok(Self {
@@ -95,7 +85,6 @@ impl NamedPipeIncoming {
     }
 }
 
-#[cfg(windows)]
 impl hyper::server::accept::Accept for NamedPipeIncoming {
     type Conn = NamedPipeConnection;
     type Error = io::Error;
@@ -134,21 +123,5 @@ impl hyper::server::accept::Accept for NamedPipeIncoming {
                 "No connection future available",
             ))))
         }
-    }
-}
-
-#[cfg(not(windows))]
-pub struct NamedPipeConnection;
-
-#[cfg(not(windows))]
-pub struct NamedPipeIncoming;
-
-#[cfg(not(windows))]
-impl NamedPipeIncoming {
-    pub fn new(_pipe_name: String) -> Result<Self, std::io::Error> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Named pipes are only supported on Windows",
-        ))
     }
 }
