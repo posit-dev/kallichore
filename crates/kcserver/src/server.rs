@@ -101,6 +101,7 @@ pub async fn create_with_listener(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
     #[cfg(unix)] socket_dir: Option<String>,
+    main_server_socket: Option<String>,
 ) {
     match listener {
         ServerListener::Tcp(tcp_listener) => {
@@ -124,6 +125,7 @@ pub async fn create_with_listener(
                 idle_shutdown_hours,
                 log_level,
                 socket_dir,
+                main_server_socket,
             )
             .await;
         }
@@ -162,23 +164,42 @@ struct ServerConfig {
     uses_domain_sockets_or_pipes: bool,
     #[cfg(unix)]
     socket_dir: Option<String>,
+    #[cfg(unix)]
+    main_server_socket: Option<String>,
 }
 
 impl ServerConfig {
+    #[cfg(unix)]
     fn new(
         token: Option<String>,
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         uses_domain_sockets_or_pipes: bool,
-        #[cfg(unix)] socket_dir: Option<String>,
+        socket_dir: Option<String>,
+        main_server_socket: Option<String>,
     ) -> Self {
         Self {
             token,
             idle_shutdown_hours,
             log_level,
             uses_domain_sockets_or_pipes,
-            #[cfg(unix)]
             socket_dir,
+            main_server_socket,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+        uses_domain_sockets_or_pipes: bool,
+    ) -> Self {
+        Self {
+            token,
+            idle_shutdown_hours,
+            log_level,
+            uses_domain_sockets_or_pipes,
         }
     }
 
@@ -192,14 +213,25 @@ impl ServerConfig {
         }
     }
 
+    #[cfg(unix)]
     fn create_server<C>(&self) -> Server<C> {
         Server::new(
             self.token.clone(),
             self.idle_shutdown_hours,
             self.effective_log_level(),
             self.uses_domain_sockets_or_pipes,
-            #[cfg(unix)]
             self.socket_dir.clone(),
+            self.main_server_socket.clone(),
+        )
+    }
+
+    #[cfg(not(unix))]
+    fn create_server<C>(&self) -> Server<C> {
+        Server::new(
+            self.token.clone(),
+            self.idle_shutdown_hours,
+            self.effective_log_level(),
+            self.uses_domain_sockets_or_pipes,
         )
     }
 }
@@ -252,7 +284,14 @@ async fn create_tcp_server(
     #[cfg(unix)] socket_dir: Option<String>,
 ) {
     #[cfg(unix)]
-    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, false, socket_dir);
+    let config = ServerConfig::new(
+        token,
+        idle_shutdown_hours,
+        log_level,
+        false,
+        socket_dir,
+        None,
+    );
     #[cfg(not(unix))]
     let config = ServerConfig::new(token, idle_shutdown_hours, log_level, false);
     let server = config.create_server();
@@ -276,8 +315,16 @@ async fn create_unix_server(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
     socket_dir: Option<String>,
+    main_server_socket: Option<String>,
 ) {
-    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, true, socket_dir);
+    let config = ServerConfig::new(
+        token,
+        idle_shutdown_hours,
+        log_level,
+        true,
+        socket_dir,
+        main_server_socket,
+    );
     let server = config.create_server();
 
     // For domain sockets, use the regular API service instead of the websocket interceptor
@@ -362,6 +409,9 @@ pub struct Server<C> {
     #[cfg(windows)]
     #[allow(dead_code)]
     uses_named_pipes: bool,
+    // Track the main server socket path if it was created by the server
+    #[cfg(unix)]
+    main_server_socket: Option<String>,
 }
 
 impl<C> Server<C> {
@@ -372,6 +422,7 @@ impl<C> Server<C> {
         log_level: Option<String>,
         uses_domain_sockets: bool,
         socket_dir: Option<String>,
+        main_server_socket: Option<String>,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -407,6 +458,8 @@ impl<C> Server<C> {
             active_domain_sockets: Arc::new(RwLock::new(vec![])),
             #[cfg(unix)]
             socket_dir,
+            #[cfg(unix)]
+            main_server_socket,
         }
     }
 
@@ -2240,6 +2293,22 @@ impl<C> Server<C> {
     fn cleanup_all_domain_sockets(&self) {
         #[cfg(unix)]
         {
+            // Clean up the main server socket if it was created by the server
+            if let Some(ref main_socket_path) = self.main_server_socket {
+                let socket_path = PathBuf::from(main_socket_path);
+                log::debug!("Cleaning up main server socket: {:?}", socket_path);
+                if socket_path.exists() {
+                    if let Err(e) = std::fs::remove_file(&socket_path) {
+                        log::warn!(
+                            "Failed to remove main server socket file '{:?}' during shutdown: {}",
+                            socket_path,
+                            e
+                        );
+                    }
+                }
+            }
+
+            // Clean up per-session domain sockets
             let active_sockets = self.active_domain_sockets.read().unwrap().clone();
             for socket_path in active_sockets {
                 log::info!("Cleaning up domain socket on shutdown: {:?}", socket_path);

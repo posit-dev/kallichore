@@ -158,6 +158,8 @@ enum ServerConnectionType {
     #[cfg(unix)]
     Socket {
         socket_path: String,
+        /// Whether this socket was created by the server (true) or provided by user (false)
+        server_created: bool,
     },
     #[cfg(windows)]
     NamedPipe {
@@ -178,7 +180,7 @@ fn create_listener(args: &Args, transport_type: &str) -> (ListenerType, ServerCo
         #[cfg(unix)]
         "socket" => {
             let socket_path = generate_socket_path(args.socket_dir.as_ref());
-            create_unix_listener(&socket_path)
+            create_unix_listener_with_created_flag(&socket_path, true)
         }
         #[cfg(windows)]
         "named-pipe" => {
@@ -219,6 +221,15 @@ fn create_tcp_listener_with_info(port: u16) -> (ListenerType, ServerConnectionTy
 /// Create Unix domain socket listener
 #[cfg(unix)]
 fn create_unix_listener(socket_path: &str) -> (ListenerType, ServerConnectionType) {
+    create_unix_listener_with_created_flag(socket_path, false)
+}
+
+/// Create Unix domain socket listener with server_created flag
+#[cfg(unix)]
+fn create_unix_listener_with_created_flag(
+    socket_path: &str,
+    server_created: bool,
+) -> (ListenerType, ServerConnectionType) {
     use std::os::unix::net::UnixListener as StdUnixListener;
     use tokio::net::UnixListener;
 
@@ -244,6 +255,7 @@ fn create_unix_listener(socket_path: &str) -> (ListenerType, ServerConnectionTyp
 
             let connection_info = ServerConnectionType::Socket {
                 socket_path: socket_path.to_string(),
+                server_created,
             };
 
             (ListenerType::Unix(listener), connection_info)
@@ -487,7 +499,7 @@ async fn main() {
             println!("Listening at 127.0.0.1:{}", port);
         }
         #[cfg(unix)]
-        ServerConnectionType::Socket { socket_path } => {
+        ServerConnectionType::Socket { socket_path, .. } => {
             println!("Listening on Unix socket: {}", socket_path);
         }
         #[cfg(windows)]
@@ -510,7 +522,21 @@ async fn main() {
         log::info!("Wrote connection details to {}", connection_file_path);
     }
 
-    log::debug!("Starting Kallichore"); // Convert the listener type and pass to the server
+    log::debug!("Starting Kallichore");
+
+    // Extract the main server socket path if we created it
+    #[cfg(unix)]
+    let main_server_socket = match &connection_info {
+        ServerConnectionType::Socket {
+            socket_path,
+            server_created,
+        } if *server_created => Some(socket_path.clone()),
+        _ => None,
+    };
+    #[cfg(not(unix))]
+    let main_server_socket: Option<String> = None;
+
+    // Convert the listener type and pass to the server
     let server_listener = match listener {
         ListenerType::Tcp(tcp_listener) => {
             tcp_listener
@@ -534,6 +560,7 @@ async fn main() {
         args.log_level,
         #[cfg(unix)]
         args.socket_dir,
+        main_server_socket,
     )
     .await;
 }
@@ -668,7 +695,7 @@ fn write_server_connection_file_new(
             log_path: log_file.clone(),
         },
         #[cfg(unix)]
-        ServerConnectionType::Socket { socket_path } => ServerConnectionInfoNew {
+        ServerConnectionType::Socket { socket_path, .. } => ServerConnectionInfoNew {
             port: None,
             base_path: None,
             socket_path: Some(socket_path.clone()),
