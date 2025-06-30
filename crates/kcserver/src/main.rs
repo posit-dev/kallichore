@@ -38,7 +38,7 @@ mod wire_message_header;
 mod working_dir;
 mod zmq_ws_proxy;
 
-use transport::{TransportType, TransportConfig, TransportError, ServerConnectionType};
+use transport::{ServerConnectionType, TransportConfig, TransportError, TransportType};
 
 /// Validate command line arguments for consistency and correctness
 fn validate_args(args: &Args) -> Result<(), String> {
@@ -134,7 +134,10 @@ fn generate_named_pipe() -> String {
 }
 
 /// Create the appropriate transport based on transport type and arguments
-async fn create_transport(args: &Args, transport_type: &str) -> Result<TransportType, TransportError> {
+async fn create_transport(
+    args: &Args,
+    transport_type: &str,
+) -> Result<TransportType, TransportError> {
     let config = TransportConfig {
         port: args.port,
         #[cfg(unix)]

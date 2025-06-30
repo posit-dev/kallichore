@@ -20,24 +20,24 @@ use tokio::net::UnixListener;
 pub trait Transport: Send + Sync + fmt::Debug {
     /// The listener type this transport uses
     type Listener;
-    
+
     /// The connection info type this transport produces
     type ConnectionInfo: Clone + fmt::Debug;
-    
+
     /// Create a new transport instance with the given configuration
     async fn create(config: TransportConfig) -> Result<Self, TransportError>
     where
         Self: Sized;
-    
+
     /// Get the listener for this transport
     fn listener(&self) -> &Self::Listener;
-    
+
     /// Get connection information for this transport
     fn connection_info(&self) -> &Self::ConnectionInfo;
-    
+
     /// Get the transport type as a string
     fn transport_type(&self) -> &'static str;
-    
+
     /// Log connection information
     fn log_connection_info(&self);
 }
@@ -82,34 +82,34 @@ pub struct TcpTransport {
 impl Transport for TcpTransport {
     type Listener = TcpListener;
     type ConnectionInfo = TcpConnectionInfo;
-    
+
     async fn create(config: TransportConfig) -> Result<Self, TransportError> {
         let tcp_listener = create_tcp_listener(config.port)?;
         let actual_port = tcp_listener.local_addr()?.port();
-        
+
         let connection_info = TcpConnectionInfo {
             port: actual_port,
             base_path: format!("http://127.0.0.1:{}", actual_port),
         };
-        
+
         Ok(Self {
             listener: tcp_listener,
             connection_info,
         })
     }
-    
+
     fn listener(&self) -> &Self::Listener {
         &self.listener
     }
-    
+
     fn connection_info(&self) -> &Self::ConnectionInfo {
         &self.connection_info
     }
-    
+
     fn transport_type(&self) -> &'static str {
         "tcp"
     }
-    
+
     fn log_connection_info(&self) {
         log::info!("Using TCP transport on port: {}", self.connection_info.port);
         println!("Listening at 127.0.0.1:{}", self.connection_info.port);
@@ -134,7 +134,7 @@ fn create_tcp_listener(port: u16) -> Result<TcpListener, TransportError> {
             listener
         }
     };
-    
+
     listener.set_nonblocking(true)?;
     let tokio_listener = TcpListener::from_std(listener)?;
     Ok(tokio_listener)
@@ -161,14 +161,24 @@ pub struct UnixSocketTransport {
 impl Transport for UnixSocketTransport {
     type Listener = UnixListener;
     type ConnectionInfo = UnixSocketConnectionInfo;
-    
+
     async fn create(config: TransportConfig) -> Result<Self, TransportError> {
-        let socket_path = config.unix_socket_path.clone().unwrap_or_else(|| 
-            generate_socket_path(config.socket_dir.as_ref())
-        );
-        
+        let socket_path = config
+            .unix_socket_path
+            .clone()
+            .unwrap_or_else(|| generate_socket_path(config.socket_dir.as_ref()));
+
+        // Validate socket path length
+        if let Some(explicit_path) = &config.unix_socket_path {
+            // If path was explicitly provided, validate it and exit on error
+            validate_socket_path_length(explicit_path)?;
+        } else {
+            // If path was generated, validate it (this should not fail due to our generation logic)
+            validate_socket_path_length(&socket_path)?;
+        }
+
         let server_created = config.unix_socket_path.is_none();
-        
+
         // Remove existing socket file if it exists
         if std::path::Path::new(&socket_path).exists() {
             if let Err(e) = std::fs::remove_file(&socket_path) {
@@ -179,38 +189,64 @@ impl Transport for UnixSocketTransport {
                 );
             }
         }
-        
+
         let std_listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
         std_listener.set_nonblocking(true)?;
         let listener = UnixListener::from_std(std_listener)?;
-        
+
         let connection_info = UnixSocketConnectionInfo {
             socket_path,
             server_created,
         };
-        
+
         Ok(Self {
             listener,
             connection_info,
         })
     }
-    
+
     fn listener(&self) -> &Self::Listener {
         &self.listener
     }
-    
+
     fn connection_info(&self) -> &Self::ConnectionInfo {
         &self.connection_info
     }
-    
+
     fn transport_type(&self) -> &'static str {
         "socket"
     }
-    
+
     fn log_connection_info(&self) {
-        log::info!("Using Unix domain socket: {}", self.connection_info.socket_path);
-        println!("Listening on Unix socket: {}", self.connection_info.socket_path);
+        log::info!(
+            "Using Unix domain socket: {}",
+            self.connection_info.socket_path
+        );
+        println!(
+            "Listening on Unix socket: {}",
+            self.connection_info.socket_path
+        );
     }
+}
+
+/// Maximum path length for Unix domain sockets (sockaddr_un.sun_path)
+/// This is typically 108 bytes on most Unix systems, but we use a conservative 104
+/// to account for different platforms and null termination
+#[cfg(unix)]
+pub const UNIX_SOCKET_PATH_MAX: usize = 104;
+
+/// Validate that a Unix socket path doesn't exceed the maximum length
+#[cfg(unix)]
+pub fn validate_socket_path_length(path: &str) -> Result<(), TransportError> {
+    if path.len() > UNIX_SOCKET_PATH_MAX {
+        return Err(anyhow::anyhow!(
+            "Unix socket path too long: {} characters (maximum: {}). Path: {}",
+            path.len(),
+            UNIX_SOCKET_PATH_MAX,
+            path
+        ));
+    }
+    Ok(())
 }
 
 /// Generate a socket path for Unix domain sockets
@@ -230,11 +266,37 @@ fn generate_socket_path(socket_dir: Option<&String>) -> String {
         }
     };
 
-    let socket_name = format!("kallichore-{}.sock", std::process::id());
-    socket_directory
-        .join(socket_name)
+    let socket_name = format!("kc-{}.sock", std::process::id());
+    let socket_path = socket_directory
+        .join(&socket_name)
         .to_string_lossy()
-        .to_string()
+        .to_string();
+    
+    // If the generated path is too long when using XDG runtime dir, try temp dir instead
+    if socket_path.len() > UNIX_SOCKET_PATH_MAX && socket_dir.is_none() {
+        if let Ok(xdg_runtime_dir) = env::var("XDG_RUNTIME_DIR") {
+            // We were using XDG runtime dir and it resulted in a path that's too long
+            if socket_directory == std::path::PathBuf::from(xdg_runtime_dir) {
+                log::warn!(
+                    "Socket path using XDG_RUNTIME_DIR is too long ({} chars): {}. Falling back to temp directory.",
+                    socket_path.len(),
+                    socket_path
+                );
+                
+                // Try with temp directory instead
+                let temp_socket_path = env::temp_dir()
+                    .join(&socket_name)
+                    .to_string_lossy()
+                    .to_string();
+                
+                if temp_socket_path.len() <= UNIX_SOCKET_PATH_MAX {
+                    return temp_socket_path;
+                }
+            }
+        }
+    }
+    
+    socket_path
 }
 
 /// Connection information for named pipe transport
@@ -257,38 +319,41 @@ pub struct NamedPipeTransport {
 impl Transport for NamedPipeTransport {
     type Listener = String; // Store pipe name as the "listener"
     type ConnectionInfo = NamedPipeConnectionInfo;
-    
+
     async fn create(config: TransportConfig) -> Result<Self, TransportError> {
         let pipe_name = match config.named_pipe_name {
             Some(name) => name,
             None => generate_named_pipe(),
         };
-        
+
         let connection_info = NamedPipeConnectionInfo {
             pipe_name: pipe_name.clone(),
         };
-        
+
         Ok(Self {
             pipe_name: pipe_name.clone(),
             connection_info,
         })
     }
-    
+
     fn listener(&self) -> &Self::Listener {
         &self.pipe_name
     }
-    
+
     fn connection_info(&self) -> &Self::ConnectionInfo {
         &self.connection_info
     }
-    
+
     fn transport_type(&self) -> &'static str {
         "named-pipe"
     }
-    
+
     fn log_connection_info(&self) {
         log::info!("Using named pipe: {}", self.connection_info.pipe_name);
-        println!("Listening on named pipe: {}", self.connection_info.pipe_name);
+        println!(
+            "Listening on named pipe: {}",
+            self.connection_info.pipe_name
+        );
     }
 }
 
@@ -310,13 +375,20 @@ pub enum TransportType {
 
 impl TransportType {
     /// Create a transport based on the transport type string and configuration
-    pub async fn create(transport_type: &str, config: TransportConfig) -> Result<Self, TransportError> {
+    pub async fn create(
+        transport_type: &str,
+        config: TransportConfig,
+    ) -> Result<Self, TransportError> {
         match transport_type {
             "tcp" => Ok(TransportType::Tcp(TcpTransport::create(config).await?)),
             #[cfg(unix)]
-            "socket" => Ok(TransportType::UnixSocket(UnixSocketTransport::create(config).await?)),
+            "socket" => Ok(TransportType::UnixSocket(
+                UnixSocketTransport::create(config).await?,
+            )),
             #[cfg(windows)]
-            "named-pipe" => Ok(TransportType::NamedPipe(NamedPipeTransport::create(config).await?)),
+            "named-pipe" => Ok(TransportType::NamedPipe(
+                NamedPipeTransport::create(config).await?,
+            )),
             #[cfg(unix)]
             "named-pipe" => Err(anyhow::anyhow!(
                 "Named pipes are not supported on Unix systems"
@@ -326,11 +398,12 @@ impl TransportType {
                 "Unix domain sockets are not supported on Windows"
             )),
             _ => Err(anyhow::anyhow!(
-                "Invalid transport type: {}", transport_type
+                "Invalid transport type: {}",
+                transport_type
             )),
         }
     }
-    
+
     /// Get the transport type as a string
     #[allow(dead_code)] // May be used in future features
     pub fn transport_type(&self) -> &'static str {
@@ -342,7 +415,7 @@ impl TransportType {
             TransportType::NamedPipe(transport) => transport.transport_type(),
         }
     }
-    
+
     /// Log connection information
     pub fn log_connection_info(&self) {
         match self {
@@ -353,7 +426,7 @@ impl TransportType {
             TransportType::NamedPipe(transport) => transport.log_connection_info(),
         }
     }
-    
+
     /// Convert transport to ServerConnectionType for connection file compatibility
     pub fn to_server_connection_type(&self) -> ServerConnectionType {
         match self {
@@ -381,7 +454,7 @@ impl TransportType {
             }
         }
     }
-    
+
     /// Extract the server listener, consuming the transport
     pub fn into_server_listener(self) -> crate::server::ServerListener {
         match self {
@@ -398,7 +471,7 @@ impl TransportType {
             }
         }
     }
-    
+
     /// Get main server socket path for cleanup (Unix only)
     #[cfg(unix)]
     pub fn main_server_socket(&self) -> Option<String> {
@@ -414,7 +487,7 @@ impl TransportType {
             _ => None,
         }
     }
-    
+
     #[cfg(not(unix))]
     pub fn main_server_socket(&self) -> Option<String> {
         None
@@ -439,4 +512,69 @@ pub enum ServerConnectionType {
     NamedPipe {
         pipe_name: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    mod unix_socket_path_tests {
+        use super::*;
+
+        #[test]
+        fn test_valid_socket_path() {
+            let short_path = "/tmp/test.sock";
+            assert!(validate_socket_path_length(short_path).is_ok());
+        }
+
+        #[test]
+        fn test_socket_path_too_long() {
+            // Create a path that's longer than the maximum
+            let long_path = "a".repeat(UNIX_SOCKET_PATH_MAX + 1);
+            let result = validate_socket_path_length(&long_path);
+            assert!(result.is_err());
+            
+            let error_msg = result.unwrap_err().to_string();
+            assert!(error_msg.contains("Unix socket path too long"));
+            assert!(error_msg.contains(&format!("{} characters", UNIX_SOCKET_PATH_MAX + 1)));
+        }
+
+        #[test]
+        fn test_socket_path_at_limit() {
+            // Create a path that's exactly at the maximum length
+            let max_path = "a".repeat(UNIX_SOCKET_PATH_MAX);
+            assert!(validate_socket_path_length(&max_path).is_ok());
+        }
+
+        #[test]
+        fn test_realistic_long_path() {
+            // Test with a realistic long path that might occur in practice
+            let base_dir = "/very/long/runtime/directory/path/with/many/nested/subdirectories/for/user/session/management";
+            let socket_name = "kc-12345.sock";
+            let full_path = format!("{}/{}", base_dir, socket_name);
+            
+            if full_path.len() > UNIX_SOCKET_PATH_MAX {
+                let result = validate_socket_path_length(&full_path);
+                assert!(result.is_err());
+            } else {
+                let result = validate_socket_path_length(&full_path);
+                assert!(result.is_ok());
+            }
+        }
+
+        #[test]
+        fn test_socket_path_generation_fallback() {
+            // Test that generate_socket_path handles basic generation
+            let result = generate_socket_path(None);
+            assert!(result.len() > 0);
+            assert!(result.ends_with(".sock"));
+            
+            // Test with explicit directory
+            let explicit_dir = "/tmp".to_string();
+            let result = generate_socket_path(Some(&explicit_dir));
+            assert!(result.starts_with("/tmp/"));
+            assert!(result.ends_with(".sock"));
+        }
+    }
 }

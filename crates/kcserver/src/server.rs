@@ -1861,8 +1861,8 @@ impl<C> Server<C> {
         let socket_name = format!("kc.{}.{}.sock", server_pid, short_session_id);
         let mut socket_path = socket_directory.join(socket_name);
 
-        // Ensure the socket path doesn't exceed the Unix domain socket limit (typically 108 chars)
-        if socket_path.to_string_lossy().len() > 100 {
+        // Ensure the socket path doesn't exceed the Unix domain socket limit
+        if socket_path.to_string_lossy().len() > crate::transport::UNIX_SOCKET_PATH_MAX {
             // Fallback to an even shorter name using just a hash
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
@@ -1874,6 +1874,22 @@ impl<C> Server<C> {
 
             let socket_name = format!("kc.{:x}.sock", hash);
             socket_path = socket_directory.join(socket_name);
+            
+            // Final validation - if even the hashed path is too long, return an error
+            let final_path_str = socket_path.to_string_lossy();
+            if final_path_str.len() > crate::transport::UNIX_SOCKET_PATH_MAX {
+                let error_msg = format!(
+                    "Cannot create session socket: even shortened path is too long ({} chars): {}",
+                    final_path_str.len(),
+                    final_path_str
+                );
+                log::error!("create_domain_socket_channel: {}", error_msg);
+                return Ok(ChannelsUpgradeResponse::InvalidRequest(models::Error {
+                    message: error_msg,
+                    code: "socket_path_too_long".to_string(),
+                    details: None,
+                }));
+            }
         }
 
         info!(
