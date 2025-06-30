@@ -89,32 +89,90 @@ fn create_tcp_listener(port: u16) -> std::net::TcpListener {
     }
 }
 
-/// Determine the transport type to use
-fn determine_transport(args: &Args) -> String {
+/// Validate command line arguments for consistency and correctness
+fn validate_args(args: &Args) -> Result<(), String> {
+    // Get the effective transport type (what will actually be used)
+    let effective_transport = determine_transport(args);
+
+    // Check if --port is used with non-TCP transport
+    if args.port != 0 && effective_transport != "tcp" {
+        return Err(format!(
+            "The --port argument can only be used with TCP transport. Current transport: {}. \
+            Either remove --port or use --transport tcp.",
+            effective_transport
+        ));
+    }
+
+    // Check if --unix-socket is used with non-socket transport
+    #[cfg(unix)]
+    if args.unix_socket.is_some() && effective_transport != "socket" {
+        return Err(format!(
+            "The --unix-socket argument can only be used with socket transport. Current transport: {}. \
+            Either remove --unix-socket or use --transport socket.",
+            effective_transport
+        ));
+    }
+
+    // Check for invalid transport types on specific platforms
+    #[cfg(windows)]
+    if let Some(ref transport) = args.transport {
+        if transport == "socket" {
+            return Err("Unix domain sockets (--transport socket) are not supported on Windows. Use --transport named-pipe or --transport tcp instead.".to_string());
+        }
+    }
+
+    #[cfg(unix)]
+    if let Some(ref transport) = args.transport {
+        if transport == "named-pipe" {
+            return Err("Named pipes (--transport named-pipe) are not supported on Unix systems. Use --transport socket or --transport tcp instead.".to_string());
+        }
+    }
+
+    // Validate that transport type is recognized
     if let Some(ref transport) = args.transport {
         match transport.as_str() {
-            "tcp" | "socket" | "named-pipe" => transport.clone(),
+            "tcp" | "socket" | "named-pipe" => {
+                // Valid transport types
+            }
             _ => {
-                log::error!("Invalid transport type '{}'. Valid values are 'tcp', 'socket', and 'named-pipe'", transport);
-                std::process::exit(1);
+                return Err(format!(
+                    "Invalid transport type '{}'. Valid values are 'tcp', 'socket' (Unix only), and 'named-pipe' (Windows only).",
+                    transport
+                ));
             }
         }
-    } else if args.connection_file.is_some() {
-        // Default to socket/named-pipe when using connection file
+    }
+
+    Ok(())
+}
+
+fn determine_transport(args: &Args) -> String {
+    if let Some(ref transport) = args.transport {
+        transport.clone()
+    } else {
+        // Infer transport from other arguments
         #[cfg(unix)]
-        {
-            "socket".to_string()
+        if args.unix_socket.is_some() {
+            return "socket".to_string();
         }
-        #[cfg(windows)]
-        {
-            "named-pipe".to_string()
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
+
+        if args.connection_file.is_some() {
+            // Default to socket/named-pipe when using connection file
+            #[cfg(unix)]
+            {
+                "socket".to_string()
+            }
+            #[cfg(windows)]
+            {
+                "named-pipe".to_string()
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                "tcp".to_string()
+            }
+        } else {
             "tcp".to_string()
         }
-    } else {
-        "tcp".to_string()
     }
 }
 
@@ -208,7 +266,6 @@ fn create_listener(args: &Args, transport_type: &str) -> (ListenerType, ServerCo
 fn create_tcp_listener_with_info(port: u16) -> (ListenerType, ServerConnectionType) {
     let tcp_listener = create_tcp_listener(port);
     let actual_port = tcp_listener.local_addr().unwrap().port();
-    log::info!("Using TCP port: {}", actual_port);
 
     let connection_info = ServerConnectionType::Tcp {
         port: actual_port,
@@ -302,8 +359,9 @@ struct Args {
     #[arg(long)]
     log_file: Option<String>,
 
-    /// The path to a connection file. If specified, the server will select a
-    /// port and authentication token itself, and write them to the given file.
+    /// The path to a connection file. If specified, the server will write
+    /// connection details to the given file, choosing any options not specified
+    /// in the command line arguments (e.g., port, transport type).
     #[arg(long)]
     connection_file: Option<String>,
 
@@ -348,6 +406,12 @@ struct Args {
 async fn main() {
     // Parse command line arguments
     let args = Args::parse();
+
+    // Validate the arguments for consistency and correctness
+    if let Err(e) = validate_args(&args) {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
 
     // Determine the transport type to use
     let transport_type = determine_transport(&args);
