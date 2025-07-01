@@ -518,7 +518,9 @@ pub enum ServerConnectionType {
 mod tests {
     #[cfg(unix)]
     mod unix_socket_path_tests {
-        use crate::transport::{generate_socket_path, validate_socket_path_length, UNIX_SOCKET_PATH_MAX};
+        use crate::transport::{
+            generate_socket_path, validate_socket_path_length, UNIX_SOCKET_PATH_MAX,
+        };
 
         #[test]
         fn test_valid_socket_path() {

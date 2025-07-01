@@ -976,7 +976,20 @@ where
                         .into_iter()
                         .any(|dir| {
                             let full_path = dir.join(kernel_path);
-                            full_path.exists() && full_path.is_file()
+                            if full_path.exists() && full_path.is_file() {
+                                return true;
+                            }
+
+                            // On Windows, also try with .exe extension
+                            #[cfg(windows)]
+                            {
+                                let exe_path = dir.join(format!("{}.exe", kernel_path));
+                                if exe_path.exists() && exe_path.is_file() {
+                                    return true;
+                                }
+                            }
+
+                            false
                         })
                 };
 
