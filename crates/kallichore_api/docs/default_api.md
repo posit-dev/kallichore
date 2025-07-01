@@ -12,7 +12,7 @@ Method | HTTP request | Description
 **set-server-configuration**](default_api.md#set-server-configuration) | **POST** /server_configuration | Change the server configuration
 **shutdown-server**](default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
 **adopt-session**](default_api.md#adopt-session) | **PUT** /sessions/{session_id}/adopt | Adopt an existing session
-**channels-websocket**](default_api.md#channels-websocket) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket for channel communication
+**channels-upgrade**](default_api.md#channels-upgrade) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket or domain socket for channel communication
 **connection-info**](default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 **delete-session**](default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
@@ -211,9 +211,9 @@ No authorization required
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 
-# **channels-websocket**
-> channels-websocket(session_id)
-Upgrade to a WebSocket for channel communication
+# **channels-upgrade**
+> String channels-upgrade(session_id)
+Upgrade to a WebSocket or domain socket for channel communication
 
 ### Required Parameters
 
@@ -223,7 +223,7 @@ Name | Type | Description  | Notes
 
 ### Return type
 
- (empty response body)
+[**String**](string.md)
 
 ### Authorization
 

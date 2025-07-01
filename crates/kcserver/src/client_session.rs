@@ -1,7 +1,7 @@
 //
 // client_session.rs
 //
-// Copyright (C) 2024 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
 //
 //
 
@@ -19,6 +19,8 @@ use kcshared::websocket_message::WebsocketMessage;
 use once_cell::sync::Lazy;
 use tokio::select;
 use tokio::sync::RwLock;
+#[cfg(unix)]
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
@@ -46,6 +48,9 @@ pub struct ClientSession {
     /// An event that can be triggered to disconnect the session; used when we
     /// need to reconnect a new client to the same kernel.
     pub disconnect: Arc<Event>,
+
+    /// The Unix domain socket path associated with this session, if any
+    pub socket_path: Option<String>,
 }
 
 // An atomic counter for generating unique client IDs
@@ -57,6 +62,7 @@ impl ClientSession {
         ws_json_rx: Receiver<WebsocketMessage>,
         ws_zmq_tx: Sender<JupyterMessage>,
         state: Arc<RwLock<KernelState>>,
+        socket_path: Option<String>,
     ) -> Self {
         // Derive a unique client ID for this connection by combining the
         // session ID and a counter
@@ -73,6 +79,7 @@ impl ClientSession {
             client_id: session_id,
             state,
             disconnect: Arc::new(Event::new()),
+            socket_path,
         }
     }
 
@@ -112,7 +119,23 @@ impl ClientSession {
         }
     }
 
-    pub async fn handle_channel_ws(&self, mut ws_stream: WebSocketStream<Upgraded>) {
+    pub async fn handle_channel_ws(&self, ws_stream: WebSocketStream<Upgraded>) {
+        self.handle_websocket_stream(ws_stream).await;
+    }
+
+    #[cfg(unix)]
+    async fn handle_websocket_unix_stream(
+        &self,
+        ws_stream: WebSocketStream<tokio::net::UnixStream>,
+    ) {
+        self.handle_websocket_stream(ws_stream).await;
+    }
+
+    // Generic method to handle WebSocket streams regardless of the underlying transport
+    async fn handle_websocket_stream<S>(&self, mut ws_stream: WebSocketStream<S>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         // Mark the session as connected
         {
             let mut state = self.state.write().await;
@@ -127,7 +150,9 @@ impl ClientSession {
             } else {
                 log::info!("[client {}] Connecting to websocket", self.client_id);
             }
-            state.set_connected(true).await
+            state.set_connected(true).await;
+            // Set the client socket path in the kernel state
+            state.set_client_socket_path(self.socket_path.clone());
         }
 
         // Interval timer for client pings
@@ -259,6 +284,402 @@ impl ClientSession {
         {
             let mut state = self.state.write().await;
             state.connected = false;
+            // Clear the client socket path when disconnecting
+            state.set_client_socket_path(None);
         }
+    }
+
+    /// Handle a Unix domain socket connection with WebSocket protocol support
+    #[cfg(unix)]
+    pub async fn handle_domain_socket_connection(
+        &self,
+        stream: tokio::net::UnixStream,
+        _session_id: String,
+    ) {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+
+        log::info!(
+            "[client {}] Handling Unix domain socket connection with WebSocket protocol",
+            self.client_id
+        );
+
+        // We need to peek at the first few bytes to determine if this is a WebSocket
+        // handshake request or if we should treat it as a raw WebSocket connection
+        let mut reader = BufReader::new(stream);
+
+        // Try to read the first line to see if it looks like an HTTP request
+        let mut first_line = String::new();
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            reader.read_line(&mut first_line),
+        )
+        .await
+        {
+            Ok(Ok(_)) if first_line.starts_with("GET ") => {
+                // This looks like an HTTP WebSocket upgrade request
+                log::debug!(
+                    "[client {}] Detected WebSocket handshake request",
+                    self.client_id
+                );
+
+                // Read the rest of the headers
+                let mut headers = std::collections::HashMap::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.is_err() {
+                        break;
+                    }
+                    let line = line.trim();
+                    if line.is_empty() {
+                        break; // End of headers
+                    }
+                    if let Some((key, value)) = line.split_once(':') {
+                        headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+                    }
+                }
+
+                // Generate WebSocket accept key
+                if let Some(websocket_key) = headers.get("sec-websocket-key") {
+                    let accept_key = derive_accept_key(websocket_key.as_bytes());
+
+                    // Send WebSocket handshake response
+                    let response = format!(
+                        "HTTP/1.1 101 Switching Protocols\r\n\
+                         Upgrade: websocket\r\n\
+                         Connection: Upgrade\r\n\
+                         Sec-WebSocket-Accept: {}\r\n\r\n",
+                        accept_key
+                    );
+
+                    let stream = reader.into_inner();
+                    if let Err(e) = stream.writable().await {
+                        log::error!("[client {}] Stream not writable: {}", self.client_id, e);
+                        return;
+                    }
+
+                    if let Err(e) = stream.try_write(response.as_bytes()) {
+                        log::error!(
+                            "[client {}] Failed to send WebSocket handshake response: {}",
+                            self.client_id,
+                            e
+                        );
+                        return;
+                    }
+
+                    log::debug!(
+                        "[client {}] Sent WebSocket handshake response",
+                        self.client_id
+                    );
+
+                    // Now treat it as a raw WebSocket connection (handshake complete)
+                    let ws_stream =
+                        WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+
+                    log::info!(
+                        "[client {}] Successfully created WebSocket stream from Unix domain socket (with handshake)",
+                        self.client_id
+                    );
+
+                    self.handle_websocket_unix_stream(ws_stream).await;
+                } else {
+                    log::error!(
+                        "[client {}] WebSocket upgrade request missing Sec-WebSocket-Key header",
+                        self.client_id
+                    );
+                }
+            }
+            _ => {
+                // No HTTP request detected, treat as raw WebSocket connection
+                log::debug!(
+                    "[client {}] No WebSocket handshake detected, using raw WebSocket protocol",
+                    self.client_id
+                );
+
+                let stream = reader.into_inner();
+                let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+
+                log::info!(
+                    "[client {}] Successfully created WebSocket stream from Unix domain socket (raw)",
+                    self.client_id
+                );
+
+                self.handle_websocket_unix_stream(ws_stream).await;
+            }
+        }
+    }
+
+    /// Handle a Windows named pipe stream connection with WebSocket protocol support
+    #[cfg(windows)]
+    pub async fn handle_named_pipe_stream<T>(&self, stream: T, session_id: String)
+    where
+        T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+        use tokio_tungstenite::tungstenite::protocol::Role;
+
+        log::info!(
+            "[client {}] Handling named pipe connection with WebSocket protocol for session {}",
+            self.client_id,
+            session_id
+        );
+
+        // We need to peek at the first few bytes to determine if this is a WebSocket
+        // handshake request or if we should treat it as a raw WebSocket connection
+        let mut reader = BufReader::new(stream);
+
+        // Try to read the first line to see if it looks like an HTTP request
+        let mut first_line = String::new();
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            reader.read_line(&mut first_line),
+        )
+        .await
+        {
+            Ok(Ok(_)) if first_line.starts_with("GET ") => {
+                // This looks like an HTTP WebSocket upgrade request
+                log::debug!(
+                    "[client {}] Detected WebSocket handshake request on named pipe",
+                    self.client_id
+                );
+
+                // Read the rest of the headers
+                let mut headers = std::collections::HashMap::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.is_err() {
+                        break;
+                    }
+                    let line = line.trim();
+                    if line.is_empty() {
+                        break; // End of headers
+                    }
+                    if let Some((key, value)) = line.split_once(':') {
+                        headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+                    }
+                }
+
+                // Generate WebSocket accept key
+                if let Some(websocket_key) = headers.get("sec-websocket-key") {
+                    let accept_key = derive_accept_key(websocket_key.as_bytes());
+
+                    // Send WebSocket handshake response
+                    let response = format!(
+                        "HTTP/1.1 101 Switching Protocols\r\n\
+                         Upgrade: websocket\r\n\
+                         Connection: Upgrade\r\n\
+                         Sec-WebSocket-Accept: {}\r\n\r\n",
+                        accept_key
+                    );
+
+                    let mut stream = reader.into_inner();
+                    use tokio::io::AsyncWriteExt;
+                    if let Err(e) = stream.write_all(response.as_bytes()).await {
+                        log::error!(
+                            "[client {}] Failed to send WebSocket handshake response on named pipe: {}",
+                            self.client_id,
+                            e
+                        );
+                        return;
+                    }
+
+                    if let Err(e) = stream.flush().await {
+                        log::error!(
+                            "[client {}] Failed to flush WebSocket handshake response on named pipe: {}",
+                            self.client_id,
+                            e
+                        );
+                        return;
+                    }
+
+                    log::debug!(
+                        "[client {}] Sent WebSocket handshake response on named pipe",
+                        self.client_id
+                    );
+
+                    // Now treat it as a raw WebSocket connection (handshake complete)
+                    let ws_stream =
+                        WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+
+                    log::info!(
+                        "[client {}] Successfully created WebSocket stream from named pipe (with handshake)",
+                        self.client_id
+                    );
+
+                    self.handle_websocket_stream(ws_stream).await;
+                } else {
+                    log::error!(
+                        "[client {}] WebSocket upgrade request missing Sec-WebSocket-Key header on named pipe",
+                        self.client_id
+                    );
+                }
+            }
+            _ => {
+                // No HTTP request detected, fall back to raw JSON protocol
+                log::debug!(
+                    "[client {}] No WebSocket handshake detected on named pipe, using raw JSON protocol",
+                    self.client_id
+                );
+
+                let stream = reader.into_inner();
+                self.handle_named_pipe_stream_raw(stream, session_id).await;
+            }
+        }
+    }
+
+    /// Handle a Windows named pipe stream connection (raw JSON protocol)
+    #[cfg(windows)]
+    pub async fn handle_named_pipe_stream_raw<T>(&self, mut stream: T, session_id: String)
+    where
+        T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        log::info!(
+            "[client {}] Named pipe stream handler started for session {} (raw mode)",
+            self.client_id,
+            session_id
+        );
+
+        // Mark the session as connected
+        {
+            let mut state = self.state.write().await;
+            state.set_connected(true).await;
+            // Set the client socket path in the kernel state (None for named pipes)
+            state.set_client_socket_path(self.socket_path.clone());
+        } // Create channels for bidirectional communication
+        let (tx_to_pipe, mut rx_from_kernel) = tokio::sync::mpsc::channel::<String>(100);
+        let (tx_to_kernel, rx_from_pipe) = tokio::sync::mpsc::channel::<String>(100);
+
+        // Spawn task to handle kernel messages and send them to the pipe
+        let client_id_clone = self.client_id.clone();
+        let ws_json_rx_clone = self.ws_json_rx.clone();
+        tokio::spawn(async move {
+            let receiver = ws_json_rx_clone;
+            while let Ok(message) = receiver.recv().await {
+                log::debug!(
+                    "[client {}] Sending kernel message to named pipe: {:?}",
+                    client_id_clone,
+                    message
+                );
+                let json_str = serde_json::to_string(&message).unwrap_or_else(|_| "{}".to_string());
+                // Add newline delimiter for proper message framing
+                let json_with_newline = format!("{}\n", json_str);
+                if tx_to_pipe.send(json_with_newline).await.is_err() {
+                    log::debug!(
+                        "[client {}] Named pipe channel closed, stopping kernel message forwarder",
+                        client_id_clone
+                    );
+                    break;
+                }
+            }
+        });
+
+        // Spawn task to handle pipe messages and send them to the kernel
+        let client_id_clone = self.client_id.clone();
+        let ws_zmq_tx_clone = self.ws_zmq_tx.clone();
+        let mut rx_from_pipe = rx_from_pipe;
+        tokio::spawn(async move {
+            while let Some(message_str) = rx_from_pipe.recv().await {
+                log::debug!(
+                    "[client {}] Received message from named pipe: {}",
+                    client_id_clone,
+                    message_str
+                );
+
+                // Parse and forward to kernel
+                match serde_json::from_str::<WebsocketMessage>(&message_str) {
+                    Ok(ws_message) => match ws_message {
+                        WebsocketMessage::Jupyter(jupyter_message) => {
+                            if let Err(e) = ws_zmq_tx_clone.send(jupyter_message).await {
+                                log::error!(
+                                    "[client {}] Failed to send message to kernel: {}",
+                                    client_id_clone,
+                                    e
+                                );
+                                break;
+                            }
+                        }
+                        WebsocketMessage::Kernel(_) => {
+                            log::debug!(
+                                "[client {}] Received kernel message on named pipe (ignoring)",
+                                client_id_clone
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        log::error!(
+                            "[client {}] Failed to parse named pipe message: {} - {}",
+                            client_id_clone,
+                            e,
+                            message_str
+                        );
+                    }
+                }
+            }
+        });
+
+        // Main I/O loop
+        let mut buffer = [0u8; 4096];
+        loop {
+            tokio::select! {
+                // Read from named pipe
+                read_result = stream.read(&mut buffer) => {
+                    match read_result {
+                        Ok(0) => {
+                            log::info!("[client {}] Named pipe client disconnected", self.client_id);
+                            break;
+                        },
+                        Ok(bytes_read) => {
+                            let received_data = String::from_utf8_lossy(&buffer[..bytes_read]);
+                            log::debug!("[client {}] Received from named pipe: {}", self.client_id, received_data);
+
+                            // Send to kernel handler
+                            if tx_to_kernel.send(received_data.to_string()).await.is_err() {
+                                log::debug!("[client {}] Kernel channel closed", self.client_id);
+                                break;
+                            }
+                        },
+                        Err(e) => {
+                            log::error!("[client {}] Failed to read from named pipe: {}", self.client_id, e);
+                            break;
+                        }
+                    }
+                },
+                // Write to named pipe
+                message = rx_from_kernel.recv() => {
+                    match message {
+                        Some(msg) => {
+                            if let Err(e) = stream.write_all(msg.as_bytes()).await {
+                                log::error!("[client {}] Failed to write to named pipe: {}", self.client_id, e);
+                                break;
+                            }
+                            if let Err(e) = stream.flush().await {
+                                log::error!("[client {}] Failed to flush named pipe: {}", self.client_id, e);
+                                break;
+                            }
+                        },
+                        None => {
+                            log::debug!("[client {}] Kernel message channel closed", self.client_id);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark the session as disconnected
+        {
+            let mut state = self.state.write().await;
+            state.set_connected(false).await;
+            // Clear the client socket path when disconnecting
+            state.set_client_socket_path(None);
+        }
+
+        // Notify that this client is disconnecting
+        self.disconnect.notify(usize::MAX);
+
+        log::info!("[client {}] Named pipe connection closed", self.client_id);
     }
 }

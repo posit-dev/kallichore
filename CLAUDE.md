@@ -100,3 +100,76 @@ Frontend ↔ HTTP/WebSocket ↔ Kallichore ↔ ZeroMQ ↔ Jupyter Kernels
 Use `RUST_LOG` environment variable for detailed debugging:
 - `RUST_LOG=trace` for maximum verbosity
 - `RUST_LOG=kallichore=debug` for library-specific logging
+
+## Transport Types
+
+Kallichore supports three different transport mechanisms for client connections:
+
+### TCP (Default)
+- **Platform**: All platforms (macOS, Windows, Linux)
+- **Usage**: `--transport tcp` or omit (default)
+- **Description**: Standard TCP sockets on 127.0.0.1
+- **Best for**: General purpose, cross-platform compatibility
+
+### Unix Domain Sockets
+- **Platform**: Unix-like systems only (macOS, Linux)
+- **Usage**: `--transport socket`
+- **Description**: Unix domain sockets for inter-process communication with WebSocket protocol support
+- **Protocol**: WebSocket over Unix domain sockets (supports `ws+unix:` URLs)
+- **Best for**: High performance local communication, reduced overhead
+- **Note**: Not supported on Windows
+
+### Named Pipes
+- **Platform**: Windows only
+- **Usage**: `--transport named-pipe`
+- **Description**: Windows named pipes for inter-process communication
+- **Best for**: Windows-native IPC, integration with Windows applications
+- **Note**: Not supported on Unix systems
+
+Example usage:
+```bash
+# TCP (default)
+./target/debug/kcserver --port 8080
+
+# Unix domain socket with WebSocket protocol (macOS/Linux)
+./target/debug/kcserver --transport socket
+
+# Named pipe (Windows)
+./target/debug/kcserver --transport named-pipe
+```
+
+### WebSocket Protocol Support
+
+**Unix Domain Sockets**: Starting with this version, Unix domain socket kernel client sessions use the WebSocket protocol instead of raw JSON. This enables clients to connect using `ws+unix:` URLs and provides a consistent WebSocket interface across all transport types.
+
+**Client Connection Examples**:
+- TCP WebSocket: `ws://localhost:8080/sessions/{session_id}/channels`
+- Unix Socket WebSocket: `ws+unix:/path/to/socket:/sessions/{session_id}/channels` (conceptual - actual connection via domain socket path)
+
+## Testing
+
+### Running Tests
+
+```bash
+# Run all tests
+cargo test
+
+# Run with verbose output
+cargo test -- --nocapture
+```
+
+### Test Types
+
+- **Unit tests**: Located within `src/` files using `#[cfg(test)]` modules
+- **Integration tests**: Located in `crates/kcserver/tests/`
+  - `integration_test.rs`: General TCP and WebSocket functionality
+  - `named_pipe_test.rs`: Windows named pipe specific tests (Windows only)
+- **Platform-specific tests**: Automatically disabled on unsupported platforms
+
+### Test Environment
+
+Tests automatically:
+- Start temporary server instances
+- Create isolated temporary directories
+- Handle platform-specific transport mechanisms
+- Clean up resources after completion

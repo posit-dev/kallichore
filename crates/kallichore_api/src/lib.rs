@@ -103,9 +103,9 @@ pub enum AdoptSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
-pub enum ChannelsWebsocketResponse {
-    /// Upgrade connection to a websocket
-    UpgradeConnectionToAWebsocket,
+pub enum ChannelsUpgradeResponse {
+    /// Upgraded connection
+    UpgradedConnection(String),
     /// Invalid request
     InvalidRequest(models::Error),
     /// Unauthorized
@@ -258,12 +258,12 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<AdoptSessionResponse, ApiError>;
 
-    /// Upgrade to a WebSocket for channel communication
-    async fn channels_websocket(
+    /// Upgrade to a WebSocket or domain socket for channel communication
+    async fn channels_upgrade(
         &self,
         session_id: String,
         context: &C,
-    ) -> Result<ChannelsWebsocketResponse, ApiError>;
+    ) -> Result<ChannelsUpgradeResponse, ApiError>;
 
     /// Get Jupyter connection information for the session
     async fn connection_info(
@@ -364,11 +364,11 @@ pub trait ApiNoContext<C: Send + Sync> {
         connection_info: models::ConnectionInfo,
     ) -> Result<AdoptSessionResponse, ApiError>;
 
-    /// Upgrade to a WebSocket for channel communication
-    async fn channels_websocket(
+    /// Upgrade to a WebSocket or domain socket for channel communication
+    async fn channels_upgrade(
         &self,
         session_id: String,
-    ) -> Result<ChannelsWebsocketResponse, ApiError>;
+    ) -> Result<ChannelsUpgradeResponse, ApiError>;
 
     /// Get Jupyter connection information for the session
     async fn connection_info(&self, session_id: String)
@@ -492,13 +492,13 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
             .await
     }
 
-    /// Upgrade to a WebSocket for channel communication
-    async fn channels_websocket(
+    /// Upgrade to a WebSocket or domain socket for channel communication
+    async fn channels_upgrade(
         &self,
         session_id: String,
-    ) -> Result<ChannelsWebsocketResponse, ApiError> {
+    ) -> Result<ChannelsUpgradeResponse, ApiError> {
         let context = self.context().clone();
-        self.api().channels_websocket(session_id, &context).await
+        self.api().channels_upgrade(session_id, &context).await
     }
 
     /// Get Jupyter connection information for the session

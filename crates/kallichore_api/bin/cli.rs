@@ -5,7 +5,7 @@ use log::{debug, info};
 // models may be unused if all inputs are primitive types
 #[allow(unused_imports)]
 use kallichore_api::{
-    models, AdoptSessionResponse, ApiNoContext, ChannelsWebsocketResponse, Client,
+    models, AdoptSessionResponse, ApiNoContext, ChannelsUpgradeResponse, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
     GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
     KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
@@ -100,8 +100,8 @@ enum Operation {
         #[structopt(parse(try_from_str = parse_json))]
         connection_info: models::ConnectionInfo,
     },
-    /// Upgrade to a WebSocket for channel communication
-    ChannelsWebsocket { session_id: String },
+    /// Upgrade to a WebSocket or domain socket for channel communication
+    ChannelsUpgrade { session_id: String },
     /// Get Jupyter connection information for the session
     ConnectionInfo { session_id: String },
     /// Delete session
@@ -319,24 +319,24 @@ async fn main() -> Result<()> {
                 AdoptSessionResponse::Unauthorized => "Unauthorized\n".to_string(),
             }
         }
-        Operation::ChannelsWebsocket { session_id } => {
+        Operation::ChannelsUpgrade { session_id } => {
             info!(
-                "Performing a ChannelsWebsocket request on {:?}",
+                "Performing a ChannelsUpgrade request on {:?}",
                 (&session_id)
             );
 
-            let result = client.channels_websocket(session_id).await?;
+            let result = client.channels_upgrade(session_id).await?;
             debug!("Result: {:?}", result);
 
             match result {
-                ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket => {
-                    "UpgradeConnectionToAWebsocket\n".to_string()
+                ChannelsUpgradeResponse::UpgradedConnection(body) => {
+                    "UpgradedConnection\n".to_string() + &serde_json::to_string_pretty(&body)?
                 }
-                ChannelsWebsocketResponse::InvalidRequest(body) => {
+                ChannelsUpgradeResponse::InvalidRequest(body) => {
                     "InvalidRequest\n".to_string() + &serde_json::to_string_pretty(&body)?
                 }
-                ChannelsWebsocketResponse::Unauthorized => "Unauthorized\n".to_string(),
-                ChannelsWebsocketResponse::SessionNotFound => "SessionNotFound\n".to_string(),
+                ChannelsUpgradeResponse::Unauthorized => "Unauthorized\n".to_string(),
+                ChannelsUpgradeResponse::SessionNotFound => "SessionNotFound\n".to_string(),
             }
         }
         Operation::ConnectionInfo { session_id } => {

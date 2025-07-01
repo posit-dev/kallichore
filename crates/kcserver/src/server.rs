@@ -37,7 +37,10 @@ use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
 use sysinfo::{Pid, System};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::{self, Sender};
@@ -63,7 +66,7 @@ use crate::websocket_service::WebsocketInterceptorMakeService;
 use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
-    models, AdoptSessionResponse, ChannelsWebsocketResponse, ConnectionInfoResponse,
+    models, AdoptSessionResponse, ChannelsUpgradeResponse, ConnectionInfoResponse,
     DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
     NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
@@ -74,6 +77,66 @@ use kcshared::{
 };
 use tokio::sync::broadcast;
 
+// Enum to handle different listener types in server
+#[cfg(all(unix, not(windows)))]
+pub enum ServerListener {
+    Tcp(tokio::net::TcpListener),
+    Unix(tokio::net::UnixListener),
+}
+
+#[cfg(windows)]
+pub enum ServerListener {
+    Tcp(tokio::net::TcpListener),
+    NamedPipe(String), // Store the pipe name
+}
+
+#[cfg(not(any(unix, windows)))]
+pub enum ServerListener {
+    Tcp(tokio::net::TcpListener),
+}
+
+pub async fn create_with_listener(
+    listener: ServerListener,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+    #[cfg(unix)] socket_dir: Option<String>,
+    _main_server_socket: Option<String>,
+) {
+    match listener {
+        ServerListener::Tcp(tcp_listener) => {
+            #[cfg(unix)]
+            create_tcp_server(
+                tcp_listener,
+                token,
+                idle_shutdown_hours,
+                log_level,
+                socket_dir,
+            )
+            .await;
+            #[cfg(not(unix))]
+            create_tcp_server(tcp_listener, token, idle_shutdown_hours, log_level).await;
+        }
+        #[cfg(unix)]
+        ServerListener::Unix(unix_listener) => {
+            create_unix_server(
+                unix_listener,
+                token,
+                idle_shutdown_hours,
+                log_level,
+                socket_dir,
+                _main_server_socket,
+            )
+            .await;
+        }
+        #[cfg(windows)]
+        ServerListener::NamedPipe(pipe_name) => {
+            create_named_pipe_server(pipe_name, token, idle_shutdown_hours, log_level).await;
+        }
+    }
+}
+
+#[allow(dead_code)]
 pub async fn create(
     listener: std::net::TcpListener,
     token: Option<String>,
@@ -87,34 +150,96 @@ pub async fn create(
     let listener = tokio::net::TcpListener::from_std(listener)
         .expect("Failed to convert to tokio TcpListener");
 
-    // Get the log level from the provided parameter or environment variable if not provided
-    let effective_log_level = match log_level {
-        Some(level) => Some(level),
-        None => match env::var("RUST_LOG") {
-            Ok(level) => Some(level),
-            Err(_) => None,
-        },
-    };
+    #[cfg(unix)]
+    create_tcp_server(listener, token, idle_shutdown_hours, log_level, None).await;
+    #[cfg(not(unix))]
+    create_tcp_server(listener, token, idle_shutdown_hours, log_level).await;
+}
 
-    let server = Server::new(token, idle_shutdown_hours, effective_log_level);
+struct ServerConfig {
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+    uses_domain_sockets_or_pipes: bool,
+    #[cfg(unix)]
+    socket_dir: Option<String>,
+    #[cfg(unix)]
+    main_server_socket: Option<String>,
+}
+
+impl ServerConfig {
+    #[cfg(unix)]
+    fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+        uses_domain_sockets_or_pipes: bool,
+        socket_dir: Option<String>,
+        main_server_socket: Option<String>,
+    ) -> Self {
+        Self {
+            token,
+            idle_shutdown_hours,
+            log_level,
+            uses_domain_sockets_or_pipes,
+            socket_dir,
+            main_server_socket,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+        uses_domain_sockets_or_pipes: bool,
+    ) -> Self {
+        Self {
+            token,
+            idle_shutdown_hours,
+            log_level,
+            uses_domain_sockets_or_pipes,
+        }
+    }
+
+    fn effective_log_level(&self) -> Option<String> {
+        match &self.log_level {
+            Some(level) => Some(level.clone()),
+            None => match env::var("RUST_LOG") {
+                Ok(level) => Some(level),
+                Err(_) => None,
+            },
+        }
+    }
 
     #[cfg(unix)]
-    let server_clone = server.clone();
+    fn create_server<C>(&self) -> Server<C> {
+        Server::new(
+            self.token.clone(),
+            self.idle_shutdown_hours,
+            self.effective_log_level(),
+            self.uses_domain_sockets_or_pipes,
+            self.socket_dir.clone(),
+            self.main_server_socket.clone(),
+        )
+    }
 
-    let service = WebsocketInterceptorMakeService::new(server);
+    #[cfg(not(unix))]
+    fn create_server<C>(&self) -> Server<C> {
+        Server::new(
+            self.token.clone(),
+            self.idle_shutdown_hours,
+            self.effective_log_level(),
+            self.uses_domain_sockets_or_pipes,
+        )
+    }
+}
 
-    let service = MakeAllowAllAuthenticator::new(service, "cosmo");
-
-    #[allow(unused_mut)]
-    let mut service =
-        kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
-
-    // Create the HTTP server from the TcpListener
-    let server_future = hyper::server::Server::from_tcp(listener.into_std().unwrap())
-        .expect("Failed to create server from TcpListener")
-        .serve(service);
-
-    // Set up signal handling for graceful shutdown on SIGTERM and SIGINT (Unix only)
+// Generic server runner that handles signal management
+async fn run_server_with_signals<T, C>(server_future: T, _server: Server<C>, server_type: &str)
+where
+    T: Future<Output = Result<(), hyper::Error>>,
+{
     #[cfg(unix)]
     {
         let mut sigterm =
@@ -127,16 +252,16 @@ pub async fn create(
             result = server_future => {
                 // Server completed normally (unlikely in this case)
                 if let Err(e) = result {
-                    log::error!("Server error: {}", e);
+                    log::error!("{} server error: {}", server_type, e);
                 }
             }
             _ = sigterm.recv() => {
                 log::info!("Received SIGTERM signal, initiating graceful shutdown");
-                handle_shutdown_signal(server_clone).await;
+                handle_shutdown_signal(_server).await;
             }
             _ = sigint.recv() => {
                 log::info!("Received SIGINT signal, initiating graceful shutdown");
-                handle_shutdown_signal(server_clone).await;
+                handle_shutdown_signal(_server).await;
             }
         }
     }
@@ -145,8 +270,110 @@ pub async fn create(
     #[cfg(not(unix))]
     {
         if let Err(e) = server_future.await {
-            log::error!("Server error: {}", e);
+            log::error!("{} server error: {}", server_type, e);
         }
+    }
+}
+
+async fn create_tcp_server(
+    listener: tokio::net::TcpListener,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+    #[cfg(unix)] socket_dir: Option<String>,
+) {
+    #[cfg(unix)]
+    let config = ServerConfig::new(
+        token,
+        idle_shutdown_hours,
+        log_level,
+        false,
+        socket_dir,
+        None,
+    );
+    #[cfg(not(unix))]
+    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, false);
+    let server = config.create_server();
+
+    let service = WebsocketInterceptorMakeService::new(server.clone());
+    let service = MakeAllowAllAuthenticator::new(service, "cosmo");
+    let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+
+    // Create the HTTP server from the TcpListener
+    let server_future = hyper::server::Server::from_tcp(listener.into_std().unwrap())
+        .expect("Failed to create server from TcpListener")
+        .serve(service);
+
+    run_server_with_signals(server_future, server, "TCP").await;
+}
+
+#[cfg(unix)]
+async fn create_unix_server(
+    listener: tokio::net::UnixListener,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+    socket_dir: Option<String>,
+    main_server_socket: Option<String>,
+) {
+    let config = ServerConfig::new(
+        token,
+        idle_shutdown_hours,
+        log_level,
+        true,
+        socket_dir,
+        main_server_socket,
+    );
+    let server = config.create_server();
+
+    // For domain sockets, use the regular API service instead of the websocket interceptor
+    // since domain sockets handle channels differently
+    let service = kallichore_api::server::MakeService::new(server.clone());
+    let service = MakeAllowAllAuthenticator::new(service, "cosmo");
+    let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+
+    // Create the HTTP server for Unix domain socket using hyperlocal
+    let incoming = hyperlocal::SocketIncoming::from_listener(listener);
+    let server_future = hyper::server::Server::builder(incoming).serve(service);
+
+    run_server_with_signals(server_future, server, "Unix socket").await;
+}
+
+#[cfg(windows)]
+async fn create_named_pipe_server(
+    pipe_name: String,
+    token: Option<String>,
+    idle_shutdown_hours: Option<u16>,
+    log_level: Option<String>,
+) {
+    use crate::named_pipe_connection::NamedPipeIncoming;
+
+    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, true);
+    let server = config.create_server();
+
+    // For named pipes, use the regular API service instead of the websocket interceptor
+    // since named pipes handle channels differently, similar to Unix domain sockets
+    let service = kallichore_api::server::MakeService::new(server);
+    let service = MakeAllowAllAuthenticator::new(service, "cosmo");
+    let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+
+    log::info!("Starting named pipe HTTP server on: {}", pipe_name);
+
+    // Create the named pipe incoming connection stream
+    let incoming = match NamedPipeIncoming::new(pipe_name.clone()) {
+        Ok(incoming) => incoming,
+        Err(e) => {
+            log::error!("Failed to create named pipe incoming: {}", e);
+            return;
+        }
+    };
+
+    // Create the HTTP server for named pipe using our custom incoming implementation
+    let server_future = hyper::server::Server::builder(incoming).serve(service);
+
+    // Named pipes on Windows don't support Unix-style signals, so just run the server
+    if let Err(e) = server_future.await {
+        log::error!("Named pipe server error: {}", e);
     }
 }
 
@@ -163,16 +390,124 @@ pub struct Server<C> {
     // Shared, thread-safe storage for the idle_shutdown_hours setting
     idle_shutdown_hours: Arc<RwLock<Option<u16>>>,
     #[allow(dead_code)]
-    log_level: Option<String>,
-    // Channel to signal changes to idle configuration
+    log_level: Option<String>, // Channel to signal changes to idle configuration
     idle_config_update_tx: Sender<Option<u16>>,
+    // Track whether this server is using Unix domain sockets
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    uses_domain_sockets: bool,
+    // Track active domain socket paths for cleanup
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    active_domain_sockets: Arc<RwLock<Vec<PathBuf>>>,
+    // Track the socket directory for Unix domain sockets
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    socket_dir: Option<String>,
+    // Track whether this server is using named pipes
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    uses_named_pipes: bool,
+    // Track the main server socket path if it was created by the server
+    #[cfg(unix)]
+    main_server_socket: Option<String>,
 }
 
 impl<C> Server<C> {
+    #[cfg(unix)]
     pub fn new(
         token: Option<String>,
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
+        uses_domain_sockets: bool,
+        socket_dir: Option<String>,
+        main_server_socket: Option<String>,
+    ) -> Self {
+        // Create the list of kernel sessions we'll use throughout the server lifetime
+        let kernel_sessions = Arc::new(RwLock::new(vec![]));
+
+        // Create a shared, thread-safe storage for the idle_shutdown_hours setting
+        let shared_idle_hours = Arc::new(RwLock::new(idle_shutdown_hours));
+
+        // Create channels for idle nudging and configuration updates
+        let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
+        let (idle_config_update_tx, idle_config_update_rx) = mpsc::channel(16);
+
+        // Start the idle poll task
+        Self::idle_poll_task(
+            kernel_sessions.clone(),
+            idle_nudge_rx,
+            shared_idle_hours.clone(),
+            idle_config_update_rx,
+        );
+
+        Server {
+            token,
+            started_time: std::time::Instant::now(),
+            marker: PhantomData,
+            kernel_sessions,
+            client_sessions: Arc::new(RwLock::new(vec![])),
+            reserved_ports: Arc::new(RwLock::new(vec![])),
+            idle_nudge_tx,
+            idle_shutdown_hours: shared_idle_hours,
+            log_level,
+            idle_config_update_tx,
+            uses_domain_sockets,
+            #[cfg(unix)]
+            active_domain_sockets: Arc::new(RwLock::new(vec![])),
+            #[cfg(unix)]
+            socket_dir,
+            #[cfg(unix)]
+            main_server_socket,
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+        uses_named_pipes: bool,
+    ) -> Self {
+        // Create the list of kernel sessions we'll use throughout the server lifetime
+        let kernel_sessions = Arc::new(RwLock::new(vec![]));
+
+        // Create a shared, thread-safe storage for the idle_shutdown_hours setting
+        let shared_idle_hours = Arc::new(RwLock::new(idle_shutdown_hours));
+
+        // Create channels for idle nudging and configuration updates
+        let (idle_nudge_tx, idle_nudge_rx) = mpsc::channel(256);
+        let (idle_config_update_tx, idle_config_update_rx) = mpsc::channel(16);
+
+        // Start the idle poll task
+        Self::idle_poll_task(
+            kernel_sessions.clone(),
+            idle_nudge_rx,
+            shared_idle_hours.clone(),
+            idle_config_update_rx,
+        );
+
+        Server {
+            token,
+            started_time: std::time::Instant::now(),
+            marker: PhantomData,
+            kernel_sessions,
+            client_sessions: Arc::new(RwLock::new(vec![])),
+            reserved_ports: Arc::new(RwLock::new(vec![])),
+            idle_nudge_tx,
+            idle_shutdown_hours: shared_idle_hours,
+            log_level,
+            idle_config_update_tx,
+            uses_named_pipes,
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    pub fn new(
+        token: Option<String>,
+        idle_shutdown_hours: Option<u16>,
+        log_level: Option<String>,
+        _uses_domain_sockets: bool,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -511,7 +846,6 @@ impl<C> Server<C> {
     /// Validate the bearer token in the context.
     ///
     /// # Arguments
-    ///
     /// - `context`: The context to validate.
     ///
     /// # Returns
@@ -642,7 +976,20 @@ where
                         .into_iter()
                         .any(|dir| {
                             let full_path = dir.join(kernel_path);
-                            full_path.exists() && full_path.is_file()
+                            if full_path.exists() && full_path.is_file() {
+                                return true;
+                            }
+
+                            // On Windows, also try with .exe extension
+                            #[cfg(windows)]
+                            {
+                                let exe_path = dir.join(format!("{}.exe", kernel_path));
+                                if exe_path.exists() && exe_path.is_file() {
+                                    return true;
+                                }
+                            }
+
+                            false
                         })
                 };
 
@@ -827,18 +1174,76 @@ where
         // Remove the session from the list
         sessions.remove(index.unwrap());
 
+        // Clean up any domain sockets associated with this session
+        self.cleanup_session_domain_sockets(&session_id);
+
         Ok(DeleteSessionResponse::SessionDeleted(
             serde_json::Value::Null,
         ))
     }
 
-    async fn channels_websocket(
+    async fn channels_upgrade(
         &self,
         session_id: String,
-        _context: &C,
-    ) -> Result<ChannelsWebsocketResponse, ApiError> {
+        context: &C,
+    ) -> Result<ChannelsUpgradeResponse, ApiError> {
         info!("upgrade to websocket: {}", session_id);
-        Ok(ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket)
+
+        // Token validation
+        if !self.validate_token(context) {
+            log::warn!(
+                "channels_upgrade: token validation failed for session {}",
+                session_id
+            );
+            return Ok(ChannelsUpgradeResponse::Unauthorized);
+        }
+
+        // Validate the session exists
+        {
+            let kernel_sessions = self.kernel_sessions.read().unwrap();
+            if kernel_sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+                .is_none()
+            {
+                let err = KSError::SessionNotFound(session_id.clone());
+                err.log();
+                log::warn!("channels_upgrade: session not found: {}", session_id);
+                return Ok(ChannelsUpgradeResponse::SessionNotFound);
+            }
+        }
+        #[cfg(unix)]
+        {
+            if self.uses_domain_sockets {
+                log::info!(
+                    "channels_upgrade: using domain sockets for session {}",
+                    session_id
+                );
+                // For Unix domain sockets, create a new socket and return its path
+                return self.create_domain_socket_channel(session_id).await;
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            if self.uses_named_pipes {
+                log::info!(
+                    "channels_upgrade: using named pipes for session {}",
+                    session_id
+                );
+                // For Windows named pipes, create a new pipe and return its path
+                return self.create_named_pipe_channel(session_id).await;
+            }
+        }
+
+        log::info!(
+            "channels_upgrade: using WebSocket upgrade for session {}",
+            session_id
+        );
+        // For TCP connections, use the normal WebSocket upgrade response
+        Ok(ChannelsUpgradeResponse::UpgradedConnection(
+            session_id.clone(),
+        ))
     }
 
     async fn connection_info(
@@ -928,6 +1333,8 @@ where
                 system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[process_id]));
                 if let Some(process) = system.process(process_id) {
                     if process.kill() {
+                        // Clean up any domain sockets associated with this session
+                        self.cleanup_session_domain_sockets(&session_id);
                         Ok(KillSessionResponse::Killed(serde_json::Value::Null))
                     } else {
                         let err = KSError::ProcessNotFound(pid, session_id.clone());
@@ -1199,6 +1606,9 @@ where
             return Ok(ShutdownServerResponse::Unauthorized);
         }
 
+        // Clean up all domain sockets before shutting down
+        self.cleanup_all_domain_sockets();
+
         // Create a vector of all the kernel sessions that are currently running
         let running_sessions = {
             let kernel_sessions = self.kernel_sessions.read().unwrap().clone();
@@ -1399,7 +1809,7 @@ impl<C> Server<C> {
                         let ws_json_rx = session.ws_json_rx.clone();
                         let connection = session.connection.clone();
                         let state = session.state.clone();
-                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state)
+                        ClientSession::new(connection, ws_json_rx, ws_zmq_tx, state, None)
                     };
 
                     // Add it to the list of client sessions
@@ -1434,6 +1844,395 @@ impl<C> Server<C> {
             .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
         Ok(response)
     }
+
+    /// Create a Unix domain socket for the session and return its path
+    #[cfg(unix)]
+    async fn create_domain_socket_channel(
+        &self,
+        session_id: String,
+    ) -> Result<ChannelsUpgradeResponse, ApiError> {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::net::UnixListener;
+
+        log::info!(
+            "create_domain_socket_channel: starting for session {}",
+            session_id
+        );
+
+        // Get the socket directory from the server config
+        let socket_directory = self.get_socket_directory();
+        let server_pid = std::process::id();
+
+        // Truncate session_id to 8 characters to keep socket path short
+        let short_session_id = if session_id.len() > 8 {
+            &session_id[..8]
+        } else {
+            &session_id
+        };
+
+        let socket_name = format!("kc.{}.{}.sock", server_pid, short_session_id);
+        let mut socket_path = socket_directory.join(socket_name);
+
+        // Ensure the socket path doesn't exceed the Unix domain socket limit
+        if socket_path.to_string_lossy().len() > crate::transport::UNIX_SOCKET_PATH_MAX {
+            // Fallback to an even shorter name using just a hash
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+
+            let mut hasher = DefaultHasher::new();
+            session_id.hash(&mut hasher);
+            server_pid.hash(&mut hasher);
+            let hash = hasher.finish();
+
+            let socket_name = format!("kc.{:x}.sock", hash);
+            socket_path = socket_directory.join(socket_name);
+
+            // Final validation - if even the hashed path is too long, return an error
+            let final_path_str = socket_path.to_string_lossy();
+            if final_path_str.len() > crate::transport::UNIX_SOCKET_PATH_MAX {
+                let error_msg = format!(
+                    "Cannot create session socket: even shortened path is too long ({} chars): {}",
+                    final_path_str.len(),
+                    final_path_str
+                );
+                log::error!("create_domain_socket_channel: {}", error_msg);
+                return Ok(ChannelsUpgradeResponse::InvalidRequest(models::Error {
+                    message: error_msg,
+                    code: "socket_path_too_long".to_string(),
+                    details: None,
+                }));
+            }
+        }
+
+        info!(
+            "Creating Unix domain socket for session '{}' at {:?}",
+            session_id, socket_path
+        );
+
+        // Remove existing socket file if it exists
+        if socket_path.exists() {
+            if let Err(e) = std::fs::remove_file(&socket_path) {
+                log::warn!(
+                    "Failed to remove existing socket file '{:?}': {}",
+                    socket_path,
+                    e
+                );
+            }
+        }
+
+        // Create the Unix domain socket
+        match UnixListener::bind(&socket_path) {
+            Ok(listener) => {
+                log::info!(
+                    "create_domain_socket_channel: successfully created listener for session {}",
+                    session_id
+                );
+
+                // Register the socket path for cleanup
+                {
+                    let mut active_sockets = self.active_domain_sockets.write().unwrap();
+                    active_sockets.push(socket_path.clone());
+                }
+
+                // Set appropriate permissions on the socket file (readable/writable by owner)
+                if let Err(e) =
+                    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+                {
+                    log::warn!(
+                        "Failed to set permissions on socket file '{:?}': {}",
+                        socket_path,
+                        e
+                    );
+                }
+
+                info!(
+                    "Created Unix domain socket for session '{}' at {:?}",
+                    session_id, socket_path
+                );
+
+                // Spawn a task to handle connections to this domain socket
+                let kernel_sessions = self.kernel_sessions.clone();
+                let client_sessions = self.client_sessions.clone();
+                let socket_path_for_task = socket_path.clone();
+                let session_id_for_task = session_id.clone();
+                let active_sockets_for_cleanup = self.active_domain_sockets.clone();
+
+                tokio::spawn(async move {
+                    Self::handle_domain_socket_connections(
+                        listener,
+                        session_id_for_task,
+                        kernel_sessions,
+                        client_sessions,
+                        socket_path_for_task,
+                        active_sockets_for_cleanup,
+                    )
+                    .await;
+                });
+
+                let path_string = socket_path.to_string_lossy().to_string();
+                log::info!(
+                    "create_domain_socket_channel: returning path {} for session {}",
+                    path_string,
+                    session_id
+                );
+
+                // Return the socket path
+                Ok(ChannelsUpgradeResponse::UpgradedConnection(path_string))
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to create Unix domain socket: {}", e);
+                log::error!("create_domain_socket_channel: {}", error_msg);
+                Ok(ChannelsUpgradeResponse::InvalidRequest(models::Error {
+                    message: error_msg,
+                    code: "domain_socket_error".to_string(),
+                    details: None,
+                }))
+            }
+        }
+    }
+
+    /// Handle incoming connections to a Unix domain socket
+    #[cfg(unix)]
+    async fn handle_domain_socket_connections(
+        listener: tokio::net::UnixListener,
+        session_id: String,
+        kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
+        client_sessions: Arc<RwLock<Vec<ClientSession>>>,
+        socket_path: PathBuf,
+        active_sockets: Arc<RwLock<Vec<PathBuf>>>,
+    ) {
+        info!(
+            "Starting to handle connections for Unix domain socket at {:?}",
+            socket_path
+        );
+
+        while let Ok((stream, _)) = listener.accept().await {
+            info!(
+                "Accepted connection on Unix domain socket for session '{}'",
+                session_id
+            );
+
+            // Check if the session already exists and disconnect the existing one
+            {
+                let mut client_sessions_guard = client_sessions.write().unwrap();
+                let index = client_sessions_guard
+                    .iter()
+                    .position(|s| s.connection.session_id == session_id);
+                match index {
+                    Some(pos) => {
+                        let session = client_sessions_guard.get(pos).unwrap();
+                        log::debug!("Disconnecting existing client session for '{}'", session_id);
+                        session.disconnect.notify(usize::MAX);
+                        client_sessions_guard.remove(pos);
+                    }
+                    None => {
+                        log::trace!("No existing client session found for '{}'", session_id);
+                    }
+                }
+            }
+
+            // Create a new client session for this domain socket connection
+            let client_session = {
+                let sessions = kernel_sessions.read().unwrap();
+                let kernel_session = sessions
+                    .iter()
+                    .find(|s| s.connection.session_id == session_id);
+
+                match kernel_session {
+                    Some(session) => {
+                        let ws_zmq_tx = session.ws_zmq_tx.clone();
+                        let ws_json_rx = session.ws_json_rx.clone();
+                        let connection = session.connection.clone();
+                        let state = session.state.clone();
+                        let socket_path_str = socket_path.to_string_lossy().to_string();
+                        ClientSession::new(
+                            connection,
+                            ws_json_rx,
+                            ws_zmq_tx,
+                            state,
+                            Some(socket_path_str),
+                        )
+                    }
+                    None => {
+                        log::error!(
+                            "Session '{}' not found when creating domain socket client",
+                            session_id
+                        );
+                        continue;
+                    }
+                }
+            };
+
+            // Add it to the list of client sessions
+            {
+                let mut client_sessions_guard = client_sessions.write().unwrap();
+                client_sessions_guard.push(client_session.clone());
+            }
+
+            // Handle the domain socket connection
+            let session_id_for_handler = session_id.clone();
+            tokio::spawn(async move {
+                client_session
+                    .handle_domain_socket_connection(stream, session_id_for_handler)
+                    .await;
+            });
+        }
+
+        // Clean up the socket file when we're done and unregister it
+        Self::cleanup_domain_socket(&socket_path, &active_sockets);
+    }
+
+    /// Clean up a Unix domain socket file and unregister it from active sockets
+    #[cfg(unix)]
+    fn cleanup_domain_socket(socket_path: &PathBuf, active_sockets: &Arc<RwLock<Vec<PathBuf>>>) {
+        // Remove from active sockets list
+        {
+            let mut sockets = active_sockets.write().unwrap();
+            if let Some(pos) = sockets.iter().position(|path| path == socket_path) {
+                sockets.remove(pos);
+                log::debug!("Unregistered domain socket: {:?}", socket_path);
+            }
+        }
+
+        // Remove the socket file
+        if socket_path.exists() {
+            if let Err(e) = std::fs::remove_file(&socket_path) {
+                log::warn!("Failed to remove socket file '{:?}': {}", socket_path, e);
+            } else {
+                log::info!("Cleaned up domain socket file: {:?}", socket_path);
+            }
+        }
+    }
+
+    /// Create a Windows named pipe for the session and return its path
+    #[cfg(windows)]
+    async fn create_named_pipe_channel(
+        &self,
+        session_id: String,
+    ) -> Result<ChannelsUpgradeResponse, ApiError> {
+        use uuid::Uuid;
+
+        log::info!(
+            "create_named_pipe_channel: starting for session {}",
+            session_id
+        );
+
+        // Generate a unique pipe name
+        let pipe_name = format!(r"\\.\pipe\kallichore-{}", Uuid::new_v4().simple());
+
+        info!(
+            "Creating named pipe for session '{}' at {}",
+            session_id, pipe_name
+        );
+
+        // Spawn a task to handle connections to this named pipe
+        let kernel_sessions = self.kernel_sessions.clone();
+        let client_sessions = self.client_sessions.clone();
+        let pipe_name_for_task = pipe_name.clone();
+        let session_id_for_task = session_id.clone();
+
+        tokio::spawn(async move {
+            Self::handle_named_pipe_connections(
+                pipe_name_for_task,
+                session_id_for_task,
+                kernel_sessions,
+                client_sessions,
+            )
+            .await;
+        });
+
+        log::info!(
+            "create_named_pipe_channel: returning path {} for session {}",
+            pipe_name,
+            session_id
+        );
+
+        // Return the pipe name
+        Ok(ChannelsUpgradeResponse::UpgradedConnection(pipe_name))
+    }
+    /// Handle incoming connections to a Windows named pipe
+    #[cfg(windows)]
+    async fn handle_named_pipe_connections(
+        pipe_name: String,
+        session_id: String,
+        kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
+        client_sessions: Arc<RwLock<Vec<ClientSession>>>,
+    ) {
+        log::info!(
+            "Named pipe handler started for {} and session {}",
+            pipe_name,
+            session_id
+        );
+
+        // Create a real named pipe server using Windows APIs
+        let pipe_server =
+            match tokio::net::windows::named_pipe::ServerOptions::new().create(&pipe_name) {
+                Ok(server) => server,
+                Err(e) => {
+                    log::error!("Failed to create named pipe server {}: {}", pipe_name, e);
+                    return;
+                }
+            };
+
+        log::info!("Named pipe server created successfully: {}", pipe_name);
+
+        // Wait for a client to connect
+        match pipe_server.connect().await {
+            Ok(()) => {
+                log::info!("Client connected to named pipe: {}", pipe_name);
+            }
+            Err(e) => {
+                log::error!(
+                    "Failed to connect client on named pipe {}: {}",
+                    pipe_name,
+                    e
+                );
+                return;
+            }
+        }
+
+        // Find the kernel session for this session_id
+        let client_session = {
+            let sessions = kernel_sessions.read().unwrap();
+            let session = sessions
+                .iter()
+                .find(|s| s.connection.session_id == session_id)
+                .cloned();
+
+            match session {
+                Some(session) => {
+                    let ws_zmq_tx = session.ws_zmq_tx.clone();
+                    let ws_json_rx = session.ws_json_rx.clone();
+                    let connection = session.connection.clone();
+                    let state = session.state.clone();
+                    Some(ClientSession::new(
+                        connection, ws_json_rx, ws_zmq_tx, state, None,
+                    ))
+                }
+                None => {
+                    log::error!("Kernel session {} not found for named pipe", session_id);
+                    None
+                }
+            }
+        };
+
+        let client_session = match client_session {
+            Some(session) => session,
+            None => return,
+        };
+
+        // Add to client sessions list
+        {
+            let mut sessions = client_sessions.write().unwrap();
+            sessions.push(client_session.clone());
+        }
+
+        // Handle the named pipe connection
+        let session_id_clone = session_id.clone();
+        client_session
+            .handle_named_pipe_stream(pipe_server, session_id_clone)
+            .await;
+    }
 }
 
 // Implement ApiWebsocketExt trait to provide access to channels_websocket_request
@@ -1467,6 +2266,9 @@ where
 /// Handle shutdown signal by gracefully shutting down all sessions and exiting
 #[cfg(unix)]
 async fn handle_shutdown_signal<C>(server: Server<C>) {
+    // Clean up all domain sockets first
+    server.cleanup_all_domain_sockets();
+
     // Get all running sessions
     let running_sessions = {
         let kernel_sessions = server.kernel_sessions.read().unwrap().clone();
@@ -1490,6 +2292,89 @@ async fn handle_shutdown_signal<C>(server: Server<C>) {
             log::error!("Error during shutdown: {}", e);
             // Force exit if graceful shutdown fails
             std::process::exit(1);
+        }
+    }
+}
+
+impl<C> Server<C> {
+    /// Clean up domain sockets associated with a specific session
+    fn cleanup_session_domain_sockets(&self, _session_id: &str) {
+        #[cfg(unix)]
+        {
+            let session_id = _session_id;
+            // Find and clean up any domain sockets associated with this session
+            // Note: We don't have a direct session_id -> socket_path mapping,
+            // but we clean up sockets when client sessions disconnect
+            let client_sessions = self.client_sessions.read().unwrap();
+            for client_session in client_sessions.iter() {
+                if client_session.connection.session_id == session_id {
+                    if let Some(socket_path_str) = &client_session.socket_path {
+                        let socket_path = PathBuf::from(socket_path_str);
+                        Self::cleanup_domain_socket(&socket_path, &self.active_domain_sockets);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Clean up all active domain sockets (called during server shutdown)
+    fn cleanup_all_domain_sockets(&self) {
+        #[cfg(unix)]
+        {
+            // Clean up the main server socket if it was created by the server
+            if let Some(ref main_socket_path) = self.main_server_socket {
+                let socket_path = PathBuf::from(main_socket_path);
+                log::debug!("Cleaning up main server socket: {:?}", socket_path);
+                if socket_path.exists() {
+                    if let Err(e) = std::fs::remove_file(&socket_path) {
+                        log::warn!(
+                            "Failed to remove main server socket file '{:?}' during shutdown: {}",
+                            socket_path,
+                            e
+                        );
+                    }
+                }
+            }
+
+            // Clean up per-session domain sockets
+            let active_sockets = self.active_domain_sockets.read().unwrap().clone();
+            for socket_path in active_sockets {
+                log::info!("Cleaning up domain socket on shutdown: {:?}", socket_path);
+                if socket_path.exists() {
+                    if let Err(e) = std::fs::remove_file(&socket_path) {
+                        log::warn!(
+                            "Failed to remove socket file '{:?}' during shutdown: {}",
+                            socket_path,
+                            e
+                        );
+                    } else {
+                        log::info!("Successfully removed domain socket: {:?}", socket_path);
+                    }
+                }
+            }
+            // Clear the list
+            {
+                let mut sockets = self.active_domain_sockets.write().unwrap();
+                sockets.clear();
+            }
+        }
+    }
+
+    /// Get the socket directory to use for Unix domain sockets
+    #[cfg(unix)]
+    fn get_socket_directory(&self) -> PathBuf {
+        use std::env;
+
+        if let Some(ref dir) = self.socket_dir {
+            // Use the explicitly provided socket directory
+            PathBuf::from(dir)
+        } else {
+            // Try XDG runtime directory first, then fall back to temp directory
+            if let Ok(xdg_runtime_dir) = env::var("XDG_RUNTIME_DIR") {
+                PathBuf::from(xdg_runtime_dir)
+            } else {
+                env::temp_dir()
+            }
         }
     }
 }

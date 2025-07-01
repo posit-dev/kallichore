@@ -42,7 +42,7 @@ const FRAGMENT_ENCODE_SET: &AsciiSet = &percent_encoding::CONTROLS
 const ID_ENCODE_SET: &AsciiSet = &FRAGMENT_ENCODE_SET.add(b'|');
 
 use crate::{
-    AdoptSessionResponse, Api, ChannelsWebsocketResponse, ClientHeartbeatResponse,
+    AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
     ConnectionInfoResponse, DeleteSessionResponse, GetServerConfigurationResponse,
     GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
     NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
@@ -1161,11 +1161,11 @@ where
         }
     }
 
-    async fn channels_websocket(
+    async fn channels_upgrade(
         &self,
         param_session_id: String,
         context: &C,
-    ) -> Result<ChannelsWebsocketResponse, ApiError> {
+    ) -> Result<ChannelsUpgradeResponse, ApiError> {
         let mut client_service = self.client_service.clone();
         let mut uri = format!(
             "{}/sessions/{session_id}/channels",
@@ -1217,7 +1217,21 @@ where
             .await?;
 
         match response.status().as_u16() {
-            200 => Ok(ChannelsWebsocketResponse::UpgradeConnectionToAWebsocket),
+            200 => {
+                let body = response.into_body();
+                let body = body
+                    .into_raw()
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e)))
+                    .await?;
+
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {}", e)))?;
+                let body = serde_json::from_str::<String>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {}", e))
+                })?;
+
+                Ok(ChannelsUpgradeResponse::UpgradedConnection(body))
+            }
             400 => {
                 let body = response.into_body();
                 let body = body
@@ -1231,10 +1245,10 @@ where
                     ApiError(format!("Response body did not match the schema: {}", e))
                 })?;
 
-                Ok(ChannelsWebsocketResponse::InvalidRequest(body))
+                Ok(ChannelsUpgradeResponse::InvalidRequest(body))
             }
-            401 => Ok(ChannelsWebsocketResponse::Unauthorized),
-            404 => Ok(ChannelsWebsocketResponse::SessionNotFound),
+            401 => Ok(ChannelsUpgradeResponse::Unauthorized),
+            404 => Ok(ChannelsUpgradeResponse::SessionNotFound),
             code => {
                 let headers = response.headers().clone();
                 let body = response.into_body().take(100).into_raw().await;
