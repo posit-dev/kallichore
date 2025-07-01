@@ -127,12 +127,6 @@ fn determine_transport(args: &Args) -> String {
     }
 }
 
-/// Generate a named pipe name for Windows
-#[cfg(windows)]
-fn generate_named_pipe() -> String {
-    format!(r"\\.\pipe\kallichore-{}", std::process::id())
-}
-
 /// Create the appropriate transport based on transport type and arguments
 async fn create_transport(
     args: &Args,
