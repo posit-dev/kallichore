@@ -101,7 +101,7 @@ pub async fn create_with_listener(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
     #[cfg(unix)] socket_dir: Option<String>,
-    main_server_socket: Option<String>,
+    _main_server_socket: Option<String>,
 ) {
     match listener {
         ServerListener::Tcp(tcp_listener) => {
@@ -125,7 +125,7 @@ pub async fn create_with_listener(
                 idle_shutdown_hours,
                 log_level,
                 socket_dir,
-                main_server_socket,
+                _main_server_socket,
             )
             .await;
         }

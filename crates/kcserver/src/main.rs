@@ -146,7 +146,10 @@ async fn create_transport(
         socket_dir: args.socket_dir.clone(),
         #[cfg(windows)]
         named_pipe_name: None, // Will be auto-generated
+        #[cfg(unix)]
         server_created: args.unix_socket.is_none(),
+        #[cfg(windows)]
+        server_created: false,
     };
 
     TransportType::create(transport_type, config).await
