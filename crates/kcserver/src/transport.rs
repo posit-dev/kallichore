@@ -271,7 +271,7 @@ fn generate_socket_path(socket_dir: Option<&String>) -> String {
         .join(&socket_name)
         .to_string_lossy()
         .to_string();
-    
+
     // If the generated path is too long when using XDG runtime dir, try temp dir instead
     if socket_path.len() > UNIX_SOCKET_PATH_MAX && socket_dir.is_none() {
         if let Ok(xdg_runtime_dir) = env::var("XDG_RUNTIME_DIR") {
@@ -282,20 +282,20 @@ fn generate_socket_path(socket_dir: Option<&String>) -> String {
                     socket_path.len(),
                     socket_path
                 );
-                
+
                 // Try with temp directory instead
                 let temp_socket_path = env::temp_dir()
                     .join(&socket_name)
                     .to_string_lossy()
                     .to_string();
-                
+
                 if temp_socket_path.len() <= UNIX_SOCKET_PATH_MAX {
                     return temp_socket_path;
                 }
             }
         }
     }
-    
+
     socket_path
 }
 
@@ -534,7 +534,7 @@ mod tests {
             let long_path = "a".repeat(UNIX_SOCKET_PATH_MAX + 1);
             let result = validate_socket_path_length(&long_path);
             assert!(result.is_err());
-            
+
             let error_msg = result.unwrap_err().to_string();
             assert!(error_msg.contains("Unix socket path too long"));
             assert!(error_msg.contains(&format!("{} characters", UNIX_SOCKET_PATH_MAX + 1)));
@@ -553,7 +553,7 @@ mod tests {
             let base_dir = "/very/long/runtime/directory/path/with/many/nested/subdirectories/for/user/session/management";
             let socket_name = "kc-12345.sock";
             let full_path = format!("{}/{}", base_dir, socket_name);
-            
+
             if full_path.len() > UNIX_SOCKET_PATH_MAX {
                 let result = validate_socket_path_length(&full_path);
                 assert!(result.is_err());
@@ -569,7 +569,7 @@ mod tests {
             let result = generate_socket_path(None);
             assert!(result.len() > 0);
             assert!(result.ends_with(".sock"));
-            
+
             // Test with explicit directory
             let explicit_dir = "/tmp".to_string();
             let result = generate_socket_path(Some(&explicit_dir));

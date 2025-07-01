@@ -33,7 +33,6 @@ pub enum TestServerMode {
     DomainSocket,
 }
 
-// Common server configuration for reducing duplication
 struct ServerConfig {
     args: Vec<String>,
     expected_output_pattern: Option<String>, // For extracting info from server output
@@ -81,7 +80,6 @@ impl ServerConfig {
     }
 }
 
-// Common server creation logic to reduce duplication
 async fn create_server_process(config: ServerConfig) -> Child {
     // Try to use pre-built binary first, fall back to cargo run
     let binary_path = std::env::current_dir()

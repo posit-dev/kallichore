@@ -156,7 +156,6 @@ pub async fn create(
     create_tcp_server(listener, token, idle_shutdown_hours, log_level).await;
 }
 
-// Common server setup logic to reduce duplication
 struct ServerConfig {
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
@@ -1874,7 +1873,7 @@ impl<C> Server<C> {
 
             let socket_name = format!("kc.{:x}.sock", hash);
             socket_path = socket_directory.join(socket_name);
-            
+
             // Final validation - if even the hashed path is too long, return an error
             let final_path_str = socket_path.to_string_lossy();
             if final_path_str.len() > crate::transport::UNIX_SOCKET_PATH_MAX {
