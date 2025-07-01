@@ -1870,7 +1870,7 @@ impl<C> Server<C> {
             &session_id
         };
 
-        let socket_name = format!("kc.{}.{}.sock", server_pid, short_session_id);
+        let socket_name = format!("kc-{}.{}.sock", server_pid, short_session_id);
         let mut socket_path = socket_directory.join(socket_name);
 
         // Ensure the socket path doesn't exceed the Unix domain socket limit
@@ -1884,7 +1884,7 @@ impl<C> Server<C> {
             server_pid.hash(&mut hasher);
             let hash = hasher.finish();
 
-            let socket_name = format!("kc.{:x}.sock", hash);
+            let socket_name = format!("kc-{:x}.sock", hash);
             socket_path = socket_directory.join(socket_name);
 
             // Final validation - if even the hashed path is too long, return an error
