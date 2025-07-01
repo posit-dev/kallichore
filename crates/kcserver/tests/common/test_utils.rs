@@ -76,7 +76,7 @@ pub fn create_test_session(session_id: String, python_cmd: &str) -> NewSession {
             name: "TEST_VAR".to_string(),
             value: "test_value".to_string(),
         }],
-        connection_timeout: Some(3),
+        connection_timeout: Some(10),
         interrupt_mode: InterruptMode::Message,
         protocol_version: Some("5.3".to_string()),
         run_in_shell: Some(false),

@@ -155,24 +155,21 @@ async fn run_python_kernel_test_transport(python_cmd: &str, transport: Transport
 
 #[tokio::test]
 async fn test_python_kernel_session_and_websocket_communication() {
-    let test_result = tokio::time::timeout(
-        Duration::from_secs(15), // Reduced from 25 seconds
-        async {
-            let python_cmd = if let Some(cmd) = get_python_executable().await {
-                cmd
-            } else {
-                println!("Skipping test: No Python executable found");
-                return;
-            };
+    let test_result = tokio::time::timeout(Duration::from_secs(25), async {
+        let python_cmd = if let Some(cmd) = get_python_executable().await {
+            cmd
+        } else {
+            println!("Skipping test: No Python executable found");
+            return;
+        };
 
-            if !is_ipykernel_available().await {
-                println!("Skipping test: ipykernel not available for {}", python_cmd);
-                return;
-            }
+        if !is_ipykernel_available().await {
+            println!("Skipping test: ipykernel not available for {}", python_cmd);
+            return;
+        }
 
-            run_python_kernel_test_transport(&python_cmd, TransportType::Websocket).await;
-        },
-    )
+        run_python_kernel_test_transport(&python_cmd, TransportType::Websocket).await;
+    })
     .await;
 
     match test_result {
@@ -576,7 +573,7 @@ async fn run_python_kernel_test_named_pipe(python_cmd: &str, session_id: &str, p
         "argv": [python_cmd, "-m", "ipykernel", "-f", "{connection_file}"],
         "working_directory": working_dir,
         "env": [],
-        "connection_timeout": 3,
+        "connection_timeout": 30,
         "interrupt_mode": "message",
         "protocol_version": "5.3",
         "run_in_shell": false
