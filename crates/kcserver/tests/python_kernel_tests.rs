@@ -6,16 +6,20 @@
 
 //! Python kernel communication tests
 
+#![allow(unused_imports)]
+
 #[path = "common/mod.rs"]
 mod common;
 
 use common::test_utils::{
-    create_execute_request, create_session_with_client, create_test_session, get_python_executable,
-    is_ipykernel_available,
+    create_execute_request, create_session_with_client, create_shutdown_request,
+    create_test_session, get_python_executable, is_ipykernel_available,
 };
 use common::transport::{run_communication_test, CommunicationChannel, TransportType};
 use common::TestServer;
 use kallichore_api::models::{InterruptMode, NewSession};
+use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
+use kcshared::websocket_message::WebsocketMessage;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -874,4 +878,471 @@ async fn run_python_kernel_test_domain_socket_direct(
     if let Err(e) = comm.close().await {
         println!("Failed to close communication channel: {}", e);
     }
+}
+
+#[tokio::test]
+async fn test_kernel_session_shutdown() {
+    let python_cmd = if let Some(cmd) = get_python_executable().await {
+        cmd
+    } else {
+        println!("Skipping test: No Python executable found");
+        return;
+    };
+
+    if !is_ipykernel_available().await {
+        println!("Skipping test: ipykernel not available for {}", python_cmd);
+        return;
+    }
+
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+
+    let session_id = format!("shutdown-test-session-{}", Uuid::new_v4());
+    let new_session = create_test_session(session_id.clone(), &python_cmd);
+
+    // Create and start the kernel session
+    let _created_session_id = create_session_with_client(&client, new_session).await;
+
+    println!("Starting kernel session for shutdown test...");
+    let start_response = client
+        .start_session(session_id.clone())
+        .await
+        .expect("Failed to start session");
+
+    println!("Start response: {:?}", start_response);
+
+    // Check if the session started successfully
+    match &start_response {
+        kallichore_api::StartSessionResponse::Started(_) => {
+            println!("Kernel started successfully");
+        }
+        kallichore_api::StartSessionResponse::StartFailed(error) => {
+            println!("Kernel failed to start: {:?}", error);
+            println!("Skipping shutdown test due to startup failure");
+            return;
+        }
+        _ => {
+            println!("Unexpected start response: {:?}", start_response);
+            println!("Skipping shutdown test");
+            return;
+        }
+    }
+
+    // Wait for kernel to fully start
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Verify session is running by checking session list
+    let sessions_before = client
+        .list_sessions()
+        .await
+        .expect("Failed to list sessions");
+
+    println!("Sessions before shutdown: {:?}", sessions_before);
+
+    // Create a websocket connection to send shutdown request
+    let ws_url = format!(
+        "ws://localhost:{}/sessions/{}/channels",
+        server.port(),
+        session_id
+    );
+
+    let mut comm = CommunicationChannel::create_websocket(&ws_url)
+        .await
+        .expect("Failed to create websocket for shutdown");
+
+    // Send a shutdown_request to the kernel
+    let shutdown_request = create_shutdown_request();
+
+    println!("Sending shutdown_request to kernel...");
+    comm.send_message(&shutdown_request)
+        .await
+        .expect("Failed to send shutdown_request");
+
+    // Wait for shutdown_reply and for kernel to exit
+    println!("Waiting for kernel to shutdown...");
+    let mut shutdown_reply_received = false;
+    let start_time = std::time::Instant::now();
+
+    while start_time.elapsed() < Duration::from_secs(5) {
+        if let Ok(Some(message)) = comm.receive_message().await {
+            if message.contains("shutdown_reply") {
+                println!("Received shutdown_reply from kernel");
+                shutdown_reply_received = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        shutdown_reply_received,
+        "Expected to receive shutdown_reply from kernel"
+    );
+
+    // Close the websocket connection
+    comm.close().await.ok();
+
+    // Wait a bit more for the kernel process to fully exit
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Now we can delete the session since the kernel should have exited
+    println!("Deleting kernel session...");
+    let delete_response = client
+        .delete_session(session_id.clone())
+        .await
+        .expect("Failed to delete session");
+
+    println!("Delete response: {:?}", delete_response);
+
+    // Verify session is no longer in the list
+    let sessions_after = client
+        .list_sessions()
+        .await
+        .expect("Failed to list sessions after shutdown");
+
+    println!("Sessions after shutdown: {:?}", sessions_after);
+
+    // Check that the session is no longer listed as active
+    let kallichore_api::ListSessionsResponse::ListOfActiveSessions(session_list) = sessions_after;
+    let found_session = session_list
+        .sessions
+        .iter()
+        .find(|session| session.session_id == session_id);
+    assert!(
+        found_session.is_none(),
+        "Session should not be active after shutdown"
+    );
+
+    println!("Kernel session shutdown test completed successfully");
+    drop(server);
+}
+
+#[tokio::test]
+async fn test_kernel_session_restart_basic() {
+    let python_cmd = if let Some(cmd) = get_python_executable().await {
+        cmd
+    } else {
+        println!("Skipping test: No Python executable found");
+        return;
+    };
+
+    if !is_ipykernel_available().await {
+        println!("Skipping test: ipykernel not available for {}", python_cmd);
+        return;
+    }
+
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+
+    let session_id = format!("restart-basic-test-session-{}", Uuid::new_v4());
+    let new_session = create_test_session(session_id.clone(), &python_cmd);
+
+    // Create and start the kernel session
+    let _created_session_id = create_session_with_client(&client, new_session).await;
+
+    println!("Starting kernel session for basic restart test...");
+    let start_response = client
+        .start_session(session_id.clone())
+        .await
+        .expect("Failed to start session");
+
+    println!("Start response: {:?}", start_response);
+
+    // Check if the session started successfully
+    match &start_response {
+        kallichore_api::StartSessionResponse::Started(_) => {
+            println!("Kernel started successfully");
+        }
+        kallichore_api::StartSessionResponse::StartFailed(error) => {
+            println!("Kernel failed to start: {:?}", error);
+            println!("Skipping restart test due to startup failure");
+            return;
+        }
+        _ => {
+            println!("Unexpected start response: {:?}", start_response);
+            println!("Skipping restart test");
+            return;
+        }
+    }
+
+    // Wait for kernel to fully start
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Just test that restart API works without checking kernel communication
+    println!("Restarting kernel session...");
+    let restart_session = kallichore_api::models::RestartSession::new();
+    let restart_response = client
+        .restart_session(session_id.clone(), Some(restart_session))
+        .await
+        .expect("Failed to restart session");
+
+    println!("Restart response: {:?}", restart_response);
+
+    // Verify the restart API returned success
+    match restart_response {
+        kallichore_api::RestartSessionResponse::Restarted(_) => {
+            println!("Restart API returned success");
+        }
+        _ => {
+            panic!(
+                "Expected restart to return success, got: {:?}",
+                restart_response
+            );
+        }
+    }
+
+    // Wait a bit for restart to complete
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Verify session is still listed (but may have different status)
+    let sessions_after = client
+        .list_sessions()
+        .await
+        .expect("Failed to list sessions after restart");
+
+    println!("Sessions after restart: {:?}", sessions_after);
+
+    let kallichore_api::ListSessionsResponse::ListOfActiveSessions(session_list) = sessions_after;
+    let session_found = session_list
+        .sessions
+        .iter()
+        .any(|session| session.session_id == session_id);
+
+    assert!(session_found, "Session should still exist after restart");
+
+    println!("Basic kernel session restart test completed successfully");
+    drop(server);
+}
+
+#[tokio::test]
+async fn test_kernel_session_restart_with_environment_changes() {
+    let python_cmd = if let Some(cmd) = get_python_executable().await {
+        cmd
+    } else {
+        println!("Skipping test: No Python executable found");
+        return;
+    };
+
+    if !is_ipykernel_available().await {
+        println!("Skipping test: ipykernel not available for {}", python_cmd);
+        return;
+    }
+
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+
+    let session_id = format!("restart-env-test-session-{}", Uuid::new_v4());
+    let new_session = create_test_session(session_id.clone(), &python_cmd);
+
+    // Create and start the kernel session
+    let _created_session_id = create_session_with_client(&client, new_session).await;
+
+    println!("Starting kernel session for restart with environment test...");
+    let start_response = client
+        .start_session(session_id.clone())
+        .await
+        .expect("Failed to start session");
+
+    println!("Start response: {:?}", start_response);
+
+    // Wait for kernel to fully start
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Restart with environment variable changes
+    println!("Restarting kernel session with environment changes...");
+    let restart_session = kallichore_api::models::RestartSession {
+        working_directory: None,
+        env: Some(vec![kallichore_api::models::VarAction {
+            action: kallichore_api::models::VarActionType::Replace,
+            name: "RESTART_TEST_VAR".to_string(),
+            value: "restart_value".to_string(),
+        }]),
+    };
+
+    let restart_response = client
+        .restart_session(session_id.clone(), Some(restart_session))
+        .await
+        .expect("Failed to restart session with environment");
+
+    println!("Restart with environment response: {:?}", restart_response);
+
+    // Verify the restart API returned success
+    match restart_response {
+        kallichore_api::RestartSessionResponse::Restarted(_) => {
+            println!("Restart with environment API returned success");
+        }
+        _ => {
+            panic!(
+                "Expected restart with environment to return success, got: {:?}",
+                restart_response
+            );
+        }
+    }
+
+    // Wait for restart to complete
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Verify session is still listed
+    let sessions_after = client
+        .list_sessions()
+        .await
+        .expect("Failed to list sessions after restart");
+
+    println!("Sessions after restart: {:?}", sessions_after);
+
+    let kallichore_api::ListSessionsResponse::ListOfActiveSessions(session_list) = sessions_after;
+    let session_found = session_list
+        .sessions
+        .iter()
+        .any(|session| session.session_id == session_id);
+
+    assert!(
+        session_found,
+        "Session should still exist after restart with environment"
+    );
+
+    println!("Kernel session restart with environment test completed successfully");
+    drop(server);
+}
+
+#[tokio::test]
+async fn test_multiple_session_shutdown_restart_cycle() {
+    let python_cmd = if let Some(cmd) = get_python_executable().await {
+        cmd
+    } else {
+        println!("Skipping test: No Python executable found");
+        return;
+    };
+
+    if !is_ipykernel_available().await {
+        println!("Skipping test: ipykernel not available for {}", python_cmd);
+        return;
+    }
+
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+
+    // Create multiple sessions
+    let mut session_ids = Vec::new();
+    for i in 0..2 {
+        let session_id = format!("multi-shutdown-restart-{}-{}", i, Uuid::new_v4());
+        let new_session = create_test_session(session_id.clone(), &python_cmd);
+
+        let _created_session_id = create_session_with_client(&client, new_session).await;
+
+        println!("Starting session {} for multi-shutdown test...", i);
+        let start_response = client
+            .start_session(session_id.clone())
+            .await
+            .expect("Failed to start session");
+
+        println!("Session {} start response: {:?}", i, start_response);
+        session_ids.push(session_id);
+    }
+
+    // Wait for all kernels to start
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Verify all sessions are active
+    let sessions_before = client
+        .list_sessions()
+        .await
+        .expect("Failed to list sessions");
+
+    println!("Sessions before operations: {:?}", sessions_before);
+
+    // Shutdown the first session properly using shutdown_request
+    println!("Shutting down first session properly...");
+    let ws_url_first = format!(
+        "ws://localhost:{}/sessions/{}/channels",
+        server.port(),
+        session_ids[0]
+    );
+
+    let mut comm_first = CommunicationChannel::create_websocket(&ws_url_first)
+        .await
+        .expect("Failed to create websocket for first session shutdown");
+
+    let shutdown_request = create_shutdown_request();
+    comm_first
+        .send_message(&shutdown_request)
+        .await
+        .expect("Failed to send shutdown_request to first session");
+
+    // Wait for shutdown_reply
+    let mut shutdown_reply_received = false;
+    let start_time = std::time::Instant::now();
+
+    while start_time.elapsed() < Duration::from_secs(3) {
+        if let Ok(Some(message)) = comm_first.receive_message().await {
+            if message.contains("shutdown_reply") {
+                println!("Received shutdown_reply from first session");
+                shutdown_reply_received = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    comm_first.close().await.ok();
+
+    assert!(
+        shutdown_reply_received,
+        "Expected to receive shutdown_reply from first session"
+    );
+
+    // Wait for kernel to exit
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // Now delete the first session
+    let delete_response = client
+        .delete_session(session_ids[0].clone())
+        .await
+        .expect("Failed to delete first session");
+
+    println!("First session delete response: {:?}", delete_response);
+
+    // Restart the second session
+    println!("Restarting second session...");
+    let restart_response = client
+        .restart_session(
+            session_ids[1].clone(),
+            Some(kallichore_api::models::RestartSession::new()),
+        )
+        .await
+        .expect("Failed to restart second session");
+
+    println!("Second session restart response: {:?}", restart_response);
+
+    // Wait for operations to complete
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Verify final state
+    let sessions_after = client
+        .list_sessions()
+        .await
+        .expect("Failed to list sessions after operations");
+
+    println!("Sessions after operations: {:?}", sessions_after);
+
+    // First session should be gone, second should still be active
+    let kallichore_api::ListSessionsResponse::ListOfActiveSessions(session_list) = sessions_after;
+    let first_session_found = session_list
+        .sessions
+        .iter()
+        .any(|session| session.session_id == session_ids[0]);
+
+    let second_session_found = session_list
+        .sessions
+        .iter()
+        .any(|session| session.session_id == session_ids[1]);
+
+    assert!(!first_session_found, "First session should be deleted");
+    assert!(
+        second_session_found,
+        "Second session should still be active after restart"
+    );
+
+    println!("Multiple session shutdown/restart cycle test completed successfully");
+    drop(server);
 }

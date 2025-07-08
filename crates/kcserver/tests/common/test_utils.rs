@@ -120,6 +120,23 @@ pub fn create_execute_request() -> WebsocketMessage {
     })
 }
 
+/// Create a shutdown_request message
+pub fn create_shutdown_request() -> WebsocketMessage {
+    WebsocketMessage::Jupyter(JupyterMessage {
+        header: JupyterMessageHeader {
+            msg_id: Uuid::new_v4().to_string(),
+            msg_type: "shutdown_request".to_string(),
+        },
+        parent_header: None,
+        channel: JupyterChannel::Shell,
+        content: serde_json::json!({
+            "restart": false
+        }),
+        metadata: serde_json::json!({}),
+        buffers: vec![],
+    })
+}
+
 /// Helper function to properly clean up a spawned server process
 pub fn cleanup_spawned_server(mut child: Child) {
     println!("Cleaning up spawned server (PID: {})", child.id());
