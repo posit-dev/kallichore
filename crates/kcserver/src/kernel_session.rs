@@ -466,50 +466,81 @@ impl KernelSession {
         let run_in_shell = self.model.run_in_shell.unwrap_or(false);
 
         // Create the command to start the kernel with the processed arguments
-        let mut command = if run_in_shell {
+        let shell_command = if run_in_shell {
             #[cfg(not(target_os = "windows"))]
             {
-                // On Unix systems, use a login shell if requested
-                // Get the shell from the environment, or use bash as fallback
-                let shell_path =
-                    std::env::var("SHELL").unwrap_or_else(|_| String::from("/bin/bash"));
+                let candidates = vec![
+                    std::env::var("SHELL").unwrap_or_else(|_| String::from("")),
+                    String::from("/bin/bash"),
+                    String::from("/bin/sh"),
+                ];
 
-                log::debug!(
-                    "[session {}] Running kernel in login shell: {}",
-                    self.model.session_id,
-                    shell_path
-                );
-
-                // Create the original command as a string with proper shell escaping
-                let mut original_command = argv
-                    .iter()
-                    .map(|arg| escape_for_shell(arg))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-
-                // On macOS, if the DYLD_LIBRARY_PATH environment variable was
-                // requested, set it explictly; it is not inherited by default
-                // in login shells due to SIP.
-                if let Some(dyld_path) = resolved_env.get("DYLD_LIBRARY_PATH") {
-                    log::debug!(
-                        "[session {}] Explicitly forwarding DYLD_LIBRARY_PATH: {}",
-                        self.model.session_id,
-                        dyld_path
-                    );
-                    original_command = format!(
-                        "DYLD_LIBRARY_PATH={} {}",
-                        escape_for_shell(dyld_path),
-                        original_command
-                    );
+                let mut login_shell = None;
+                for i in 0..candidates.len() {
+                    let shell_path = &candidates[i];
+                    // Ignore if empty (happens if SHELL is not set)
+                    if shell_path.is_empty() {
+                        continue;
+                    }
+                    // Found a valid shell path
+                    if fs::metadata(&shell_path).is_ok() {
+                        login_shell = Some(shell_path);
+                        break;
+                    } else if i == 0 {
+                        // The first candidate comes from $SHELL. If it doesn't exist,
+                        // log a warning but continue to try the others.
+                        log::warn!(
+                            "[session {}] Shell path specified in $SHELL '{}' does not exist",
+                            self.model.session_id,
+                            shell_path
+                        );
+                    }
                 }
 
-                // Create a command that uses the login shell. Note that we use
-                // the short form -l rather than --login to ensure compatibility
-                // with shells that don't support the long form, such as
-                // sh/dash.
-                let mut cmd = tokio::process::Command::new(shell_path);
-                cmd.args(&["-l", "-c", &original_command]);
-                cmd
+                // If we found a login shell, use it to run the kernel
+                if let Some(login_shell) = login_shell {
+                    log::debug!(
+                        "[session {}] Running kernel in login shell: {}",
+                        self.model.session_id,
+                        login_shell
+                    );
+                    // Create the original command as a string with proper shell escaping
+                    let mut original_command = argv
+                        .iter()
+                        .map(|arg| escape_for_shell(arg))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+
+                    // On macOS, if the DYLD_LIBRARY_PATH environment variable was
+                    // requested, set it explictly; it is not inherited by default
+                    // in login shells due to SIP.
+                    if let Some(dyld_path) = resolved_env.get("DYLD_LIBRARY_PATH") {
+                        log::debug!(
+                            "[session {}] Explicitly forwarding DYLD_LIBRARY_PATH: {}",
+                            self.model.session_id,
+                            dyld_path
+                        );
+                        original_command = format!(
+                            "DYLD_LIBRARY_PATH={} {}",
+                            escape_for_shell(dyld_path),
+                            original_command
+                        );
+                    }
+
+                    // Create a command that uses the login shell. Note that we use
+                    // the short form -l rather than --login to ensure compatibility
+                    // with shells that don't support the long form, such as
+                    // sh/dash.
+                    let mut cmd = tokio::process::Command::new(login_shell);
+                    cmd.args(&["-l", "-c", &original_command]);
+                    Some(cmd)
+                } else {
+                    log::warn!(
+                        "[session {}] No valid login shell found; running kernel without a login shell",
+                        self.model.session_id
+                    );
+                    None
+                }
             }
 
             #[cfg(target_os = "windows")]
@@ -519,15 +550,22 @@ impl KernelSession {
                     "[session {}] run_in_shell parameter ignored on Windows",
                     self.model.session_id
                 );
+                None
+            }
+        } else {
+            None
+        };
+
+        // If we formed a shell command, start the kernel with the shell
+        // command; otherwise, start it with the original command line
+        // arguments.
+        let mut cmd = match shell_command {
+            Some(command) => command,
+            None => {
                 let mut cmd = tokio::process::Command::new(&argv[0]);
                 cmd.args(&argv[1..]);
                 cmd
             }
-        } else {
-            // Normal execution - no login shell
-            let mut cmd = tokio::process::Command::new(&argv[0]);
-            cmd.args(&argv[1..]);
-            cmd
         };
 
         // If a working directory was specified, test the working directory to
@@ -537,7 +575,7 @@ impl KernelSession {
             match fs::metadata(&working_directory) {
                 Ok(metadata) => {
                     if metadata.is_dir() {
-                        command.current_dir(&working_directory);
+                        cmd.current_dir(&working_directory);
                         log::trace!(
                             "[session {}] Using working directory '{}'",
                             self.model.session_id.clone(),
@@ -571,7 +609,7 @@ impl KernelSession {
         }
 
         // Attempt to actually start the kernel process
-        let mut child = match command
+        let mut child = match cmd
             .envs(&resolved_env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

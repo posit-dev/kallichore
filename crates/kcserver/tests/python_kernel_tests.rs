@@ -17,7 +17,8 @@ use common::test_utils::{
 };
 use common::transport::{run_communication_test, CommunicationChannel, TransportType};
 use common::TestServer;
-use kallichore_api::models::{InterruptMode, NewSession};
+use kallichore_api::models::{InterruptMode, NewSession, VarAction, VarActionType};
+use kallichore_api::NewSessionResponse;
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
 use kcshared::websocket_message::WebsocketMessage;
 use std::time::Duration;
@@ -1152,8 +1153,8 @@ async fn test_kernel_session_restart_with_environment_changes() {
     println!("Restarting kernel session with environment changes...");
     let restart_session = kallichore_api::models::RestartSession {
         working_directory: None,
-        env: Some(vec![kallichore_api::models::VarAction {
-            action: kallichore_api::models::VarActionType::Replace,
+        env: Some(vec![VarAction {
+            action: VarActionType::Replace,
             name: "RESTART_TEST_VAR".to_string(),
             value: "restart_value".to_string(),
         }]),
@@ -1345,4 +1346,118 @@ async fn test_multiple_session_shutdown_restart_cycle() {
 
     println!("Multiple session shutdown/restart cycle test completed successfully");
     drop(server);
+}
+
+#[cfg(not(target_os = "windows"))] // Shell behavior is Unix-specific
+#[tokio::test]
+async fn test_kernel_starts_with_bad_shell_env_var() {
+    let test_result = tokio::time::timeout(Duration::from_secs(30), async {
+        let python_cmd = if let Some(cmd) = get_python_executable().await {
+            cmd
+        } else {
+            println!("Skipping test: No Python executable found");
+            return;
+        };
+
+        if !is_ipykernel_available().await {
+            println!("Skipping test: ipykernel not available for {}", python_cmd);
+            return;
+        }
+
+        // Start a test server
+        let server = TestServer::start().await;
+        let client = server.create_client().await;
+
+        // Generate a unique session ID
+        let session_id = format!("test-bad-shell-{}", Uuid::new_v4());
+
+        // Create a session with run_in_shell=true but set SHELL to a non-existent path
+        let new_session = NewSession {
+            session_id: session_id.clone(),
+            display_name: "Test Bad Shell Session".to_string(),
+            language: "python".to_string(),
+            username: "testuser".to_string(),
+            input_prompt: "In [{}]: ".to_string(),
+            continuation_prompt: "   ...: ".to_string(),
+            argv: vec![
+                python_cmd.clone(),
+                "-m".to_string(),
+                "ipykernel".to_string(),
+                "-f".to_string(),
+                "{connection_file}".to_string(),
+            ],
+            working_directory: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+            env: vec![
+                // Set SHELL to a non-existent path to simulate the bad shell scenario
+                VarAction {
+                    action: VarActionType::Replace,
+                    name: "SHELL".to_string(),
+                    value: "/non/existent/shell".to_string(),
+                }
+            ],
+            connection_timeout: Some(15),
+            interrupt_mode: InterruptMode::Message,
+            protocol_version: Some("5.3".to_string()),
+            run_in_shell: Some(true), // This is the key - enable run_in_shell with bad SHELL
+        };
+
+        println!("Creating session with run_in_shell=true and bad SHELL env var");
+
+        // Create the session - this should succeed despite the bad SHELL value
+        let _created_session_id = create_session_with_client(&client, new_session).await;
+
+        println!("Session created successfully: {}", session_id);
+
+        // Start the session - this should succeed despite the bad SHELL environment variable
+        println!("Starting kernel session with bad SHELL environment variable...");
+        let start_response = client
+            .start_session(session_id.clone())
+            .await
+            .expect("Failed to start session with bad SHELL");
+
+        println!("Start response: {:?}", start_response);
+
+        // Check if the session started successfully
+        match &start_response {
+            kallichore_api::StartSessionResponse::Started(_) => {
+                println!("Kernel started successfully despite bad SHELL environment variable");
+            }
+            kallichore_api::StartSessionResponse::StartFailed(error) => {
+                panic!("Kernel failed to start with bad SHELL: {:?}", error);
+            }
+            _ => {
+                panic!("Unexpected start response: {:?}", start_response);
+            }
+        }
+
+        // Wait for kernel to fully start
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+
+        // Verify the session is actually running by checking its status
+        let sessions = client
+            .list_sessions()
+            .await
+            .expect("Failed to get sessions list");
+
+        let kallichore_api::ListSessionsResponse::ListOfActiveSessions(session_list) = sessions;
+        let session_found = session_list.sessions.iter().any(|s| s.session_id == session_id);
+        assert!(session_found, "Session should be in the active sessions list");
+
+        println!("Test passed: Kernel started successfully despite bad SHELL environment variable");
+
+        drop(server);
+    })
+    .await;
+
+    match test_result {
+        Ok(_) => {
+            println!("Bad shell environment variable test completed successfully");
+        }
+        Err(_) => {
+            panic!("Bad shell environment variable test timed out after 30 seconds");
+        }
+    }
 }
