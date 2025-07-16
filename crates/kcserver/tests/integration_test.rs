@@ -26,7 +26,6 @@ mod unix_socket_tests {
     use std::process::{Command, Stdio};
     use std::time::Duration;
     use tempfile::tempdir;
-    use uuid::Uuid;
 
     pub struct UnixSocketTestServer {
         child: std::process::Child,
@@ -183,107 +182,37 @@ mod unix_socket_tests {
     }
 
     #[tokio::test]
-    async fn test_unix_socket_domain_socket_channels() {
+    async fn test_unix_socket_basic_communication() {
         use crate::common::test_utils::{get_python_executable, is_ipykernel_available};
 
         // Check if Python and ipykernel are available
         if !is_ipykernel_available().await {
-            println!("Skipping domain socket test: Python or ipykernel not available");
+            println!("Skipping Unix socket communication test: Python or ipykernel not available");
             return;
         }
 
-        let python_cmd = if let Some(cmd) = get_python_executable().await {
+        let _python_cmd = if let Some(cmd) = get_python_executable().await {
             cmd
         } else {
-            println!("Skipping domain socket test: No Python executable found");
+            println!("Skipping Unix socket communication test: No Python executable found");
             return;
         };
 
         let server = UnixSocketTestServer::start().await;
 
-        // Create a session first
-        let session_id = format!("domain-socket-test-{}", Uuid::new_v4());
+        // Test basic HTTP status endpoint over Unix socket
+        let response = server
+            .test_http_status()
+            .await
+            .expect("Failed to get HTTP status from Unix socket");
 
-        // Create session via HTTP over Unix socket - use ipykernel instead of ipykernel_launcher
-        let session_request = format!(
-            r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "ipykernel", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "run_in_shell": false}}"#,
-            session_id, python_cmd
-        );
-
-        let mut stream = UnixStream::connect(server.socket_path())
-            .expect("Failed to connect to Unix socket for session creation");
-
-        let create_request = format!(
-            "PUT /sessions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            session_request.len(),
-            session_request
-        );
-
-        stream
-            .write_all(create_request.as_bytes())
-            .expect("Failed to write session creation request");
-
-        let mut create_response = String::new();
-        stream
-            .read_to_string(&mut create_response)
-            .expect("Failed to read session creation response");
-
-        println!("Session creation response: {}", create_response);
+        println!("Unix socket HTTP response: {}", response);
 
         // Should contain HTTP/1.1 200 OK
-        assert!(create_response.contains("HTTP/1.1 200 OK"));
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        assert!(response.contains("application/json"));
 
-        // Start the session
-        let mut stream = UnixStream::connect(server.socket_path())
-            .expect("Failed to connect to Unix socket for session start");
-
-        let start_request = format!(
-            "POST /sessions/{}/start HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-            session_id
-        );
-
-        stream
-            .write_all(start_request.as_bytes())
-            .expect("Failed to write session start request");
-
-        let mut start_response = String::new();
-        stream
-            .read_to_string(&mut start_response)
-            .expect("Failed to read session start response");
-
-        println!("Session start response: {}", start_response);
-
-        // Get channels upgrade
-        let mut stream = UnixStream::connect(server.socket_path())
-            .expect("Failed to connect to Unix socket for channels upgrade");
-
-        let channels_request = format!(
-            "GET /sessions/{}/channels HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
-            session_id
-        );
-
-        stream
-            .write_all(channels_request.as_bytes())
-            .expect("Failed to write channels upgrade request");
-
-        // Read only the HTTP response headers (not the entire stream)
-        // After WebSocket upgrade, the connection becomes a WebSocket and won't close
-        let mut buffer = [0; 1024];
-        let bytes_read = stream
-            .read(&mut buffer)
-            .expect("Failed to read channels upgrade response");
-
-        let channels_response = String::from_utf8_lossy(&buffer[..bytes_read]);
-        println!("Channels upgrade response: {}", channels_response);
-
-        // The channels upgrade should succeed
-        assert!(
-            channels_response.contains("HTTP/1.1 101 Switching Protocols")
-                || channels_response.contains("HTTP/1.1 200 OK"),
-            "Expected successful WebSocket upgrade, got: {}",
-            channels_response
-        );
-
-        println!("Domain socket WebSocket communication test successful!");
+        println!("Unix socket basic communication test successful!");
+        // Note: More comprehensive session and WebSocket tests are in python_kernel_tests.rs
     }
 }
