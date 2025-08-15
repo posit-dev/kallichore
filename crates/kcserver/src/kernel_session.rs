@@ -527,7 +527,7 @@ impl KernelSession {
                         );
                     }
 
-                    let login_arg = match login_shell.split('/').last().take() {
+                    let login_arg = match login_shell.split('/').last() {
                         None => {
                             // Unknown shell, presume bash-alike
                             "-l"
