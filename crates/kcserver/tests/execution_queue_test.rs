@@ -13,7 +13,7 @@ use common::test_utils::{
     create_session_with_client, create_test_session,
     get_python_executable, is_ipykernel_available,
 };
-use common::transport::{run_communication_test, CommunicationChannel};
+use common::transport::CommunicationChannel;
 use common::TestServer;
 use kcserver::execution_queue::ExecutionQueue;
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
@@ -228,9 +228,9 @@ async fn test_execution_queue_with_real_kernel() {
 
     // Collect all responses to verify execution order
     println!("Collecting execution results...");
-    let timeout = Duration::from_secs(15);
-    let max_messages = 50;
-    let results = run_communication_test(&mut comm, timeout, max_messages).await;
+    let timeout = Duration::from_secs(25); // Increased timeout for execution queue test
+    let max_messages = 100; // Increased message limit for execution queue test
+    let results = run_execution_queue_communication_test(&mut comm, timeout, max_messages).await;
 
     results.print_summary();
 
@@ -283,4 +283,44 @@ fn create_execute_request_with_code(code: &str) -> kcshared::websocket_message::
         metadata: json!({}),
         buffers: vec![],
     })
+}
+
+/// Custom communication test for execution queue that doesn't exit early
+async fn run_execution_queue_communication_test(
+    comm: &mut CommunicationChannel,
+    timeout: Duration,
+    max_messages: u32,
+) -> common::transport::CommunicationTestResults {
+    use common::transport::CommunicationTestResults;
+    
+    let mut results = CommunicationTestResults::default();
+    let start_time = std::time::Instant::now();
+
+    println!("Listening for kernel responses...");
+
+    while start_time.elapsed() < timeout && results.message_count < max_messages {
+        println!(
+            "Waiting for message... (elapsed: {:.1}s)",
+            start_time.elapsed().as_secs_f32()
+        );
+
+        match comm.receive_message().await {
+            Ok(Some(text)) => {
+                results.process_message(&text);
+                
+                // For execution queue test, continue collecting until timeout or max messages
+                // Don't exit early like the standard communication test does
+            }
+            Ok(None) => {
+                println!("Communication channel closed");
+                break;
+            }
+            Err(e) => {
+                println!("Communication error: {}", e);
+                break;
+            }
+        }
+    }
+
+    results
 }
