@@ -527,12 +527,36 @@ impl KernelSession {
                         );
                     }
 
-                    // Create a command that uses the login shell. Note that we use
-                    // the short form -l rather than --login to ensure compatibility
-                    // with shells that don't support the long form, such as
-                    // sh/dash.
+                    let login_arg = match login_shell.split('/').last().take() {
+                        None => {
+                            // Unknown shell, presume bash-alike
+                            "-l"
+                        }
+                        Some(shell) => {
+                            match shell {
+                                // csh-like shells don't support -c for login
+                                // shells. Instead, we emulate a login shell by
+                                // asking it to load the directory stack (-d)
+                                "csh" => "-d",
+                                "tcsh" => "-d",
+
+                                // Bash and zsh support the long-form --login option
+                                "bash" => "--login",
+                                "zsh" => "--login",
+
+                                // Sh only supports -l
+                                "dash" => "-l",
+                                "sh" => "-l",
+
+                                // For all other shells, presume -l
+                                _ => "-l",
+                            }
+                        }
+                    };
+
+                    // Create a command that uses the login shell.
                     let mut cmd = tokio::process::Command::new(login_shell);
-                    cmd.args(&["-l", "-c", &original_command]);
+                    cmd.args(&[login_arg, "-c", &original_command]);
                     Some(cmd)
                 } else {
                     log::warn!(
