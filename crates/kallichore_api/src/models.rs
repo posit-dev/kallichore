@@ -68,6 +68,10 @@ pub struct ActiveSession {
     #[serde(rename = "status")]
     pub status: models::Status,
 
+    /// The kernel information, as returned by the kernel_info_request message
+    #[serde(rename = "kernel_info")]
+    pub kernel_info: serde_json::Value,
+
     /// The number of seconds the session has been idle, or 0 if the session is busy
     #[serde(rename = "idle_seconds")]
     pub idle_seconds: i32,
@@ -98,6 +102,7 @@ impl ActiveSession {
         continuation_prompt: String,
         execution_queue: models::ExecutionQueue,
         status: models::Status,
+        kernel_info: serde_json::Value,
         idle_seconds: i32,
         busy_seconds: i32,
     ) -> ActiveSession {
@@ -117,6 +122,7 @@ impl ActiveSession {
             continuation_prompt,
             execution_queue,
             status,
+            kernel_info,
             idle_seconds,
             busy_seconds,
             socket_path: None,
@@ -162,6 +168,7 @@ impl std::string::ToString for ActiveSession {
             Some(self.continuation_prompt.to_string()),
             // Skipping non-primitive type execution_queue in query parameter serialization
             // Skipping non-primitive type status in query parameter serialization
+            // Skipping non-primitive type kernel_info in query parameter serialization
             Some("idle_seconds".to_string()),
             Some(self.idle_seconds.to_string()),
             Some("busy_seconds".to_string()),
@@ -201,6 +208,7 @@ impl std::str::FromStr for ActiveSession {
             pub continuation_prompt: Vec<String>,
             pub execution_queue: Vec<models::ExecutionQueue>,
             pub status: Vec<models::Status>,
+            pub kernel_info: Vec<serde_json::Value>,
             pub idle_seconds: Vec<i32>,
             pub busy_seconds: Vec<i32>,
             pub socket_path: Vec<String>,
@@ -291,6 +299,11 @@ impl std::str::FromStr for ActiveSession {
                     #[allow(clippy::redundant_clone)]
                     "status" => intermediate_rep.status.push(
                         <models::Status as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "kernel_info" => intermediate_rep.kernel_info.push(
+                        <serde_json::Value as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
@@ -386,6 +399,11 @@ impl std::str::FromStr for ActiveSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "status missing in ActiveSession".to_string())?,
+            kernel_info: intermediate_rep
+                .kernel_info
+                .into_iter()
+                .next()
+                .ok_or_else(|| "kernel_info missing in ActiveSession".to_string())?,
             idle_seconds: intermediate_rep
                 .idle_seconds
                 .into_iter()

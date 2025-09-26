@@ -1021,6 +1021,10 @@
           "status": {
             "$ref": "#/components/schemas/status"
           },
+          "kernel_info": {
+            "type": "object",
+            "description": "The kernel information, as returned by the kernel_info_request message"
+          },
           "idle_seconds": {
             "type": "integer",
             "description": "The number of seconds the session has been idle, or 0 if the session is busy"
@@ -1042,6 +1046,7 @@
           "display_name",
           "execution_queue",
           "idle_seconds",
+          "kernel_info",
           "input_prompt",
           "interrupt_mode",
           "language",
