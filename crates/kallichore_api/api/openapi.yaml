@@ -689,6 +689,7 @@ components:
         input_prompt: input_prompt
         continuation_prompt: continuation_prompt
         busy_seconds: 5
+        kernel_info: "{}"
         session_id: session_id
         language: language
         started: 2000-01-23T04:56:07.000+00:00
@@ -760,6 +761,10 @@ components:
           $ref: '#/components/schemas/execution_queue'
         status:
           $ref: '#/components/schemas/status'
+        kernel_info:
+          description: "The kernel information, as returned by the kernel_info_request\
+            \ message"
+          type: object
         idle_seconds:
           description: "The number of seconds the session has been idle, or 0 if the\
             \ session is busy"
@@ -782,6 +787,7 @@ components:
       - idle_seconds
       - input_prompt
       - interrupt_mode
+      - kernel_info
       - language
       - session_id
       - started
@@ -836,6 +842,7 @@ components:
           input_prompt: input_prompt
           continuation_prompt: continuation_prompt
           busy_seconds: 5
+          kernel_info: "{}"
           session_id: session_id
           language: language
           started: 2000-01-23T04:56:07.000+00:00
@@ -862,6 +869,7 @@ components:
           input_prompt: input_prompt
           continuation_prompt: continuation_prompt
           busy_seconds: 5
+          kernel_info: "{}"
           session_id: session_id
           language: language
           started: 2000-01-23T04:56:07.000+00:00

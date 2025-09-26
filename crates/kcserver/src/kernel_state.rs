@@ -77,6 +77,9 @@ pub struct KernelState {
 
     /// The Unix domain socket path for the current client, if any.
     pub client_socket_path: Option<String>,
+
+    /// The kernel information, as returned by the kernel_info_request message.
+    pub kernel_info: Option<serde_json::Value>,
 }
 
 impl KernelState {
@@ -105,6 +108,7 @@ impl KernelState {
             busy_since: None,
             connection_file: None,
             client_socket_path: None,
+            kernel_info: None,
         }
     }
 
@@ -126,6 +130,11 @@ impl KernelState {
     /// Set the Unix domain socket path for the current client
     pub fn set_client_socket_path(&mut self, socket_path: Option<String>) {
         self.client_socket_path = socket_path;
+    }
+
+    /// Set the kernel information
+    pub fn set_kernel_info(&mut self, kernel_info: serde_json::Value) {
+        self.kernel_info = Some(kernel_info);
     }
 
     /// Polls the working directory to see if it's changed.
