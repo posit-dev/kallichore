@@ -289,6 +289,62 @@ impl ClientSession {
         }
     }
 
+    /// Detect if incoming stream data starts with HTTP WebSocket upgrade request
+    /// Returns true if HTTP request detected, false if timeout or raw protocol detected
+    async fn detect_http_websocket_request<T>(
+        reader: &mut tokio::io::BufReader<T>,
+        client_id: &str,
+        transport_name: &str,
+    ) -> Option<bool>
+    where
+        T: tokio::io::AsyncRead + Unpin,
+    {
+        use tokio::io::AsyncBufReadExt;
+        let timeout_duration = tokio::time::Duration::from_millis(5000); // 5 second timeout
+        match tokio::time::timeout(timeout_duration, async {
+            loop {
+                match reader.fill_buf().await {
+                    Ok(buf) if buf.len() >= 4 => {
+                        // We have enough data to check for HTTP request
+                        break Some(buf.starts_with(b"GET "));
+                    }
+                    Ok(buf) if buf.is_empty() => {
+                        // Connection closed
+                        return None;
+                    }
+                    Ok(_) => {
+                        // Need more data, continue waiting
+                        continue;
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "[client {}] Failed to peek at {} data: {}",
+                            client_id,
+                            transport_name,
+                            e
+                        );
+                        return None;
+                    }
+                }
+            }
+        }).await {
+            Ok(Some(is_http)) => Some(is_http),
+            Ok(None) => {
+                // Connection closed or error occurred
+                None
+            }
+            Err(_) => {
+                // Timeout occurred - assume non-HTTP protocol
+                log::warn!(
+                    "[client {}] Timeout waiting for HTTP request data on {}, assuming non-HTTP protocol",
+                    client_id,
+                    transport_name
+                );
+                Some(false)
+            }
+        }
+    }
+
     /// Handle a Unix domain socket connection with WebSocket protocol support
     #[cfg(unix)]
     pub async fn handle_domain_socket_connection(
@@ -308,28 +364,11 @@ impl ClientSession {
         // WebSocket upgrade request. We need to peek at the first few bytes
         // when they arrive to determine which it is.
         let mut reader = BufReader::new(stream);
-        let is_http_request = loop {
-            match reader.fill_buf().await {
-                Ok(buf) if buf.len() >= 4 => {
-                    // Definitely a HTTP request
-                    break buf.starts_with(b"GET ");
-                }
-                Ok(buf) if buf.is_empty() => {
-                    // Connection closed
-                    return;
-                }
-                Ok(_) => {
-                    // Need more data, continue waiting
-                    continue;
-                }
-                Err(e) => {
-                    log::error!(
-                        "[client {}] Failed to peek at Unix socket data: {}",
-                        self.client_id,
-                        e
-                    );
-                    return;
-                }
+        let is_http_request = match Self::detect_http_websocket_request(&mut reader, &self.client_id, "Unix socket").await {
+            Some(is_http) => is_http,
+            None => {
+                // Connection closed or error occurred
+                return;
             }
         };
 
@@ -451,27 +490,11 @@ impl ClientSession {
         let mut reader = BufReader::new(stream);
 
         // Peek at the buffered data to check for HTTP request without consuming it
-        let is_http_request = loop {
-            match reader.fill_buf().await {
-                Ok(buf) if buf.len() >= 4 => {
-                    break buf.starts_with(b"GET ");
-                }
-                Ok(buf) if buf.is_empty() => {
-                    // Connection closed
-                    return;
-                }
-                Ok(_) => {
-                    // Need more data, continue waiting
-                    continue;
-                }
-                Err(e) => {
-                    log::error!(
-                        "[client {}] Failed to peek at named pipe data: {}",
-                        self.client_id,
-                        e
-                    );
-                    return;
-                }
+        let is_http_request = match Self::detect_http_websocket_request(&mut reader, &self.client_id, "named pipe").await {
+            Some(is_http) => is_http,
+            None => {
+                // Connection closed or error occurred
+                return;
             }
         };
 
