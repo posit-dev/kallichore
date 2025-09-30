@@ -304,13 +304,14 @@ impl ClientSession {
             self.client_id
         );
 
-        // Use BufReader to peek at data without consuming it initially
+        // The client may send either a raw WebSocket connection or an HTTP
+        // WebSocket upgrade request. We need to peek at the first few bytes
+        // when they arrive to determine which it is.
         let mut reader = BufReader::new(stream);
-
-        // Peek at the buffered data to check for HTTP request without consuming it
         let is_http_request = loop {
             match reader.fill_buf().await {
                 Ok(buf) if buf.len() >= 4 => {
+                    // Definitely a HTTP request
                     break buf.starts_with(b"GET ");
                 }
                 Ok(buf) if buf.is_empty() => {
@@ -322,14 +323,19 @@ impl ClientSession {
                     continue;
                 }
                 Err(e) => {
-                    log::error!("[client {}] Failed to peek at Unix socket data: {}", self.client_id, e);
+                    log::error!(
+                        "[client {}] Failed to peek at Unix socket data: {}",
+                        self.client_id,
+                        e
+                    );
                     return;
                 }
             }
         };
 
         if is_http_request {
-            // This looks like an HTTP WebSocket upgrade request
+            // This looks like an HTTP WebSocket upgrade request; honor it and
+            // perform the WebSocket handshake
             log::debug!(
                 "[client {}] Detected WebSocket handshake request",
                 self.client_id
@@ -391,8 +397,7 @@ impl ClientSession {
                 );
 
                 // Now treat it as a raw WebSocket connection (handshake complete)
-                let ws_stream =
-                    WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+                let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
 
                 log::info!(
                     "[client {}] Successfully created WebSocket stream from Unix domain socket (with handshake)",
@@ -460,7 +465,11 @@ impl ClientSession {
                     continue;
                 }
                 Err(e) => {
-                    log::error!("[client {}] Failed to peek at named pipe data: {}", self.client_id, e);
+                    log::error!(
+                        "[client {}] Failed to peek at named pipe data: {}",
+                        self.client_id,
+                        e
+                    );
                     return;
                 }
             }
@@ -534,8 +543,7 @@ impl ClientSession {
                 );
 
                 // Now treat it as a raw WebSocket connection (handshake complete)
-                let ws_stream =
-                    WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+                let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
 
                 log::info!(
                     "[client {}] Successfully created WebSocket stream from named pipe (with handshake)",
