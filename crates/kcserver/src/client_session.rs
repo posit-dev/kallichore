@@ -289,6 +289,64 @@ impl ClientSession {
         }
     }
 
+    /// Detect if incoming stream data starts with HTTP WebSocket upgrade request
+    /// Returns true if HTTP request detected, false if timeout or raw protocol detected
+    async fn detect_http_websocket_request<T>(
+        reader: &mut tokio::io::BufReader<T>,
+        client_id: &str,
+        transport_name: &str,
+    ) -> Option<bool>
+    where
+        T: tokio::io::AsyncRead + Unpin,
+    {
+        use tokio::io::AsyncBufReadExt;
+        let timeout_duration = tokio::time::Duration::from_millis(5000); // 5 second timeout
+        match tokio::time::timeout(timeout_duration, async {
+            loop {
+                match reader.fill_buf().await {
+                    Ok(buf) if buf.len() >= 4 => {
+                        // We have enough data to check for HTTP request
+                        break Some(buf.starts_with(b"GET "));
+                    }
+                    Ok(buf) if buf.is_empty() => {
+                        // Connection closed
+                        return None;
+                    }
+                    Ok(_) => {
+                        // Need more data, continue waiting
+                        continue;
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "[client {}] Failed to peek at {} data: {}",
+                            client_id,
+                            transport_name,
+                            e
+                        );
+                        return None;
+                    }
+                }
+            }
+        })
+        .await
+        {
+            Ok(Some(is_http)) => Some(is_http),
+            Ok(None) => {
+                // Connection closed or error occurred
+                None
+            }
+            Err(_) => {
+                // Timeout occurred - assume non-HTTP protocol
+                log::warn!(
+                    "[client {}] Timeout waiting for HTTP request data on {}, assuming non-HTTP protocol",
+                    client_id,
+                    transport_name
+                );
+                Some(false)
+            }
+        }
+    }
+
     /// Handle a Unix domain socket connection with WebSocket protocol support
     #[cfg(unix)]
     pub async fn handle_domain_socket_connection(
@@ -304,108 +362,116 @@ impl ClientSession {
             self.client_id
         );
 
-        // We need to peek at the first few bytes to determine if this is a WebSocket
-        // handshake request or if we should treat it as a raw WebSocket connection
+        // The client may send either a raw WebSocket connection or an HTTP
+        // WebSocket upgrade request. We need to peek at the first few bytes
+        // when they arrive to determine which it is.
         let mut reader = BufReader::new(stream);
-
-        // Try to read the first line to see if it looks like an HTTP request
-        let mut first_line = String::new();
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(100),
-            reader.read_line(&mut first_line),
-        )
-        .await
-        {
-            Ok(Ok(_)) if first_line.starts_with("GET ") => {
-                // This looks like an HTTP WebSocket upgrade request
-                log::debug!(
-                    "[client {}] Detected WebSocket handshake request",
-                    self.client_id
-                );
-
-                // Read the rest of the headers
-                let mut headers = std::collections::HashMap::new();
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).await.is_err() {
-                        break;
-                    }
-                    let line = line.trim();
-                    if line.is_empty() {
-                        break; // End of headers
-                    }
-                    if let Some((key, value)) = line.split_once(':') {
-                        headers.insert(key.trim().to_lowercase(), value.trim().to_string());
-                    }
+        let is_http_request =
+            match Self::detect_http_websocket_request(&mut reader, &self.client_id, "Unix socket")
+                .await
+            {
+                Some(is_http) => is_http,
+                None => {
+                    // Connection closed or error occurred
+                    return;
                 }
+            };
 
-                // Generate WebSocket accept key
-                if let Some(websocket_key) = headers.get("sec-websocket-key") {
-                    let accept_key = derive_accept_key(websocket_key.as_bytes());
+        if is_http_request {
+            // This looks like an HTTP WebSocket upgrade request; honor it and
+            // perform the WebSocket handshake
+            log::debug!(
+                "[client {}] Detected WebSocket handshake request",
+                self.client_id
+            );
 
-                    // Send WebSocket handshake response
-                    let response = format!(
-                        "HTTP/1.1 101 Switching Protocols\r\n\
-                         Upgrade: websocket\r\n\
-                         Connection: Upgrade\r\n\
-                         Sec-WebSocket-Accept: {}\r\n\r\n",
-                        accept_key
-                    );
+            // Now read the first line (which we know is there)
+            let mut first_line = String::new();
+            if reader.read_line(&mut first_line).await.is_err() {
+                return;
+            }
 
-                    let stream = reader.into_inner();
-                    if let Err(e) = stream.writable().await {
-                        log::error!("[client {}] Stream not writable: {}", self.client_id, e);
-                        return;
-                    }
-
-                    if let Err(e) = stream.try_write(response.as_bytes()) {
-                        log::error!(
-                            "[client {}] Failed to send WebSocket handshake response: {}",
-                            self.client_id,
-                            e
-                        );
-                        return;
-                    }
-
-                    log::debug!(
-                        "[client {}] Sent WebSocket handshake response",
-                        self.client_id
-                    );
-
-                    // Now treat it as a raw WebSocket connection (handshake complete)
-                    let ws_stream =
-                        WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
-
-                    log::info!(
-                        "[client {}] Successfully created WebSocket stream from Unix domain socket (with handshake)",
-                        self.client_id
-                    );
-
-                    self.handle_websocket_unix_stream(ws_stream).await;
-                } else {
-                    log::error!(
-                        "[client {}] WebSocket upgrade request missing Sec-WebSocket-Key header",
-                        self.client_id
-                    );
+            // Read the rest of the headers
+            let mut headers = std::collections::HashMap::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_err() {
+                    break;
+                }
+                let line = line.trim();
+                if line.is_empty() {
+                    break; // End of headers
+                }
+                if let Some((key, value)) = line.split_once(':') {
+                    headers.insert(key.trim().to_lowercase(), value.trim().to_string());
                 }
             }
-            _ => {
-                // No HTTP request detected, treat as raw WebSocket connection
-                log::debug!(
-                    "[client {}] No WebSocket handshake detected, using raw WebSocket protocol",
-                    self.client_id
+
+            // Generate WebSocket accept key
+            if let Some(websocket_key) = headers.get("sec-websocket-key") {
+                let accept_key = derive_accept_key(websocket_key.as_bytes());
+
+                // Send WebSocket handshake response
+                let response = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\n\
+                     Upgrade: websocket\r\n\
+                     Connection: Upgrade\r\n\
+                     Sec-WebSocket-Accept: {}\r\n\r\n",
+                    accept_key
                 );
 
                 let stream = reader.into_inner();
+                if let Err(e) = stream.writable().await {
+                    log::error!("[client {}] Stream not writable: {}", self.client_id, e);
+                    return;
+                }
+
+                if let Err(e) = stream.try_write(response.as_bytes()) {
+                    log::error!(
+                        "[client {}] Failed to send WebSocket handshake response: {}",
+                        self.client_id,
+                        e
+                    );
+                    return;
+                }
+
+                log::debug!(
+                    "[client {}] Sent WebSocket handshake response",
+                    self.client_id
+                );
+
+                // Now treat it as a raw WebSocket connection (handshake complete)
                 let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
 
                 log::info!(
-                    "[client {}] Successfully created WebSocket stream from Unix domain socket (raw)",
+                    "[client {}] Successfully created WebSocket stream from Unix domain socket (with handshake)",
                     self.client_id
                 );
 
                 self.handle_websocket_unix_stream(ws_stream).await;
+            } else {
+                log::error!(
+                    "[client {}] WebSocket upgrade request missing Sec-WebSocket-Key header",
+                    self.client_id
+                );
             }
+        } else {
+            // No HTTP request detected, treat as raw WebSocket connection
+            log::debug!(
+                "[client {}] No WebSocket handshake detected, using raw WebSocket protocol",
+                self.client_id
+            );
+
+            // Convert back to the original stream - any buffered data will be preserved
+            let stream = reader.into_inner();
+            let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+
+            log::info!(
+                "[client {}] Successfully created WebSocket stream from Unix domain socket (raw)",
+                self.client_id
+            );
+
+            self.handle_websocket_unix_stream(ws_stream).await;
         }
     }
 
@@ -425,106 +491,113 @@ impl ClientSession {
             session_id
         );
 
-        // We need to peek at the first few bytes to determine if this is a WebSocket
-        // handshake request or if we should treat it as a raw WebSocket connection
+        // Use BufReader to peek at data without consuming it initially
         let mut reader = BufReader::new(stream);
 
-        // Try to read the first line to see if it looks like an HTTP request
-        let mut first_line = String::new();
-        match tokio::time::timeout(
-            tokio::time::Duration::from_millis(100),
-            reader.read_line(&mut first_line),
-        )
-        .await
-        {
-            Ok(Ok(_)) if first_line.starts_with("GET ") => {
-                // This looks like an HTTP WebSocket upgrade request
-                log::debug!(
-                    "[client {}] Detected WebSocket handshake request on named pipe",
-                    self.client_id
+        // Peek at the buffered data to check for HTTP request without consuming it
+        let is_http_request =
+            match Self::detect_http_websocket_request(&mut reader, &self.client_id, "named pipe")
+                .await
+            {
+                Some(is_http) => is_http,
+                None => {
+                    // Connection closed or error occurred
+                    return;
+                }
+            };
+
+        if is_http_request {
+            // This looks like an HTTP WebSocket upgrade request
+            log::debug!(
+                "[client {}] Detected WebSocket handshake request on named pipe",
+                self.client_id
+            );
+
+            // Now read the first line (which we know is there)
+            let mut first_line = String::new();
+            if reader.read_line(&mut first_line).await.is_err() {
+                return;
+            }
+
+            // Read the rest of the headers
+            let mut headers = std::collections::HashMap::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_err() {
+                    break;
+                }
+                let line = line.trim();
+                if line.is_empty() {
+                    break; // End of headers
+                }
+                if let Some((key, value)) = line.split_once(':') {
+                    headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+                }
+            }
+
+            // Generate WebSocket accept key
+            if let Some(websocket_key) = headers.get("sec-websocket-key") {
+                let accept_key = derive_accept_key(websocket_key.as_bytes());
+
+                // Send WebSocket handshake response
+                let response = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\n\
+                     Upgrade: websocket\r\n\
+                     Connection: Upgrade\r\n\
+                     Sec-WebSocket-Accept: {}\r\n\r\n",
+                    accept_key
                 );
 
-                // Read the rest of the headers
-                let mut headers = std::collections::HashMap::new();
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).await.is_err() {
-                        break;
-                    }
-                    let line = line.trim();
-                    if line.is_empty() {
-                        break; // End of headers
-                    }
-                    if let Some((key, value)) = line.split_once(':') {
-                        headers.insert(key.trim().to_lowercase(), value.trim().to_string());
-                    }
-                }
-
-                // Generate WebSocket accept key
-                if let Some(websocket_key) = headers.get("sec-websocket-key") {
-                    let accept_key = derive_accept_key(websocket_key.as_bytes());
-
-                    // Send WebSocket handshake response
-                    let response = format!(
-                        "HTTP/1.1 101 Switching Protocols\r\n\
-                         Upgrade: websocket\r\n\
-                         Connection: Upgrade\r\n\
-                         Sec-WebSocket-Accept: {}\r\n\r\n",
-                        accept_key
-                    );
-
-                    let mut stream = reader.into_inner();
-                    use tokio::io::AsyncWriteExt;
-                    if let Err(e) = stream.write_all(response.as_bytes()).await {
-                        log::error!(
-                            "[client {}] Failed to send WebSocket handshake response on named pipe: {}",
-                            self.client_id,
-                            e
-                        );
-                        return;
-                    }
-
-                    if let Err(e) = stream.flush().await {
-                        log::error!(
-                            "[client {}] Failed to flush WebSocket handshake response on named pipe: {}",
-                            self.client_id,
-                            e
-                        );
-                        return;
-                    }
-
-                    log::debug!(
-                        "[client {}] Sent WebSocket handshake response on named pipe",
-                        self.client_id
-                    );
-
-                    // Now treat it as a raw WebSocket connection (handshake complete)
-                    let ws_stream =
-                        WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
-
-                    log::info!(
-                        "[client {}] Successfully created WebSocket stream from named pipe (with handshake)",
-                        self.client_id
-                    );
-
-                    self.handle_websocket_stream(ws_stream).await;
-                } else {
+                let mut stream = reader.into_inner();
+                use tokio::io::AsyncWriteExt;
+                if let Err(e) = stream.write_all(response.as_bytes()).await {
                     log::error!(
-                        "[client {}] WebSocket upgrade request missing Sec-WebSocket-Key header on named pipe",
-                        self.client_id
+                        "[client {}] Failed to send WebSocket handshake response on named pipe: {}",
+                        self.client_id,
+                        e
                     );
+                    return;
                 }
-            }
-            _ => {
-                // No HTTP request detected, fall back to raw JSON protocol
+
+                if let Err(e) = stream.flush().await {
+                    log::error!(
+                        "[client {}] Failed to flush WebSocket handshake response on named pipe: {}",
+                        self.client_id,
+                        e
+                    );
+                    return;
+                }
+
                 log::debug!(
-                    "[client {}] No WebSocket handshake detected on named pipe, using raw JSON protocol",
+                    "[client {}] Sent WebSocket handshake response on named pipe",
                     self.client_id
                 );
 
-                let stream = reader.into_inner();
-                self.handle_named_pipe_stream_raw(stream, session_id).await;
+                // Now treat it as a raw WebSocket connection (handshake complete)
+                let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+
+                log::info!(
+                    "[client {}] Successfully created WebSocket stream from named pipe (with handshake)",
+                    self.client_id
+                );
+
+                self.handle_websocket_stream(ws_stream).await;
+            } else {
+                log::error!(
+                    "[client {}] WebSocket upgrade request missing Sec-WebSocket-Key header on named pipe",
+                    self.client_id
+                );
             }
+        } else {
+            // No HTTP request detected, fall back to raw JSON protocol
+            log::debug!(
+                "[client {}] No WebSocket handshake detected on named pipe, using raw JSON protocol",
+                self.client_id
+            );
+
+            // Convert back to the original stream - any buffered data will be preserved
+            let stream = reader.into_inner();
+            self.handle_named_pipe_stream_raw(stream, session_id).await;
         }
     }
 
@@ -681,5 +754,128 @@ impl ClientSession {
         self.disconnect.notify(usize::MAX);
 
         log::info!("[client {}] Named pipe connection closed", self.client_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncRead, BufReader};
+
+    /// Mock stream that provides data immediately
+    struct MockDataStream {
+        data: Vec<u8>,
+        position: usize,
+    }
+
+    impl MockDataStream {
+        fn new(data: Vec<u8>) -> Self {
+            Self { data, position: 0 }
+        }
+    }
+
+    impl AsyncRead for MockDataStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.position >= self.data.len() {
+                return Poll::Ready(Ok(()));
+            }
+
+            let remaining = &self.data[self.position..];
+            let to_read = std::cmp::min(remaining.len(), buf.remaining());
+            buf.put_slice(&remaining[..to_read]);
+            self.position += to_read;
+
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Mock stream that never provides data (simulates hanging client)
+    struct MockEmptyStream;
+
+    impl AsyncRead for MockEmptyStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_websocket_request_valid_get() {
+        let http_request = b"GET /sessions/test/channels HTTP/1.1\r\nHost: localhost\r\n";
+        let stream = MockDataStream::new(http_request.to_vec());
+        let mut reader = BufReader::new(stream);
+
+        let result = ClientSession::detect_http_websocket_request(
+            &mut reader,
+            "test-client",
+            "test-transport",
+        )
+        .await;
+
+        assert_eq!(result, Some(true), "Should detect GET request as HTTP");
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_websocket_request_non_http_data() {
+        let binary_data = b"\x81\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58"; // WebSocket frame
+        let stream = MockDataStream::new(binary_data.to_vec());
+        let mut reader = BufReader::new(stream);
+
+        let result = ClientSession::detect_http_websocket_request(
+            &mut reader,
+            "test-client",
+            "test-transport",
+        )
+        .await;
+
+        assert_eq!(result, Some(false), "Should detect binary data as non-HTTP");
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_websocket_request_post_method() {
+        let post_request = b"POST /api/data HTTP/1.1\r\nHost: localhost\r\n";
+        let stream = MockDataStream::new(post_request.to_vec());
+        let mut reader = BufReader::new(stream);
+
+        let result = ClientSession::detect_http_websocket_request(
+            &mut reader,
+            "test-client",
+            "test-transport",
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            Some(false),
+            "Should not detect POST as WebSocket request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_websocket_request_connection_closed() {
+        let empty_data = Vec::new();
+        let stream = MockDataStream::new(empty_data);
+        let mut reader = BufReader::new(stream);
+
+        let result = ClientSession::detect_http_websocket_request(
+            &mut reader,
+            "test-client",
+            "test-transport",
+        )
+        .await;
+
+        assert_eq!(
+            result, None,
+            "Should return None when connection closes immediately"
+        );
     }
 }
