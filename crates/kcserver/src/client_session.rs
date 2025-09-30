@@ -327,7 +327,9 @@ impl ClientSession {
                     }
                 }
             }
-        }).await {
+        })
+        .await
+        {
             Ok(Some(is_http)) => Some(is_http),
             Ok(None) => {
                 // Connection closed or error occurred
@@ -364,13 +366,16 @@ impl ClientSession {
         // WebSocket upgrade request. We need to peek at the first few bytes
         // when they arrive to determine which it is.
         let mut reader = BufReader::new(stream);
-        let is_http_request = match Self::detect_http_websocket_request(&mut reader, &self.client_id, "Unix socket").await {
-            Some(is_http) => is_http,
-            None => {
-                // Connection closed or error occurred
-                return;
-            }
-        };
+        let is_http_request =
+            match Self::detect_http_websocket_request(&mut reader, &self.client_id, "Unix socket")
+                .await
+            {
+                Some(is_http) => is_http,
+                None => {
+                    // Connection closed or error occurred
+                    return;
+                }
+            };
 
         if is_http_request {
             // This looks like an HTTP WebSocket upgrade request; honor it and
@@ -490,13 +495,16 @@ impl ClientSession {
         let mut reader = BufReader::new(stream);
 
         // Peek at the buffered data to check for HTTP request without consuming it
-        let is_http_request = match Self::detect_http_websocket_request(&mut reader, &self.client_id, "named pipe").await {
-            Some(is_http) => is_http,
-            None => {
-                // Connection closed or error occurred
-                return;
-            }
-        };
+        let is_http_request =
+            match Self::detect_http_websocket_request(&mut reader, &self.client_id, "named pipe")
+                .await
+            {
+                Some(is_http) => is_http,
+                None => {
+                    // Connection closed or error occurred
+                    return;
+                }
+            };
 
         if is_http_request {
             // This looks like an HTTP WebSocket upgrade request
@@ -746,5 +754,128 @@ impl ClientSession {
         self.disconnect.notify(usize::MAX);
 
         log::info!("[client {}] Named pipe connection closed", self.client_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncRead, BufReader};
+
+    /// Mock stream that provides data immediately
+    struct MockDataStream {
+        data: Vec<u8>,
+        position: usize,
+    }
+
+    impl MockDataStream {
+        fn new(data: Vec<u8>) -> Self {
+            Self { data, position: 0 }
+        }
+    }
+
+    impl AsyncRead for MockDataStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.position >= self.data.len() {
+                return Poll::Ready(Ok(()));
+            }
+
+            let remaining = &self.data[self.position..];
+            let to_read = std::cmp::min(remaining.len(), buf.remaining());
+            buf.put_slice(&remaining[..to_read]);
+            self.position += to_read;
+
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// Mock stream that never provides data (simulates hanging client)
+    struct MockEmptyStream;
+
+    impl AsyncRead for MockEmptyStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_websocket_request_valid_get() {
+        let http_request = b"GET /sessions/test/channels HTTP/1.1\r\nHost: localhost\r\n";
+        let stream = MockDataStream::new(http_request.to_vec());
+        let mut reader = BufReader::new(stream);
+
+        let result = ClientSession::detect_http_websocket_request(
+            &mut reader,
+            "test-client",
+            "test-transport",
+        )
+        .await;
+
+        assert_eq!(result, Some(true), "Should detect GET request as HTTP");
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_websocket_request_non_http_data() {
+        let binary_data = b"\x81\x85\x37\xfa\x21\x3d\x7f\x9f\x4d\x51\x58"; // WebSocket frame
+        let stream = MockDataStream::new(binary_data.to_vec());
+        let mut reader = BufReader::new(stream);
+
+        let result = ClientSession::detect_http_websocket_request(
+            &mut reader,
+            "test-client",
+            "test-transport",
+        )
+        .await;
+
+        assert_eq!(result, Some(false), "Should detect binary data as non-HTTP");
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_websocket_request_post_method() {
+        let post_request = b"POST /api/data HTTP/1.1\r\nHost: localhost\r\n";
+        let stream = MockDataStream::new(post_request.to_vec());
+        let mut reader = BufReader::new(stream);
+
+        let result = ClientSession::detect_http_websocket_request(
+            &mut reader,
+            "test-client",
+            "test-transport",
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            Some(false),
+            "Should not detect POST as WebSocket request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_detect_http_websocket_request_connection_closed() {
+        let empty_data = Vec::new();
+        let stream = MockDataStream::new(empty_data);
+        let mut reader = BufReader::new(stream);
+
+        let result = ClientSession::detect_http_websocket_request(
+            &mut reader,
+            "test-client",
+            "test-transport",
+        )
+        .await;
+
+        assert_eq!(
+            result, None,
+            "Should return None when connection closes immediately"
+        );
     }
 }
