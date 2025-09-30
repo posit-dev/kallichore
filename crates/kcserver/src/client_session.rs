@@ -795,19 +795,6 @@ mod tests {
         }
     }
 
-    /// Mock stream that never provides data (simulates hanging client)
-    struct MockEmptyStream;
-
-    impl AsyncRead for MockEmptyStream {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            _buf: &mut tokio::io::ReadBuf<'_>,
-        ) -> Poll<std::io::Result<()>> {
-            Poll::Pending
-        }
-    }
-
     #[tokio::test]
     async fn test_detect_http_websocket_request_valid_get() {
         let http_request = b"GET /sessions/test/channels HTTP/1.1\r\nHost: localhost\r\n";
