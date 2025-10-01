@@ -1,6 +1,6 @@
 # Kallichore <img src="doc/Kallichore.webp" align="right" height=160 />
 
-Kallichore is an experimental, headless supervisor for Jupyter kernels. It [exposes a JSON API](https://github.com/posit-dev/kallichore/blob/main/kallichore.json) that can be used to start kernel sessions and query for their status. It also provides a WebSocket interface for sending and receiving Jupyter messages.
+Kallichore is an experimental, cross-platform, headless supervisor for Jupyter kernels. It [exposes an API](https://github.com/posit-dev/kallichore/blob/main/kallichore.json) that can be used to manage kernel sessions and provides a WebSocket-compatible interface for sending and receiving Jupyter messages to each kernel.
 
 ```mermaid
 graph LR
@@ -13,9 +13,9 @@ ki1 -- zeromq --> k1[kernel 1]
 ki2 -- zeromq --> k2[kernel 2]
 ```
 
-Kallichore's primary residence is in [the Positron IDE](https://github.com/posit-dev/positron), where it provides durable Jupyter kernel sessions, especially in [Posit Workbench](https://posit.co/products/enterprise/workbench/). It takes care of much of the minutiae of Jupyter kernel management (ZeroMQ, process interop, lifecycle supervision, etc.) and exposes a high-level API that Positron uses to control kernel sessions and to send and receive Jupyter messages.
+Kallichore's primary residence is in [the Positron IDE](https://github.com/posit-dev/positron), where it provides durable Jupyter kernel sessions, especially in [Posit Workbench](https://posit.co/products/enterprise/workbench/). It takes care of the low-level minutiae of Jupyter kernel management (ZeroMQ, process interop, lifecycle supervision, etc.), leaving Positron to handle the user interface and other aspects of the development environment.
 
-It is a companion to Posit's [Amalthea and Ark](https://github.com/posit-dev/ark) projects. Like Amalthea, it is a Jupyter-adjacent project named after [one of Jupiter's moons](https://science.nasa.gov/jupiter/moons/kallichore/). Kallichore is also [one of the Muses](https://en.wikipedia.org/wiki/Callichore). 
+It is a companion to Posit's [Amalthea and Ark](https://github.com/posit-dev/ark) projects. Like Amalthea, it is a Rust-based, Jupyter-adjacent project named after [one of Jupiter's moons](https://science.nasa.gov/jupiter/moons/kallichore/). Kallichore is also [one of the Muses](https://en.wikipedia.org/wiki/Callichore).
 
 Here's how Kallichore functions in the larger Positron ecosystem for e.g. an R session:
 
@@ -23,7 +23,7 @@ Here's how Kallichore functions in the larger Positron ecosystem for e.g. an R s
 graph TD
 p[Positron] -- Positron API --> r[R Language Pack]
 r -- Positron API --> p
-r --> kp[Kallichore Plugin] 
+r --> kp[Kallichore Plugin]
 kp --> r
 kp -- Kallichore API --> k[Kallichore]
 k -- Kallichore API --> kp
@@ -33,7 +33,62 @@ kp -- Jupyter over WebSocket --> k
 rk -- LSP over TCP --> r
 ```
 
-## Compiling and Running
+## Running Kallichore
+
+To run Kallichore, first get a copy of the server from the GitHub Releases page on this repository (or build your own; see below for instructions). This release contains a pre-built binary named `kcserver` for your platform.
+
+For most use cases, it's recommended to run `kcserver` with the `--connection-file` argument to have Kallichore generate a connection file for your client. On a typical Unix-like system, you might use a temporary file for connection information and tell Kallichore to use domain sockets as the transport (TCP and named pipes are also supported; see [Connection Methods](#connection-methods) for details):
+
+```bash
+./kcserver --transport socket --connection-file /tmp/kc-connection-file.json
+```
+
+The server will start up and listen for incoming connections on the specified transport and generate a bearer auth token (see below for [Security Considerations](#security-considerations)). Your client can read connection details from the connection file and connect to the server using the appropriate transport. The connection file looks like this:
+
+```json
+{
+  "socket_path": "/tmp/path-to/socket/kc-5259.sock",
+  "transport": "socket",
+  "server_path": "/path/to/kcserver",
+  "server_pid": 5259,
+  "bearer_token": "4dea37b8a3b3e09f",
+  "log_path": null
+}
+```
+
+See Kallichore's help page for a full list of command-line options:
+
+```bash
+./kcserver --help
+```
+
+### Starting and Connecting to Kernels
+
+Once the server is alive, you're ready to run kernels. Typically, you'll use the following API methods:
+
+- Create a new session by executing a `PUT` on `/sessions` with the session information. The new session ID is returned (let's say it's `session1234`)
+- Begin listening to kernel events and output from the session by getting a WebSocket URL or path from the `/sessions/session1234/channels` method and connecting to it in your client.
+- Ask the session to start by executing a `POST` on `/sessions/session1234/start`. During startup, state changes and output will be sent to the WebSocket connection.
+- Once the session is successfully started, use your WebSocket connection to send and receive messages to/from the kernel.
+
+### Kernel and Server Lifecycles
+
+By default, the server will run indefinitely until it is manually stopped. You can stop it by sending a `SIGINT` signal to the process, or by invoking the `/shutdown` API. Either one will attempt to gracefully shut down all active kernels (sending each a Jupyter message requesting shutdown) and then exit the server itself.
+
+You can also cause Kallichore to exit after a period of inactivity by setting the `--idle-shutdown-hours` parameter when starting the server. This option will keep the server running as long as any kernel is active; the shutdown timer starts running only when all kernels are idle and none are connected to a front end.
+
+## Security Considerations
+
+> [!IMPORTANT]
+> Kallichore's API accepts arbitrary paths to executable files, and will run them as subprocesses. Jupyter kernels can also be made to execute arbitrary commands, which can be used to execute malicious code. This presents a significant security risk if security measures are not in place to prevent unauthorized execution.
+
+The following steps are recommended to ensure the security of your Kallichore instance:
+
+1. **Use a low-privilege user account**: Run Kallichore under a non-privileged user account, not as root. Because Jupyter kernels are basically code execution environments, presume that giving a user access to Kallichore's API is equivalent to giving them shell access.
+2. **Use IPC, not TCP**: If running Kallichore locally, use domain sockets (Unix/macOS) or named pipes (Windows) as the transport. These transports are more secure than TCP, as they can be locked down with file system permissions and do not expose the server to the network.
+3. **Secure the authentication token**: Kallichore uses a simple bearer token for authentication. If generating the token yourself, pass it as a file (so that it is not exposed in the process list) and delete it once the server has started. If allowing the server to generate the token, delete the connection file once it has been read.
+
+## Development
 
 ### Compiling
 
@@ -64,7 +119,7 @@ To make changes to the API, edit the `kallichore.json` file and then run the `sc
 > The regenerator script requires the [OpenAPI Generator](https://openapi-generator.tech/docs/installation).
 
 > [!IMPORTANT]
-> Because we have custom behavior attached to some of the endpoints, we have some manual edits applied to the generated code. These are generally fenced with `--- Start Kallichore ---` and `--- End Kallichore ---` comments. Be sure to reapply these edits (or just revert changes that delete them) if you regenerate the API.
+> The code generator produces code with HTTPS support. We remove the TLS/HTTPS support from the generated code in order to avoid creating a binary that links to OpenSSL (which would introduce a lot of system compatibility issues).
 
 ## Connection Methods
 
@@ -80,13 +135,13 @@ Connections to individual kernels are made with WebSockets, which are establishe
 
 ```bash
 # Use default port (random)
-./target/debug/kcserver
+./kcserver
 
 # Use specific port
-./target/debug/kcserver --port 8080
+./kcserver --port 8080
 
 # Create a connection file with TCP
-./target/debug/kcserver --connection-file connection.json --transport tcp
+./kcserver --connection-file connection.json --transport tcp
 ```
 
 #### Example TCP connection file
@@ -115,13 +170,13 @@ When using domain sockets, the server listens on a specific socket file instead 
 
 ```bash
 # Use connection file with socket (default on Unix when using --connection-file)
-./target/debug/kcserver --connection-file connection.json
+./kcserver --connection-file connection.json
 
 # Explicitly specify socket transport
-./target/debug/kcserver --connection-file connection.json --transport socket
+./kcserver --connection-file connection.json --transport socket
 
 # Use specific socket path
-./target/debug/kcserver --unix-socket /tmp/kallichore.sock
+./kcserver --unix-socket /tmp/kallichore.sock
 ```
 
 #### Example Unix socket connection file
