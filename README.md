@@ -31,6 +31,7 @@ k -- Jupyter over ZeroMQ --> rk[R Kernel]
 rk -- Jupyter over ZeroMQ --> k
 kp -- Jupyter over WebSocket --> k
 rk -- LSP over TCP --> r
+```
 
 ## Compiling and Running
 
