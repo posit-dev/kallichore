@@ -1,10 +1,6 @@
 # Kallichore <img src="doc/Kallichore.webp" align="right" height=160 />
 
-Kallichore is an experimental, headless supervisor for Jupyter kernels.
-
-It exposes a JSON API (described with OpenAPI) that can be used to start kernel sessions and query for their status. It also provides a WebSocket interface for sending and receiving Jupyter messages.
-
-Multiple kernels/sessions can be supervised at once; each receives its own interface.
+Kallichore is an experimental, headless supervisor for Jupyter kernels. It [exposes a JSON API](https://github.com/posit-dev/kallichore/blob/main/kallichore.json) that can be used to start kernel sessions and query for their status. It also provides a WebSocket interface for sending and receiving Jupyter messages.
 
 ```mermaid
 graph LR
@@ -16,6 +12,25 @@ kallichore --> ki2[kernel interface 2]
 ki1 -- zeromq --> k1[kernel 1]
 ki2 -- zeromq --> k2[kernel 2]
 ```
+
+Kallichore's primary residence is in [the Positron IDE](https://github.com/posit-dev/positron), where it provides durable Jupyter kernel sessions, especially in [Posit Workbench](https://posit.co/products/enterprise/workbench/). It takes care of much of the minutiae of Jupyter kernel management (ZeroMQ, process interop, lifecycle supervision, etc.) and exposes a high-level API that Positron uses to control kernel sessions and to send and receive Jupyter messages.
+
+It is a companion to Posit's [Amalthea and Ark](https://github.com/posit-dev/ark) projects. Like Amalthea, it is a Jupyter-adjacent project named after [one of Jupiter's moons](https://science.nasa.gov/jupiter/moons/kallichore/). Kallichore is also [one of the Muses](https://en.wikipedia.org/wiki/Callichore). 
+
+Here's how Kallichore functions in the larger Positron ecosystem for e.g. an R session:
+
+```mermaid
+graph TD
+p[Positron] -- Positron API --> r[R Language Pack]
+r -- Positron API --> p
+r --> kp[Kallichore Plugin] 
+kp --> r
+kp -- Kallichore API --> k[Kallichore]
+k -- Kallichore API --> kp
+k -- Jupyter over ZeroMQ --> rk[R Kernel]
+rk -- Jupyter over ZeroMQ --> k
+kp -- Jupyter over WebSocket --> k
+rk -- LSP over TCP --> r
 
 ## Compiling and Running
 
