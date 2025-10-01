@@ -107,6 +107,27 @@ export RUST_LOG=trace
 ./target/debug/kcserver
 ```
 
+## Repository Structure
+
+```
+ .
+ +-- kallichore.json -- OpenAPI description of the Kallichore API
+ |
+ +-- crates
+      |
+      +-- kallichore_api -- Code-generated Rust client/server
+      |    |
+      |    +-- examples/client -- Example client
+      |    |
+      |    +-- examples/server -- Example server
+      |
+      +-- kcshared -- Shared code for the server and client
+      |
+      +-- kcserver -- Main Kallichore server, using the kallichore_api crate
+      |
+      +-- kcclient -- Command-line client (for testing), using the kallichore_api crate
+```
+
 ## API Changes
 
 To make changes to the API, edit the `kallichore.json` file and then run the `scripts/regen-api.sh` script to regenerate the Rust client and server crates.
@@ -236,37 +257,10 @@ The server automatically selects the appropriate transport based on:
 - **Named Pipes**: Use Windows security descriptors for access control
 - **Authentication**: All transports support bearer token authentication when enabled
 
-## Repository Structure
-
-```
- .
- +-- kallichore.json -- OpenAPI description of the Kallichore API
- |
- +-- crates
-      |
-      +-- kallichore_api -- Code-generated Rust client/server
-      |    |
-      |    +-- examples/client -- Example client
-      |    |
-      |    +-- examples/server -- Example server
-      |
-      +-- kcshared -- Shared code for the server and client
-      |
-      +-- kcserver -- Main Kallichore server, using the kallichore_api crate
-      |
-      +-- kcclient -- Command-line client (for testing), using the kallichore_api crate
-```
-
 
 ## Builds and Versions
 
 Kallichore is versioned similar to ARK. No release builds are produced by default. When you want to release a new version of Kallichore (for integrating into Positron, etc.), bump the version of the `kcserver` crate. This will trigger a release build.
-
-Note that because this repository is private, and Positron is public, there's a public repository that hosts Kallichore builds for Positron to download while building. You can find that here:
-
-<https://github.com/posit-dev/kallichore-builds>
-
-All Kallichore releases are automatically copied to the `kallichore-builds` repository.
 
 ## Adjacent Projects/Links
 
