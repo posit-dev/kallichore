@@ -1,0 +1,30 @@
+# ----------------------------------------------------------------------------
+# Rust dependency overrides
+# ----------------------------------------------------------------------------
+
+['rust::anstream']
+# If not renamed explicitly, gets merged into anstyle
+rename = 'anstream'
+
+['rust::anstyle-query']
+# If not renamed explicitly, gets merged into anstyle
+rename = 'anstyle-query'
+
+['rust::pin-project']
+# No attribution information anywhere to be found
+# Use author tag to indicate packager to avoid over-asserting copyright
+author = 'Taiki Endo'
+
+['rust::pin-project-lite']
+# No attribution information anywhere to be found
+# Use author tag to indicate packager to avoid over-asserting copyright
+author = 'Taiki Endo'
+
+['rust::ring']
+# unclear parsing in some versions
+license = ['MIT', 'BoringSSL', 'ISC', 'Apache-2.0']
+license_files = [['@', 'LICENSE']]
+
+['rust::typenum']
+# license file is invalid; skip it
+license_files = []
