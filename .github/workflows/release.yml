@@ -272,9 +272,10 @@ jobs:
                   # Create a universal binary
                   lipo -create x64/kcserver arm64/kcserver -output kcserver
 
-                  # Compress and bundle licenses
+                  # Compress and bundle
                   ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-universal.zip"
-                  zip -Xry $ARCHIVE kcserver
+                  [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
+                  zip -Xry $ARCHIVE kcserver LICENSE
 
             - name: Upload macOS release artifact (universal)
               uses: actions/upload-release-asset@v1
