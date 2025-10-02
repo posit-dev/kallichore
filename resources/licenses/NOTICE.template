@@ -1,0 +1,21 @@
+Licenses
+========
+
+Kallichore includes and/or derives from other open source software
+components. This document lists those components, where to find the source
+code for these components, and the full text of their license statements.
+
+You may also request a copy of the source code for any of these components
+by sending an email to info@posit.co
+
+Components used by Kallichore
+===========================
+%(kallichore_collection)s
+
+Licenses used by multiple components
+====================================
+%(shared-licenses)s
+
+Component-specific licenses
+===========================
+%(component-licenses)s

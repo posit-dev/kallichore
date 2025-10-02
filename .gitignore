@@ -11,3 +11,11 @@ target/
 
 # Exuberant Ctags
 tags
+
+# Ignore License Mole caches
+.mole.license_cache.json
+.mole.rust_cache/
+.mole.web_cache/
+
+# macOS
+.DS_Store

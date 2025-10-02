@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------------------------
+# Copyright (C) 2025 Posit Software, PBC. All rights reserved.
+# Licensed under the Elastic License 2.0. See LICENSE.txt for license information.
+# ---------------------------------------------------------------------------------------------
+
+overrides = "mole-overrides.toml"
+
+[output.notice]
+template = "resources/licenses/NOTICE.template"
+destination = "NOTICE"
+format = "text"
+
+[formats.text]
+underline = { char="-" }
+nameless_license = """
+
+License text:
+
+%(text)s
+"""
+named_license = """
+
+%(name)s text:
+
+%(text)s
+"""
+multi_license = """
+
+License text (%(names)s):
+
+%(text)s
+"""
+
+[repos]
+KALLICHORE_PATH = "."
+
+[groups.rust]
+kallichore = ["KALLICHORE_PATH", "crates/*"]
+
+[collections]
+kallichore_collection = ["kallichore"]
+
+[spdx-overrides]
+# Contains an SPDX identifier for one of the sub-licenses
+'https://github.com/nodejs/node/raw/main/LICENSE' = ['MIT-with-additional']
+
+[rust.group]
+'anstyle-query' = 'anstyle'
+'clap_builder' = 'clap'
+'clap_derive' = 'clap'
+'clap_lex' = 'clap'
+'colorchoice' = 'anstyle'
+'frunk_core' = 'frunk'
+'frunk_derives' = 'frunk'
+'frunk_proc_macro_helpers' = 'frunk'
+'frunk_proc_macros' = 'frunk'
+'tokio-test' = 'tokio'
+'tokio-util' = 'tokio'
