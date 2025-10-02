@@ -60,8 +60,8 @@ jobs:
 
           # Compress the kernel to an archive
           ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ inputs.version }}-${{ matrix.flavor }}-linux-${{ matrix.arch }}.zip"
-          [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
-          zip -Xry $ARCHIVE kcserver LICENSE
+          [ -e LICENSE.txt ] || cp "$GITHUB_WORKSPACE/LICENSE.txt" LICENSE.txt
+          zip -Xry $ARCHIVE kcserver LICENSE.txt
 
           popd
 

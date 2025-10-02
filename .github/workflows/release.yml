@@ -176,7 +176,7 @@ jobs:
               run: |
                   # Compress the server to an archive
                   $params = @{
-                    Path = "target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\${{ matrix.flavor }}\kcserver.exe", "LICENSE"
+                    Path = "target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\${{ matrix.flavor }}\kcserver.exe", "LICENSE.txt"
                     DestinationPath = "kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip"
                   }
                   Compress-Archive @params
@@ -274,8 +274,8 @@ jobs:
 
                   # Compress and bundle
                   ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-universal.zip"
-                  [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE
-                  zip -Xry $ARCHIVE kcserver LICENSE
+                  [ -e LICENSE.txt ] || cp "$GITHUB_WORKSPACE/LICENSE.txt" LICENSE.txt
+                  zip -Xry $ARCHIVE kcserver LICENSE.txt
 
             - name: Upload macOS release artifact (universal)
               uses: actions/upload-release-asset@v1
