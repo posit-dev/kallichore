@@ -20,10 +20,16 @@ jobs:
                 include:
                     - os: ubuntu-latest
                       platform: linux
+                      arch: x64
+                    - os: windows-11-arm
+                      platform: windows
+                      arch: arm64
                     - os: windows-latest
                       platform: windows
+                      arch: x64
                     - os: [self-hosted-staging, macos, arm64]
                       platform: macos
+                      arch: arm64
 
         steps:
             - name: Checkout sources
@@ -54,7 +60,7 @@ jobs:
             - name: Install dependencies (Windows)
               if: matrix.platform == 'windows'
               run: |
-                  vcpkg install zeromq:x64-windows
+                  vcpkg install zeromq:${{ matrix.arch }}-windows
               shell: cmd
 
             - name: Cache cargo registry
