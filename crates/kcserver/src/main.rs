@@ -2,6 +2,7 @@
 // main.rs
 //
 // Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
+// Licensed under the Elastic License 2.0. See LICENSE.txt for license information.
 //
 //
 
@@ -354,8 +355,11 @@ async fn main() {
                 hex_string.push_str(&format!("{:02x}", byte));
             }
 
-            // Log the generated token for debugging purposes
-            log::info!("Generated random auth token: {}", hex_string);
+            // If the token is generated and no connection file is specified,
+            // log it to the console as there's otherwise no way to retrieve it
+            if args.connection_file.is_none() {
+                log::info!("Generated random auth token: {}", hex_string);
+            }
 
             Some(hex_string)
         }

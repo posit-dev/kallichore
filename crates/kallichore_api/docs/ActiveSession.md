@@ -18,6 +18,7 @@ Name | Type | Description | Notes
 **continuation_prompt** | **String** | The text to use to prompt for input continuations | 
 **execution_queue** | [***models::ExecutionQueue**](execution_queue.md) |  | 
 **status** | [***models::Status**](status.md) |  | 
+**kernel_info** | [***serde_json::Value**](.md) | The kernel information, as returned by the kernel_info_request message | 
 **idle_seconds** | **i32** | The number of seconds the session has been idle, or 0 if the session is busy | 
 **busy_seconds** | **i32** | The number of seconds the session has been busy, or 0 if the session is idle | 
 **socket_path** | **String** | The path to the Unix domain socket used to send/receive data from the session, if applicable | [optional] [default to None]

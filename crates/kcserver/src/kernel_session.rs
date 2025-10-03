@@ -2,6 +2,7 @@
 // kernel_session.rs
 //
 // Copyright (C) 2024-2025 Posit Software, PBC. All rights reserved.
+// Licensed under the Elastic License 2.0. See LICENSE.txt for license information.
 //
 //
 
@@ -842,6 +843,12 @@ impl KernelSession {
         // If the session reported kernel info, mine it to get the initial
         // values for our input and continuation prompts
         if let Ok(value) = &result {
+            // Save the kernel info to the state first
+            {
+                let mut state = self.state.write().await;
+                state.set_kernel_info(value.clone());
+            }
+
             let kernel_info = serde_json::from_value::<KernelInfoReply>(value.clone());
             match kernel_info {
                 Ok(info) => match info.language_info.positron {
@@ -1202,6 +1209,7 @@ impl KernelSession {
             status: state.status,
             execution_queue: state.execution_queue.to_json(),
             socket_path: state.client_socket_path.clone(),
+            kernel_info: state.kernel_info.clone().unwrap_or(serde_json::json!({})),
         }
     }
 
@@ -1392,6 +1400,11 @@ impl KernelSession {
                     "[session {}] Kernel sockets connected successfully; kernel successfully adopted",
                     self.connection.session_id.clone()
                 );
+                // Save the kernel info to the state
+                {
+                    let mut state = self.state.write().await;
+                    state.set_kernel_info(kernel_info.clone());
+                }
                 Ok(kernel_info)
             }
             Ok(StartupStatus::ConnectionFailed(_output, e)) => {
