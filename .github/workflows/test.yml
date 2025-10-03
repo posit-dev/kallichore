@@ -20,6 +20,8 @@ jobs:
                 include:
                     - os: ubuntu-latest
                       platform: linux
+                    - os: windows-11-arm
+                      platform: windows
                     - os: windows-latest
                       platform: windows
                     - os: [self-hosted-staging, macos, arm64]
