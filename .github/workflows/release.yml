@@ -227,7 +227,7 @@ jobs:
     # Uploads binaries, if we created a release
     upload_release_binaries:
         name: Upload Release Binaries
-        runs-on: ubuntu-latest
+        runs-on: macos-latest
         needs: [create_release, get_version]
         permissions:
            contents: write  # Required for creating a tag and release
