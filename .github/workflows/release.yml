@@ -132,7 +132,8 @@ jobs:
 
                   # Compress the server to an archive
                   ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}${{ env.DEBUG_FLAG }}-darwin-${{ matrix.arch }}.zip"
-                  zip -Xry $ARCHIVE kcserver
+                  [ -e LICENSE.txt ] || cp "$GITHUB_WORKSPACE/LICENSE.txt" LICENSE.txt
+                  zip -Xry $ARCHIVE kcserver LICENSE.txt
 
                   popd
 
@@ -287,6 +288,9 @@ jobs:
 
                   # Create a universal binary
                   lipo -create x64/kcserver arm64/kcserver -output kcserver
+
+                  # Copy the license
+                  cp arm64/LICENSE.txt LICENSE.txt
 
                   # Compress and bundle
                   ARCHIVE="$GITHUB_WORKSPACE/kallichore-${{ env.RELEASE_TAG }}${{ env.DEBUG_FLAG }}-darwin-universal.zip"
