@@ -180,6 +180,13 @@ impl Transport for UnixSocketTransport {
 
         let server_created = config.unix_socket_path.is_none();
 
+        // Ensure target directory exists before creating the socket
+        if let Some(parent) = std::path::Path::new(&socket_path).parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
         // Remove existing socket file if it exists
         if std::path::Path::new(&socket_path).exists() {
             if let Err(e) = std::fs::remove_file(&socket_path) {
