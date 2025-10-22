@@ -182,7 +182,7 @@ impl Transport for UnixSocketTransport {
 
         // Ensure target directory exists before creating the socket
         if let Some(parent) = std::path::Path::new(&socket_path).parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
+            if !parent.exists() {
                 std::fs::create_dir_all(parent)?;
             }
         }
