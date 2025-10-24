@@ -18,7 +18,7 @@ use common::test_utils::{
 };
 use common::transport::{run_communication_test, CommunicationChannel, TransportType};
 use common::TestServer;
-use kallichore_api::models::{InterruptMode, NewSession, VarAction, VarActionType};
+use kallichore_api::models::{InterruptMode, NewSession, SessionMode, VarAction, VarActionType};
 use kallichore_api::NewSessionResponse;
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
 use kcshared::websocket_message::WebsocketMessage;
@@ -283,6 +283,8 @@ async fn test_multiple_kernel_sessions() {
             username: "testuser".to_string(),
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
+            notebook_uri: None,
+            session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),
                 "-m".to_string(),
@@ -395,7 +397,7 @@ async fn run_python_kernel_test_domain_socket(python_cmd: &str) {
 
     // Create session via HTTP over Unix socket
     let session_request = format!(
-        r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "ipykernel", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "run_in_shell": false}}"#,
+        r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "ipykernel", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "run_in_shell": false, "session_mode": "console"}}"#,
         session_id, python_cmd
     );
 
@@ -1380,6 +1382,8 @@ async fn test_kernel_starts_with_bad_shell_env_var() {
             username: "testuser".to_string(),
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
+            notebook_uri: None,
+            session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),
                 "-m".to_string(),
@@ -1397,7 +1401,7 @@ async fn test_kernel_starts_with_bad_shell_env_var() {
                     action: VarActionType::Replace,
                     name: "SHELL".to_string(),
                     value: "/non/existent/shell".to_string(),
-                }
+                },
             ],
             connection_timeout: Some(15),
             interrupt_mode: InterruptMode::Message,
@@ -1444,8 +1448,14 @@ async fn test_kernel_starts_with_bad_shell_env_var() {
             .expect("Failed to get sessions list");
 
         let kallichore_api::ListSessionsResponse::ListOfActiveSessions(session_list) = sessions;
-        let session_found = session_list.sessions.iter().any(|s| s.session_id == session_id);
-        assert!(session_found, "Session should be in the active sessions list");
+        let session_found = session_list
+            .sessions
+            .iter()
+            .any(|s| s.session_id == session_id);
+        assert!(
+            session_found,
+            "Session should be in the active sessions list"
+        );
 
         println!("Test passed: Kernel started successfully despite bad SHELL environment variable");
 
@@ -1493,7 +1503,7 @@ async fn test_run_in_shell_functionality() {
             shell_env: Option<&str>,
         ) -> String {
             let session_id = format!("test-shell-{}-{}", test_name, Uuid::new_v4());
-            
+
             // Create a custom session with the desired shell configuration
             let mut env_vars = vec![];
 
@@ -1513,6 +1523,8 @@ async fn test_run_in_shell_functionality() {
                 username: "testuser".to_string(),
                 input_prompt: "In [{}]: ".to_string(),
                 continuation_prompt: "   ...: ".to_string(),
+                session_mode: SessionMode::Console,
+                notebook_uri: None,
                 argv: vec![
                     python_cmd.to_string(),
                     "-m".to_string(),
@@ -1531,7 +1543,7 @@ async fn test_run_in_shell_functionality() {
                 run_in_shell: Some(run_in_shell),
             };
 
-            println!("Creating session '{}' with run_in_shell={}, shell_env={:?}", 
+            println!("Creating session '{}' with run_in_shell={}, shell_env={:?}",
                 test_name, run_in_shell, shell_env);
 
             // Create the session
@@ -1579,7 +1591,7 @@ async fn test_run_in_shell_functionality() {
                 .unwrap()
                 .join("tests")
                 .join("shell_test.py");
-            
+
             let test_code = format!(
                 r#"
 import subprocess
@@ -1591,12 +1603,12 @@ expected_mode = "{}"
 
 try:
     result = subprocess.run([
-        sys.executable, 
+        sys.executable,
         r"{}",
         test_marker,
         expected_mode
     ], capture_output=True, text=True, timeout=10)
-    
+
     if result.returncode == 0:
         print(result.stdout)
     else:
@@ -1719,40 +1731,40 @@ except Exception as e:
             session_id
         }
 
-        // Test 1: run_in_shell = false (default behavior) 
+        // Test 1: run_in_shell = false (default behavior)
         let session_1 = test_shell_behavior_via_kernel(
-            &client, 
+            &client,
             &server,
-            &python_cmd, 
-            "no-shell", 
-            false, 
+            &python_cmd,
+            "no-shell",
+            false,
             None
         ).await;
 
         // Test 2: run_in_shell = true with default shell
         let session_2 = test_shell_behavior_via_kernel(
-            &client, 
+            &client,
             &server,
-            &python_cmd, 
-            "default-shell", 
-            true, 
+            &python_cmd,
+            "default-shell",
+            true,
             None
         ).await;
 
         // Test 3: run_in_shell = true with bash shell
         let session_3 = test_shell_behavior_via_kernel(
-            &client, 
+            &client,
             &server,
-            &python_cmd, 
-            "bash-shell", 
-            true, 
+            &python_cmd,
+            "bash-shell",
+            true,
             Some("/bin/bash")
         ).await;
 
         // Clean up all sessions
         for (session_id, name) in [
             (session_1, "no-shell"),
-            (session_2, "default-shell"), 
+            (session_2, "default-shell"),
             (session_3, "bash-shell"),
         ] {
             println!("Deleting session '{}'...", name);
