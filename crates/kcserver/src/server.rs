@@ -13,6 +13,7 @@
 use crate::websocket_service::ApiWebsocketExt;
 use anyhow::anyhow;
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::future::BoxFuture;
 use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use hyper::client::connect;
@@ -1037,6 +1038,7 @@ where
 
         let session = models::NewSession {
             session_id: session_id.session_id.clone(),
+            session_mode: session.session_mode.clone(),
             argv: session.argv,
             display_name: session.display_name.clone(),
             language: session.language.clone(),
@@ -1049,6 +1051,7 @@ where
             interrupt_mode: session.interrupt_mode.clone(),
             connection_timeout: session.connection_timeout.clone(),
             protocol_version: session.protocol_version.clone(),
+            notebook_uri: session.notebook_uri.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
@@ -1533,25 +1536,35 @@ where
         }
 
         // Compute the number of seconds since the last idle/busy event
-        let now = std::time::Instant::now();
+        let now_instant = std::time::Instant::now();
         let idle_seconds = match sessions.len() {
             0 => {
                 // If there are no sessions yet, we've been idle since the server started
-                now.duration_since(self.started_time).as_secs() as i32
+                now_instant.duration_since(self.started_time).as_secs() as i32
             }
             _ => match latest_idle {
-                Some(latest_idle) => now.duration_since(latest_idle).as_secs() as i32,
+                Some(latest_idle) => now_instant.duration_since(latest_idle).as_secs() as i32,
                 None => 0,
             },
         };
 
         let busy_seconds = match earliest_busy {
-            Some(earliest_busy) => {
-                let now = std::time::Instant::now();
-                now.duration_since(earliest_busy).as_secs() as i32
-            }
+            Some(earliest_busy) => now_instant.duration_since(earliest_busy).as_secs() as i32,
             None => 0,
         };
+
+        let started_datetime =
+            match chrono::Duration::from_std(now_instant.duration_since(self.started_time)) {
+                Ok(elapsed) => Utc::now() - elapsed,
+                Err(_) => {
+                    log::warn!(
+                        "Unable to convert server start time to DateTime; using current time"
+                    );
+                    Utc::now()
+                }
+            };
+
+        let uptime_seconds = now_instant.duration_since(self.started_time).as_secs();
 
         let resp = ServerStatus {
             busy,
@@ -1560,6 +1573,8 @@ where
             sessions: sessions.len() as i32,
             process_id: std::process::id() as i32,
             active,
+            started: started_datetime,
+            uptime_seconds: uptime_seconds as i32,
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
 

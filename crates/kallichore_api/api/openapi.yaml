@@ -818,9 +818,10 @@ components:
       type: object
     serverStatus:
       example:
-        process_id: 5
+        process_id: 2
         sessions: 0
         busy_seconds: 5
+        uptime_seconds: 5
         busy: true
         active: 6
         started: 2000-01-23T04:56:07.000+00:00
@@ -841,6 +842,9 @@ components:
           description: "The number of seconds any session has been busy, or 0 if all\
             \ sessions are idle"
           type: integer
+        uptime_seconds:
+          description: The number of seconds the server has been running
+          type: integer
         version:
           description: The version of the server
           type: string
@@ -858,6 +862,8 @@ components:
       - idle_seconds
       - process_id
       - sessions
+      - started
+      - uptime_seconds
       - version
       type: object
     sessionList:

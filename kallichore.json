@@ -1102,6 +1102,10 @@
             "type": "integer",
             "description": "The number of seconds any session has been busy, or 0 if all sessions are idle"
           },
+          "uptime_seconds": {
+            "type": "integer",
+            "description": "The number of seconds the server has been running"
+          },
           "version": {
             "type": "string",
             "description": "The version of the server"
@@ -1123,6 +1127,8 @@
           "idle_seconds",
           "process_id",
           "sessions",
+          "started",
+          "uptime_seconds",
           "version"
         ]
       },

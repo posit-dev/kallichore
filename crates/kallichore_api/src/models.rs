@@ -2935,6 +2935,10 @@ pub struct ServerStatus {
     #[serde(rename = "busy_seconds")]
     pub busy_seconds: i32,
 
+    /// The number of seconds the server has been running
+    #[serde(rename = "uptime_seconds")]
+    pub uptime_seconds: i32,
+
     /// The version of the server
     #[serde(rename = "version")]
     pub version: String,
@@ -2945,8 +2949,7 @@ pub struct ServerStatus {
 
     /// An ISO 8601 timestamp of when the server was started
     #[serde(rename = "started")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started: Option<chrono::DateTime<chrono::Utc>>,
+    pub started: chrono::DateTime<chrono::Utc>,
 }
 
 impl ServerStatus {
@@ -2957,8 +2960,10 @@ impl ServerStatus {
         busy: bool,
         idle_seconds: i32,
         busy_seconds: i32,
+        uptime_seconds: i32,
         version: String,
         process_id: i32,
+        started: chrono::DateTime<chrono::Utc>,
     ) -> ServerStatus {
         ServerStatus {
             sessions,
@@ -2966,9 +2971,10 @@ impl ServerStatus {
             busy,
             idle_seconds,
             busy_seconds,
+            uptime_seconds,
             version,
             process_id,
-            started: None,
+            started,
         }
     }
 }
@@ -2989,6 +2995,8 @@ impl std::string::ToString for ServerStatus {
             Some(self.idle_seconds.to_string()),
             Some("busy_seconds".to_string()),
             Some(self.busy_seconds.to_string()),
+            Some("uptime_seconds".to_string()),
+            Some(self.uptime_seconds.to_string()),
             Some("version".to_string()),
             Some(self.version.to_string()),
             Some("process_id".to_string()),
@@ -3016,6 +3024,7 @@ impl std::str::FromStr for ServerStatus {
             pub busy: Vec<bool>,
             pub idle_seconds: Vec<i32>,
             pub busy_seconds: Vec<i32>,
+            pub uptime_seconds: Vec<i32>,
             pub version: Vec<String>,
             pub process_id: Vec<i32>,
             pub started: Vec<chrono::DateTime<chrono::Utc>>,
@@ -3058,6 +3067,10 @@ impl std::str::FromStr for ServerStatus {
                     ),
                     #[allow(clippy::redundant_clone)]
                     "busy_seconds" => intermediate_rep.busy_seconds.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "uptime_seconds" => intermediate_rep.uptime_seconds.push(
                         <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
@@ -3112,6 +3125,11 @@ impl std::str::FromStr for ServerStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "busy_seconds missing in ServerStatus".to_string())?,
+            uptime_seconds: intermediate_rep
+                .uptime_seconds
+                .into_iter()
+                .next()
+                .ok_or_else(|| "uptime_seconds missing in ServerStatus".to_string())?,
             version: intermediate_rep
                 .version
                 .into_iter()
@@ -3122,7 +3140,11 @@ impl std::str::FromStr for ServerStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "process_id missing in ServerStatus".to_string())?,
-            started: intermediate_rep.started.into_iter().next(),
+            started: intermediate_rep
+                .started
+                .into_iter()
+                .next()
+                .ok_or_else(|| "started missing in ServerStatus".to_string())?,
         })
     }
 }

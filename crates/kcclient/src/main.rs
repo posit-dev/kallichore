@@ -496,6 +496,8 @@ fn main() {
                 username: String::from("testuser"),
                 input_prompt: String::from("In> "),
                 continuation_prompt: String::from("..."),
+                session_mode: models::SessionMode::Console,
+                notebook_uri: None,
                 working_directory: working_directory.to_string_lossy().to_string(),
                 connection_timeout: Some(30),
                 protocol_version: Some("5.3".to_string()),
