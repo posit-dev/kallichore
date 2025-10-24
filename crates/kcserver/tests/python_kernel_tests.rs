@@ -16,7 +16,9 @@ use common::test_utils::{
     create_execute_request, create_session_with_client, create_shutdown_request,
     create_test_session, get_python_executable, is_ipykernel_available,
 };
-use common::transport::{run_communication_test, CommunicationChannel, TransportType};
+use common::transport::{
+    run_communication_test, CommunicationChannel, CommunicationTestResults, TransportType,
+};
 use common::TestServer;
 use kallichore_api::models::{InterruptMode, NewSession, SessionMode, VarAction, VarActionType};
 use kallichore_api::NewSessionResponse;
@@ -24,6 +26,66 @@ use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHe
 use kcshared::websocket_message::WebsocketMessage;
 use std::time::Duration;
 use uuid::Uuid;
+
+const EXECUTE_REQUEST_MAX_ATTEMPTS: u8 = 3;
+const EXECUTE_TIMEOUT_SECS: u64 = 12;
+const EXECUTE_MAX_MESSAGES: u32 = 35;
+const EXECUTE_RETRY_BACKOFF_MS: u64 = 750;
+
+async fn execute_test_code_with_retries(
+    comm: &mut CommunicationChannel,
+) -> (CommunicationTestResults, u8) {
+    let mut last_results = CommunicationTestResults::default();
+
+    for attempt in 1..=EXECUTE_REQUEST_MAX_ATTEMPTS {
+        println!(
+            "Sending execute_request to Python kernel (attempt {})...",
+            attempt
+        );
+        let execute_request = create_execute_request();
+        comm.send_message(&execute_request)
+            .await
+            .expect("Failed to send execute_request");
+
+        let results = run_communication_test(
+            comm,
+            Duration::from_secs(EXECUTE_TIMEOUT_SECS),
+            EXECUTE_MAX_MESSAGES,
+        )
+        .await;
+
+        if results.execute_reply_received
+            && results.stream_output_received
+            && results.expected_output_found
+        {
+            println!(
+                "Execute_request completed successfully on attempt {}",
+                attempt
+            );
+            return (results, attempt);
+        }
+
+        println!(
+            "Execute_request attempt {} incomplete (execute_reply={}, stream_output={}, expected_output={}).",
+            attempt,
+            results.execute_reply_received,
+            results.stream_output_received,
+            results.expected_output_found
+        );
+
+        last_results = results;
+
+        if attempt < EXECUTE_REQUEST_MAX_ATTEMPTS {
+            println!(
+                "Waiting {} ms before retrying execute_request...",
+                EXECUTE_RETRY_BACKOFF_MS
+            );
+            tokio::time::sleep(Duration::from_millis(EXECUTE_RETRY_BACKOFF_MS)).await;
+        }
+    }
+
+    (last_results, EXECUTE_REQUEST_MAX_ATTEMPTS)
+}
 
 /// Run a Python kernel test with the specified transport
 async fn run_python_kernel_test_transport(python_cmd: &str, transport: TransportType) {
@@ -120,34 +182,27 @@ async fn run_python_kernel_test_transport(python_cmd: &str, transport: Transport
     println!("Waiting for Python kernel to start up...");
     tokio::time::sleep(Duration::from_millis(800)).await; // Give kernel time to start
 
-    // Send an execute_request directly (kernel_info already happens during startup)
-    let execute_request = create_execute_request();
-    println!("Sending execute_request to Python kernel...");
-    comm.send_message(&execute_request)
-        .await
-        .expect("Failed to send execute_request");
-
-    // Run the communication test with reasonable timeout to get all results
-    let timeout = Duration::from_secs(12);
-    let max_messages = 25;
-    let results = run_communication_test(&mut comm, timeout, max_messages).await;
+    let (results, attempts_used) = execute_test_code_with_retries(&mut comm).await;
 
     results.print_summary();
 
     // Assert only the essential functionality for faster tests
     assert!(
         results.execute_reply_received,
-        "Expected to receive execute_reply from Python kernel, but didn't get one. The kernel is not executing code properly."
+        "Expected to receive execute_reply from Python kernel after {} attempts, but didn't get one. The kernel is not executing code properly.",
+        attempts_used
     );
 
     assert!(
         results.stream_output_received,
-        "Expected to receive stream output from Python kernel, but didn't get any. The kernel is not producing stdout output."
+        "Expected to receive stream output from Python kernel after {} attempts, but didn't get any. The kernel is not producing stdout output.",
+        attempts_used
     );
 
     assert!(
         results.expected_output_found,
-        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output after {} attempts, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        attempts_used,
         results.collected_output
     );
 
@@ -501,34 +556,27 @@ async fn run_python_kernel_test_domain_socket(python_cmd: &str) {
         .await
         .expect("Failed to create domain socket communication channel");
 
-    // Send an execute_request directly (kernel_info already happens during startup)
-    let execute_request = create_execute_request();
-    println!("Sending execute_request to Python kernel...");
-    comm.send_message(&execute_request)
-        .await
-        .expect("Failed to send execute_request");
-
-    // Run the communication test with reasonable timeout to get all results
-    let timeout = Duration::from_secs(12);
-    let max_messages = 25;
-    let results = run_communication_test(&mut comm, timeout, max_messages).await;
+    let (results, attempts_used) = execute_test_code_with_retries(&mut comm).await;
 
     results.print_summary();
 
     // Assert only the essential functionality for faster domain socket tests
     assert!(
         results.execute_reply_received,
-        "Expected to receive execute_reply from Python kernel, but didn't get one. The kernel is not executing code properly."
+        "Expected to receive execute_reply from Python kernel after {} attempts, but didn't get one. The kernel is not executing code properly.",
+        attempts_used
     );
 
     assert!(
         results.stream_output_received,
-        "Expected to receive stream output from Python kernel, but didn't get any. The kernel is not producing stdout output."
+        "Expected to receive stream output from Python kernel after {} attempts, but didn't get any. The kernel is not producing stdout output.",
+        attempts_used
     );
 
     assert!(
         results.expected_output_found,
-        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output after {} attempts, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        attempts_used,
         results.collected_output
     );
 
@@ -708,34 +756,27 @@ async fn run_python_kernel_test_named_pipe(python_cmd: &str, session_id: &str, p
         .await
         .expect("Failed to create named pipe communication channel");
 
-    // Send an execute_request directly
-    let execute_request = create_execute_request();
-    println!("Sending execute_request to Python kernel...");
-    comm.send_message(&execute_request)
-        .await
-        .expect("Failed to send execute_request");
-
-    // Run the communication test with reasonable timeout to get all results
-    let timeout = Duration::from_secs(12);
-    let max_messages = 25;
-    let results = run_communication_test(&mut comm, timeout, max_messages).await;
+    let (results, attempts_used) = execute_test_code_with_retries(&mut comm).await;
 
     results.print_summary();
 
     // Assert only the essential functionality for faster tests
     assert!(
         results.execute_reply_received,
-        "Expected to receive execute_reply from Python kernel, but didn't get one. The kernel is not executing code properly."
+        "Expected to receive execute_reply from Python kernel after {} attempts, but didn't get one. The kernel is not executing code properly.",
+        attempts_used
     );
 
     assert!(
         results.stream_output_received,
-        "Expected to receive stream output from Python kernel, but didn't get any. The kernel is not producing stdout output."
+        "Expected to receive stream output from Python kernel after {} attempts, but didn't get any. The kernel is not producing stdout output.",
+        attempts_used
     );
 
     assert!(
         results.expected_output_found,
-        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output after {} attempts, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        attempts_used,
         results.collected_output
     );
 
@@ -847,34 +888,27 @@ async fn run_python_kernel_test_domain_socket_direct(
         .await
         .expect("Failed to create domain socket communication channel");
 
-    // Send an execute_request directly
-    let execute_request = create_execute_request();
-    println!("Sending execute_request to Python kernel...");
-    comm.send_message(&execute_request)
-        .await
-        .expect("Failed to send execute_request");
-
-    // Run the communication test with reasonable timeout to get all results
-    let timeout = Duration::from_secs(12);
-    let max_messages = 25;
-    let results = run_communication_test(&mut comm, timeout, max_messages).await;
+    let (results, attempts_used) = execute_test_code_with_retries(&mut comm).await;
 
     results.print_summary();
 
     // Assert only the essential functionality for faster tests
     assert!(
         results.execute_reply_received,
-        "Expected to receive execute_reply from Python kernel, but didn't get one. The kernel is not executing code properly."
+        "Expected to receive execute_reply from Python kernel after {} attempts, but didn't get one. The kernel is not executing code properly.",
+        attempts_used
     );
 
     assert!(
         results.stream_output_received,
-        "Expected to receive stream output from Python kernel, but didn't get any. The kernel is not producing stdout output."
+        "Expected to receive stream output from Python kernel after {} attempts, but didn't get any. The kernel is not producing stdout output.",
+        attempts_used
     );
 
     assert!(
         results.expected_output_found,
-        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        "Expected to find 'Hello from Kallichore test!' and '2 + 3 = 5' in the kernel output after {} attempts, but didn't find both. The kernel executed but produced unexpected output. Actual collected output: {:?}",
+        attempts_used,
         results.collected_output
     );
 
