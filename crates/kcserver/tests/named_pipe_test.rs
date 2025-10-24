@@ -301,6 +301,7 @@ mod windows_named_pipe_tests {
             "display_name": "Python Test",
             "language": "python",
             "working_directory": ".",
+            "session_mode": "console",
             "input_prompt": ">>> ",
             "continuation_prompt": "... ",
             "username": "test",
@@ -472,6 +473,7 @@ mod windows_named_pipe_tests {
         let session_request = json!({
             "session_id": session_id,
             "display_name": "Python Test Session",
+            "session_mode": "console",
             "language": "python",
             "username": "test",
             "input_prompt": ">>> ",

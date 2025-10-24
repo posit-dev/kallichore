@@ -469,6 +469,13 @@ components:
       items:
         $ref: '#/components/schemas/varAction'
       type: array
+    sessionMode:
+      description: The mode in which the session is running
+      enum:
+      - console
+      - notebook
+      - background
+      type: string
     varActionType:
       description: The type of action to perform on the environment variable
       enum:
@@ -611,8 +618,13 @@ components:
           items:
             type: string
           type: array
+        session_mode:
+          $ref: '#/components/schemas/sessionMode'
         working_directory:
           description: The working directory in which to start the session.
+          type: string
+        notebook_uri:
+          description: "For notebook sessions, the URI of the notebook file"
           type: string
         env:
           description: A list of environment variable actions to perform
@@ -644,6 +656,7 @@ components:
       - interrupt_mode
       - language
       - session_id
+      - session_mode
       - username
       - working_directory
       type: object
@@ -699,6 +712,7 @@ components:
         - argv
         - argv
         socket_path: socket_path
+        notebook_uri: notebook_uri
         execution_queue:
           pending:
           - "{}"
@@ -707,6 +721,7 @@ components:
           active: "{}"
         interrupt_mode: signal
         connected: true
+        session_mode: console
         initial_env:
           key: initial_env
         username: username
@@ -748,8 +763,13 @@ components:
           description: An ISO 8601 timestamp of when the session was started
           format: date-time
           type: string
+        session_mode:
+          $ref: '#/components/schemas/sessionMode'
         working_directory:
           description: The session's current working directory
+          type: string
+        notebook_uri:
+          description: "For notebook sessions, the URI of the notebook file"
           type: string
         input_prompt:
           description: The text to use to prompt for input
@@ -790,6 +810,7 @@ components:
       - kernel_info
       - language
       - session_id
+      - session_mode
       - started
       - status
       - username
@@ -797,11 +818,13 @@ components:
       type: object
     serverStatus:
       example:
-        process_id: 5
+        process_id: 2
         sessions: 0
         busy_seconds: 5
+        uptime_seconds: 5
         busy: true
         active: 6
+        started: 2000-01-23T04:56:07.000+00:00
         version: version
         idle_seconds: 1
       properties:
@@ -819,12 +842,19 @@ components:
           description: "The number of seconds any session has been busy, or 0 if all\
             \ sessions are idle"
           type: integer
+        uptime_seconds:
+          description: The number of seconds the server has been running
+          type: integer
         version:
           description: The version of the server
           type: string
         process_id:
           description: The server's operating system process identifier
           type: integer
+        started:
+          description: An ISO 8601 timestamp of when the server was started
+          format: date-time
+          type: string
       required:
       - active
       - busy
@@ -832,6 +862,8 @@ components:
       - idle_seconds
       - process_id
       - sessions
+      - started
+      - uptime_seconds
       - version
       type: object
     sessionList:
@@ -852,6 +884,7 @@ components:
           - argv
           - argv
           socket_path: socket_path
+          notebook_uri: notebook_uri
           execution_queue:
             pending:
             - "{}"
@@ -860,6 +893,7 @@ components:
             active: "{}"
           interrupt_mode: signal
           connected: true
+          session_mode: console
           initial_env:
             key: initial_env
           username: username
@@ -879,6 +913,7 @@ components:
           - argv
           - argv
           socket_path: socket_path
+          notebook_uri: notebook_uri
           execution_queue:
             pending:
             - "{}"
@@ -887,6 +922,7 @@ components:
             active: "{}"
           interrupt_mode: signal
           connected: true
+          session_mode: console
           initial_env:
             key: initial_env
           username: username

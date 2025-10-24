@@ -1189,6 +1189,7 @@ impl KernelSession {
 
         models::ActiveSession {
             session_id: self.connection.session_id.clone(),
+            session_mode: self.model.session_mode.clone(),
             username: self.connection.username.clone(),
             display_name: self.model.display_name.clone(),
             language: self.model.language.clone(),
@@ -1205,6 +1206,7 @@ impl KernelSession {
             continuation_prompt: state.continuation_prompt.clone(),
             connected: state.connected,
             working_directory: state.working_directory.clone(),
+            notebook_uri: self.model.notebook_uri.clone(),
             started: self.started.clone(),
             status: state.status,
             execution_queue: state.execution_queue.to_json(),

@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use kallichore_api::models::{InterruptMode, NewSession, VarAction, VarActionType};
+use kallichore_api::models::{InterruptMode, NewSession, SessionMode, VarAction, VarActionType};
 use kallichore_api::{ApiNoContext, NewSessionResponse};
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
 use kcshared::websocket_message::WebsocketMessage;
@@ -61,6 +61,8 @@ pub fn create_test_session(session_id: String, python_cmd: &str) -> NewSession {
         username: "testuser".to_string(),
         input_prompt: "In [{}]: ".to_string(),
         continuation_prompt: "   ...: ".to_string(),
+        notebook_uri: None,
+        session_mode: SessionMode::Console,
         argv: vec![
             python_cmd.to_string(),
             "-m".to_string(),

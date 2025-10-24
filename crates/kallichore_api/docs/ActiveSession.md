@@ -13,7 +13,9 @@ Name | Type | Description | Notes
 **initial_env** | **std::collections::HashMap<String, String>** | The environment variables set when the session was started | [optional] [default to None]
 **connected** | **bool** | Whether the session is connected to a client | 
 **started** | [**chrono::DateTime::<chrono::Utc>**](DateTime.md) | An ISO 8601 timestamp of when the session was started | 
+**session_mode** | [***models::SessionMode**](sessionMode.md) |  | 
 **working_directory** | **String** | The session's current working directory | 
+**notebook_uri** | **String** | For notebook sessions, the URI of the notebook file | [optional] [default to None]
 **input_prompt** | **String** | The text to use to prompt for input | 
 **continuation_prompt** | **String** | The text to use to prompt for input continuations | 
 **execution_queue** | [***models::ExecutionQueue**](execution_queue.md) |  | 
