@@ -711,6 +711,15 @@
           "$ref": "#/components/schemas/varAction"
         }
       },
+      "sessionMode": {
+        "type": "string",
+        "description": "The mode in which the session is running",
+        "enum": [
+          "console",
+          "notebook",
+          "background"
+        ]
+      },
       "varActionType": {
         "type": "string",
         "description": "The type of action to perform on the environment variable",
@@ -877,9 +886,16 @@
               "type": "string"
             }
           },
+          "session_mode": {
+            "$ref": "#/components/schemas/sessionMode"
+          },
           "working_directory": {
             "type": "string",
             "description": "The working directory in which to start the session."
+          },
+          "notebook_uri": {
+            "type": "string",
+            "description": "For notebook sessions, the URI of the notebook file"
           },
           "env": {
             "$ref": "#/components/schemas/envVarActions"
@@ -912,6 +928,7 @@
           "interrupt_mode",
           "language",
           "session_id",
+          "session_mode",
           "username",
           "working_directory"
         ]
@@ -1003,9 +1020,16 @@
             "format": "date-time",
             "description": "An ISO 8601 timestamp of when the session was started"
           },
+          "session_mode": {
+            "$ref": "#/components/schemas/sessionMode"
+          },
           "working_directory": {
             "type": "string",
             "description": "The session's current working directory"
+          },
+          "notebook_uri": {
+            "type": "string",
+            "description": "For notebook sessions, the URI of the notebook file"
           },
           "input_prompt": {
             "type": "string",
@@ -1051,6 +1075,7 @@
           "interrupt_mode",
           "language",
           "session_id",
+          "session_mode",
           "started",
           "status",
           "username",
@@ -1084,6 +1109,11 @@
           "process_id": {
             "type": "integer",
             "description": "The server's operating system process identifier"
+          },
+          "started": {
+            "type": "string",
+            "format": "date-time",
+            "description": "An ISO 8601 timestamp of when the server was started"
           }
         },
         "required": [

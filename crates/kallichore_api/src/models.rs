@@ -50,9 +50,17 @@ pub struct ActiveSession {
     #[serde(rename = "started")]
     pub started: chrono::DateTime<chrono::Utc>,
 
+    #[serde(rename = "session_mode")]
+    pub session_mode: models::SessionMode,
+
     /// The session's current working directory
     #[serde(rename = "working_directory")]
     pub working_directory: String,
+
+    /// For notebook sessions, the URI of the notebook file
+    #[serde(rename = "notebook_uri")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notebook_uri: Option<String>,
 
     /// The text to use to prompt for input
     #[serde(rename = "input_prompt")]
@@ -97,6 +105,7 @@ impl ActiveSession {
         interrupt_mode: models::InterruptMode,
         connected: bool,
         started: chrono::DateTime<chrono::Utc>,
+        session_mode: models::SessionMode,
         working_directory: String,
         input_prompt: String,
         continuation_prompt: String,
@@ -117,7 +126,9 @@ impl ActiveSession {
             initial_env: None,
             connected,
             started,
+            session_mode,
             working_directory,
+            notebook_uri: None,
             input_prompt,
             continuation_prompt,
             execution_queue,
@@ -160,8 +171,12 @@ impl std::string::ToString for ActiveSession {
             Some("connected".to_string()),
             Some(self.connected.to_string()),
             // Skipping non-primitive type started in query parameter serialization
+            // Skipping non-primitive type session_mode in query parameter serialization
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
+            self.notebook_uri.as_ref().map(|notebook_uri| {
+                ["notebook_uri".to_string(), notebook_uri.to_string()].join(",")
+            }),
             Some("input_prompt".to_string()),
             Some(self.input_prompt.to_string()),
             Some("continuation_prompt".to_string()),
@@ -203,7 +218,9 @@ impl std::str::FromStr for ActiveSession {
             pub initial_env: Vec<std::collections::HashMap<String, String>>,
             pub connected: Vec<bool>,
             pub started: Vec<chrono::DateTime<chrono::Utc>>,
+            pub session_mode: Vec<models::SessionMode>,
             pub working_directory: Vec<String>,
+            pub notebook_uri: Vec<String>,
             pub input_prompt: Vec<String>,
             pub continuation_prompt: Vec<String>,
             pub execution_queue: Vec<models::ExecutionQueue>,
@@ -280,7 +297,16 @@ impl std::str::FromStr for ActiveSession {
                             .map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
+                    "session_mode" => intermediate_rep.session_mode.push(
+                        <models::SessionMode as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
                     "working_directory" => intermediate_rep.working_directory.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "notebook_uri" => intermediate_rep.notebook_uri.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
@@ -374,11 +400,17 @@ impl std::str::FromStr for ActiveSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "started missing in ActiveSession".to_string())?,
+            session_mode: intermediate_rep
+                .session_mode
+                .into_iter()
+                .next()
+                .ok_or_else(|| "session_mode missing in ActiveSession".to_string())?,
             working_directory: intermediate_rep
                 .working_directory
                 .into_iter()
                 .next()
                 .ok_or_else(|| "working_directory missing in ActiveSession".to_string())?,
+            notebook_uri: intermediate_rep.notebook_uri.into_iter().next(),
             input_prompt: intermediate_rep
                 .input_prompt
                 .into_iter()
@@ -1684,9 +1716,17 @@ pub struct NewSession {
     #[serde(rename = "argv")]
     pub argv: Vec<String>,
 
+    #[serde(rename = "session_mode")]
+    pub session_mode: models::SessionMode,
+
     /// The working directory in which to start the session.
     #[serde(rename = "working_directory")]
     pub working_directory: String,
+
+    /// For notebook sessions, the URI of the notebook file
+    #[serde(rename = "notebook_uri")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notebook_uri: Option<String>,
 
     /// A list of environment variable actions to perform
     #[serde(rename = "env")]
@@ -1721,6 +1761,7 @@ impl NewSession {
         input_prompt: String,
         continuation_prompt: String,
         argv: Vec<String>,
+        session_mode: models::SessionMode,
         working_directory: String,
         env: Vec<models::VarAction>,
         interrupt_mode: models::InterruptMode,
@@ -1733,7 +1774,9 @@ impl NewSession {
             input_prompt,
             continuation_prompt,
             argv,
+            session_mode,
             working_directory,
+            notebook_uri: None,
             env,
             connection_timeout: Some(30),
             interrupt_mode,
@@ -1769,8 +1812,12 @@ impl std::string::ToString for NewSession {
                     .collect::<Vec<_>>()
                     .join(","),
             ),
+            // Skipping non-primitive type session_mode in query parameter serialization
             Some("working_directory".to_string()),
             Some(self.working_directory.to_string()),
+            self.notebook_uri.as_ref().map(|notebook_uri| {
+                ["notebook_uri".to_string(), notebook_uri.to_string()].join(",")
+            }),
             // Skipping non-primitive type env in query parameter serialization
             self.connection_timeout.as_ref().map(|connection_timeout| {
                 [
@@ -1810,7 +1857,9 @@ impl std::str::FromStr for NewSession {
             pub input_prompt: Vec<String>,
             pub continuation_prompt: Vec<String>,
             pub argv: Vec<Vec<String>>,
+            pub session_mode: Vec<models::SessionMode>,
             pub working_directory: Vec<String>,
+            pub notebook_uri: Vec<String>,
             pub env: Vec<Vec<models::VarAction>>,
             pub connection_timeout: Vec<i32>,
             pub interrupt_mode: Vec<models::InterruptMode>,
@@ -1868,7 +1917,16 @@ impl std::str::FromStr for NewSession {
                         )
                     }
                     #[allow(clippy::redundant_clone)]
+                    "session_mode" => intermediate_rep.session_mode.push(
+                        <models::SessionMode as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
                     "working_directory" => intermediate_rep.working_directory.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "notebook_uri" => intermediate_rep.notebook_uri.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     "env" => {
@@ -1943,11 +2001,17 @@ impl std::str::FromStr for NewSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "argv missing in NewSession".to_string())?,
+            session_mode: intermediate_rep
+                .session_mode
+                .into_iter()
+                .next()
+                .ok_or_else(|| "session_mode missing in NewSession".to_string())?,
             working_directory: intermediate_rep
                 .working_directory
                 .into_iter()
                 .next()
                 .ok_or_else(|| "working_directory missing in NewSession".to_string())?,
+            notebook_uri: intermediate_rep.notebook_uri.into_iter().next(),
             env: intermediate_rep
                 .env
                 .into_iter()
@@ -2878,6 +2942,11 @@ pub struct ServerStatus {
     /// The server's operating system process identifier
     #[serde(rename = "process_id")]
     pub process_id: i32,
+
+    /// An ISO 8601 timestamp of when the server was started
+    #[serde(rename = "started")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl ServerStatus {
@@ -2899,6 +2968,7 @@ impl ServerStatus {
             busy_seconds,
             version,
             process_id,
+            started: None,
         }
     }
 }
@@ -2923,6 +2993,7 @@ impl std::string::ToString for ServerStatus {
             Some(self.version.to_string()),
             Some("process_id".to_string()),
             Some(self.process_id.to_string()),
+            // Skipping non-primitive type started in query parameter serialization
         ];
 
         params.into_iter().flatten().collect::<Vec<_>>().join(",")
@@ -2947,6 +3018,7 @@ impl std::str::FromStr for ServerStatus {
             pub busy_seconds: Vec<i32>,
             pub version: Vec<String>,
             pub process_id: Vec<i32>,
+            pub started: Vec<chrono::DateTime<chrono::Utc>>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -2995,6 +3067,11 @@ impl std::str::FromStr for ServerStatus {
                     #[allow(clippy::redundant_clone)]
                     "process_id" => intermediate_rep.process_id.push(
                         <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "started" => intermediate_rep.started.push(
+                        <chrono::DateTime<chrono::Utc> as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
                     ),
                     _ => {
                         return std::result::Result::Err(
@@ -3045,6 +3122,7 @@ impl std::str::FromStr for ServerStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "process_id missing in ServerStatus".to_string())?,
+            started: intermediate_rep.started.into_iter().next(),
         })
     }
 }
@@ -3346,6 +3424,153 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
                                 std::result::Result::Ok(value) => std::result::Result::Ok(value),
                                 std::result::Result::Err(err) => std::result::Result::Err(format!(
                                     "Unable to convert header value '{}' into SessionList - {}",
+                                    hdr_value, err
+                                )),
+                            }
+                        }),
+                    })
+                    .collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {:?} as a string - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+/// The mode in which the session is running
+/// Enumeration of values.
+/// Since this enum's variants do not hold data, we can easily define them as `#[repr(C)]`
+/// which helps with FFI.
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, Hash,
+)]
+#[cfg_attr(feature = "conversion", derive(frunk_enum_derive::LabelledGenericEnum))]
+pub enum SessionMode {
+    #[serde(rename = "console")]
+    Console,
+    #[serde(rename = "notebook")]
+    Notebook,
+    #[serde(rename = "background")]
+    Background,
+}
+
+impl std::fmt::Display for SessionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            SessionMode::Console => write!(f, "console"),
+            SessionMode::Notebook => write!(f, "notebook"),
+            SessionMode::Background => write!(f, "background"),
+        }
+    }
+}
+
+impl std::str::FromStr for SessionMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "console" => std::result::Result::Ok(SessionMode::Console),
+            "notebook" => std::result::Result::Ok(SessionMode::Notebook),
+            "background" => std::result::Result::Ok(SessionMode::Background),
+            _ => std::result::Result::Err(format!("Value not valid: {}", s)),
+        }
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<SessionMode> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<SessionMode>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<SessionMode>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for SessionMode - value: {} is invalid {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<SessionMode> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <SessionMode as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{}' into SessionMode - {}",
+                        value, err
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {:?} to string: {}",
+                hdr_value, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<SessionMode>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<SessionMode>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {:?} into a header - {}",
+                hdr_values, e
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<SessionMode>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values: std::vec::Vec<SessionMode> = hdr_values
+                    .split(',')
+                    .filter_map(|hdr_value| match hdr_value.trim() {
+                        "" => std::option::Option::None,
+                        hdr_value => std::option::Option::Some({
+                            match <SessionMode as std::str::FromStr>::from_str(hdr_value) {
+                                std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                                std::result::Result::Err(err) => std::result::Result::Err(format!(
+                                    "Unable to convert header value '{}' into SessionMode - {}",
                                     hdr_value, err
                                 )),
                             }

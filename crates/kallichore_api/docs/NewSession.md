@@ -10,7 +10,9 @@ Name | Type | Description | Notes
 **input_prompt** | **String** | The text to use to prompt for input | 
 **continuation_prompt** | **String** | The text to use to prompt for input continuations | 
 **argv** | **Vec<String>** | The program and command-line parameters for the session | 
+**session_mode** | [***models::SessionMode**](sessionMode.md) |  | 
 **working_directory** | **String** | The working directory in which to start the session. | 
+**notebook_uri** | **String** | For notebook sessions, the URI of the notebook file | [optional] [default to None]
 **env** | [**Vec<models::VarAction>**](varAction.md) | A list of environment variable actions to perform | 
 **connection_timeout** | **i32** | The number of seconds to wait for a connection to the session's ZeroMQ sockets before timing out | [optional] [default to Some(30)]
 **interrupt_mode** | [***models::InterruptMode**](interrupt_mode.md) |  | 
