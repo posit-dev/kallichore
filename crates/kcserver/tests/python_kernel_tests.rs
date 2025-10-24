@@ -622,6 +622,7 @@ async fn run_python_kernel_test_named_pipe(python_cmd: &str, session_id: &str, p
     let session_data = serde_json::json!({
         "session_id": session_id,
         "display_name": "Test Python Kernel",
+        "session_mode": "console",
         "language": "python",
         "username": "testuser",
         "input_prompt": "In [{}]: ",
