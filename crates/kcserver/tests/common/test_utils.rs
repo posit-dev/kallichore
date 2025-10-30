@@ -250,6 +250,7 @@ async fn find_python_executable() -> Option<String> {
         vec!["python3", "python"]
     };
 
+    // First try standard Python commands in PATH
     for candidate in candidates {
         match tokio::process::Command::new(candidate)
             .arg("--version")
@@ -296,6 +297,52 @@ async fn find_python_executable() -> Option<String> {
             _ => continue,
         }
     }
+
+    // On Windows, if not found in PATH, try common installation locations
+    #[cfg(windows)]
+    {
+        println!("Python not found in PATH, checking common Windows installation locations...");
+
+        let home_dir = std::env::var("USERPROFILE").unwrap_or_default();
+        if !home_dir.is_empty() {
+            let mut potential_paths = vec![
+                // pyenv-win
+                format!("{}\\.pyenv\\pyenv-win\\shims\\python.bat", home_dir),
+            ];
+
+            // Standard Python.org installations for multiple versions
+            for version in &["313", "312", "311", "310", "39", "38"] {
+                potential_paths.push(format!(
+                    "{}\\AppData\\Local\\Programs\\Python\\Python{}\\python.exe",
+                    home_dir, version
+                ));
+            }
+
+            // Also check C:\Python directories (sometimes used in CI environments)
+            for version in &["313", "312", "311", "310", "39", "38"] {
+                potential_paths.push(format!("C:\\Python{}\\python.exe", version));
+            }
+
+            // Check Microsoft Store installations
+            potential_paths.push(format!(
+                "{}\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe",
+                home_dir
+            ));
+
+            for path in potential_paths {
+                if std::path::Path::new(&path).exists() {
+                    println!("Checking Python installation at: {}", path);
+                    if check_ipykernel_available(&path).await {
+                        println!("Found Python with ipykernel at: {}", path);
+                        return Some(path);
+                    } else {
+                        println!("Python at {} does not have ipykernel - skipping", path);
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
