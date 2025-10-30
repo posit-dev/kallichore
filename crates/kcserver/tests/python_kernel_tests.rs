@@ -1851,6 +1851,7 @@ async fn test_kernel_interrupt() {
         let session_id = format!("interrupt-test-session-{}", Uuid::new_v4());
 
         // Create a session with Signal interrupt mode for Windows
+        #[cfg_attr(not(windows), allow(unused_mut))]
         let mut new_session = create_test_session(session_id.clone(), &python_cmd);
         #[cfg(windows)]
         {
@@ -1948,7 +1949,9 @@ print("All iterations completed!")
                         serde_json::from_str::<WebsocketMessage>(&message_text)
                     {
                         if jupyter_msg.header.msg_type == "stream" {
-                            if let Some(text) = jupyter_msg.content.get("text").and_then(|v| v.as_str()) {
+                            if let Some(text) =
+                                jupyter_msg.content.get("text").and_then(|v| v.as_str())
+                            {
                                 println!("Received output: {}", text);
                                 // Extract iteration numbers
                                 for line in text.lines() {
@@ -1994,7 +1997,10 @@ print("All iterations completed!")
                 println!("Interrupt request was accepted");
             }
             _ => {
-                panic!("Expected interrupt to succeed, got: {:?}", interrupt_response);
+                panic!(
+                    "Expected interrupt to succeed, got: {:?}",
+                    interrupt_response
+                );
             }
         }
 
@@ -2015,7 +2021,9 @@ print("All iterations completed!")
                         println!("Received message type: {}", jupyter_msg.header.msg_type);
 
                         if jupyter_msg.header.msg_type == "stream" {
-                            if let Some(text) = jupyter_msg.content.get("text").and_then(|v| v.as_str()) {
+                            if let Some(text) =
+                                jupyter_msg.content.get("text").and_then(|v| v.as_str())
+                            {
                                 all_output.push_str(text);
                                 println!("Stream output: {}", text);
                             }
@@ -2024,7 +2032,9 @@ print("All iterations completed!")
                             all_output.push_str("ERROR_RECEIVED\n");
                         } else if jupyter_msg.header.msg_type == "execute_reply" {
                             println!("Received execute_reply: {:?}", jupyter_msg.content);
-                            if let Some(status) = jupyter_msg.content.get("status").and_then(|v| v.as_str()) {
+                            if let Some(status) =
+                                jupyter_msg.content.get("status").and_then(|v| v.as_str())
+                            {
                                 println!("Execute reply status: {}", status);
                                 if status == "error" {
                                     all_output.push_str("EXECUTE_ERROR\n");
