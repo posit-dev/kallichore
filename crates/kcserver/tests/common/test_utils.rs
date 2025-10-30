@@ -291,6 +291,7 @@ async fn find_python_executable() -> Option<String> {
                     return Some(candidate.to_string());
                 } else {
                     println!("Python at {} does not have ipykernel - skipping", candidate);
+                    continue;
                 }
             }
             _ => continue,
