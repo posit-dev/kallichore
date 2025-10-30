@@ -1829,3 +1829,262 @@ except Exception as e:
         }
     }
 }
+
+#[tokio::test]
+async fn test_kernel_interrupt() {
+    let test_result = tokio::time::timeout(Duration::from_secs(30), async {
+        let python_cmd = if let Some(cmd) = get_python_executable().await {
+            cmd
+        } else {
+            println!("Skipping test: No Python executable found");
+            return;
+        };
+
+        if !is_ipykernel_available().await {
+            println!("Skipping test: ipykernel not available for {}", python_cmd);
+            return;
+        }
+
+        let server = TestServer::start().await;
+        let client = server.create_client().await;
+
+        let session_id = format!("interrupt-test-session-{}", Uuid::new_v4());
+
+        // Create a session with Signal interrupt mode for Windows
+        let mut new_session = create_test_session(session_id.clone(), &python_cmd);
+        #[cfg(windows)]
+        {
+            new_session.interrupt_mode = InterruptMode::Signal;
+        }
+
+        // Create and start the kernel session
+        let _created_session_id = create_session_with_client(&client, new_session).await;
+
+        println!("Starting kernel session for interrupt test...");
+        let start_response = client
+            .start_session(session_id.clone())
+            .await
+            .expect("Failed to start session");
+
+        println!("Start response: {:?}", start_response);
+
+        // Check if the session started successfully
+        match &start_response {
+            kallichore_api::StartSessionResponse::Started(_) => {
+                println!("Kernel started successfully");
+            }
+            kallichore_api::StartSessionResponse::StartFailed(error) => {
+                println!("Kernel failed to start: {:?}", error);
+                println!("Skipping interrupt test due to startup failure");
+                return;
+            }
+            _ => {
+                println!("Unexpected start response: {:?}", start_response);
+                println!("Skipping interrupt test");
+                return;
+            }
+        }
+
+        // Wait for kernel to fully start
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        // Create a websocket connection
+        let ws_url = format!(
+            "ws://localhost:{}/sessions/{}/channels",
+            server.port(),
+            session_id
+        );
+
+        let mut comm = CommunicationChannel::create_websocket(&ws_url)
+            .await
+            .expect("Failed to create websocket");
+
+        // Wait for websocket to be ready
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Execute code that will take a long time (loop that prints numbers)
+        let long_running_code = r#"
+import time
+for i in range(100):
+    print(f"Iteration {i}")
+    time.sleep(0.1)
+print("All iterations completed!")
+"#;
+
+        let execute_request = WebsocketMessage::Jupyter(JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_id: Uuid::new_v4().to_string(),
+                msg_type: "execute_request".to_string(),
+            },
+            parent_header: None,
+            channel: JupyterChannel::Shell,
+            content: serde_json::json!({
+                "code": long_running_code,
+                "silent": false,
+                "store_history": false,
+                "user_expressions": {},
+                "allow_stdin": false,
+                "stop_on_error": true
+            }),
+            metadata: serde_json::json!({}),
+            buffers: vec![],
+        });
+
+        println!("Sending long-running execute_request...");
+        comm.send_message(&execute_request)
+            .await
+            .expect("Failed to send execute_request");
+
+        // Wait for some iterations to be printed
+        println!("Waiting for some iterations to be printed...");
+        let mut iterations_printed = Vec::new();
+        let start_time = std::time::Instant::now();
+
+        // Collect some output for 1 second
+        while start_time.elapsed() < Duration::from_secs(1) {
+            match tokio::time::timeout(Duration::from_millis(100), comm.receive_message()).await {
+                Ok(Ok(Some(message_text))) => {
+                    if let Ok(WebsocketMessage::Jupyter(jupyter_msg)) =
+                        serde_json::from_str::<WebsocketMessage>(&message_text)
+                    {
+                        if jupyter_msg.header.msg_type == "stream" {
+                            if let Some(text) = jupyter_msg.content.get("text").and_then(|v| v.as_str()) {
+                                println!("Received output: {}", text);
+                                // Extract iteration numbers
+                                for line in text.lines() {
+                                    if let Some(num_str) = line.strip_prefix("Iteration ") {
+                                        if let Ok(num) = num_str.parse::<i32>() {
+                                            iterations_printed.push(num);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        println!(
+            "Collected {} iterations before interrupt: {:?}",
+            iterations_printed.len(),
+            iterations_printed
+        );
+
+        // Verify we got some iterations (at least 5, should be around 10)
+        assert!(
+            iterations_printed.len() >= 5,
+            "Expected at least 5 iterations before interrupt, got {}",
+            iterations_printed.len()
+        );
+
+        // Now interrupt the kernel using the interrupt endpoint
+        println!("Sending interrupt request via HTTP API...");
+        let interrupt_response = client
+            .interrupt_session(session_id.clone())
+            .await
+            .expect("Failed to send interrupt");
+
+        println!("Interrupt response: {:?}", interrupt_response);
+
+        // Verify the interrupt was accepted
+        match interrupt_response {
+            kallichore_api::InterruptSessionResponse::Interrupted(_) => {
+                println!("Interrupt request was accepted");
+            }
+            _ => {
+                panic!("Expected interrupt to succeed, got: {:?}", interrupt_response);
+            }
+        }
+
+        // Now collect more output and verify that:
+        // 1. We receive an error or execute_reply indicating interruption
+        // 2. We did NOT receive "All iterations completed!"
+        println!("Collecting output after interrupt...");
+        let mut all_output = String::new();
+        let mut execute_reply_received = false;
+        let start_time = std::time::Instant::now();
+
+        while start_time.elapsed() < Duration::from_secs(5) {
+            match tokio::time::timeout(Duration::from_millis(200), comm.receive_message()).await {
+                Ok(Ok(Some(message_text))) => {
+                    if let Ok(WebsocketMessage::Jupyter(jupyter_msg)) =
+                        serde_json::from_str::<WebsocketMessage>(&message_text)
+                    {
+                        println!("Received message type: {}", jupyter_msg.header.msg_type);
+
+                        if jupyter_msg.header.msg_type == "stream" {
+                            if let Some(text) = jupyter_msg.content.get("text").and_then(|v| v.as_str()) {
+                                all_output.push_str(text);
+                                println!("Stream output: {}", text);
+                            }
+                        } else if jupyter_msg.header.msg_type == "error" {
+                            println!("Received error message: {:?}", jupyter_msg.content);
+                            all_output.push_str("ERROR_RECEIVED\n");
+                        } else if jupyter_msg.header.msg_type == "execute_reply" {
+                            println!("Received execute_reply: {:?}", jupyter_msg.content);
+                            if let Some(status) = jupyter_msg.content.get("status").and_then(|v| v.as_str()) {
+                                println!("Execute reply status: {}", status);
+                                if status == "error" {
+                                    all_output.push_str("EXECUTE_ERROR\n");
+                                }
+                            }
+                            execute_reply_received = true;
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        println!("All output after interrupt:\n{}", all_output);
+
+        // Verify we got an execute_reply
+        assert!(
+            execute_reply_received,
+            "Expected to receive execute_reply after interrupt"
+        );
+
+        // Verify that the code did NOT complete all iterations
+        assert!(
+            !all_output.contains("All iterations completed!"),
+            "Code should have been interrupted before completion"
+        );
+
+        // Verify that we got SOME output (the interrupt didn't happen immediately)
+        assert!(
+            iterations_printed.len() > 0,
+            "Expected some iterations to complete before interrupt"
+        );
+
+        // Verify that we did NOT get all 100 iterations
+        assert!(
+            iterations_printed.len() < 100,
+            "Expected interrupt to prevent all iterations from completing"
+        );
+
+        println!(
+            "✓ Interrupt test passed! Code was interrupted after {} iterations (out of 100)",
+            iterations_printed.len()
+        );
+
+        // Clean up
+        if let Err(e) = comm.close().await {
+            println!("Failed to close communication channel: {}", e);
+        }
+
+        drop(server);
+    })
+    .await;
+
+    match test_result {
+        Ok(_) => {
+            println!("Kernel interrupt test completed successfully");
+        }
+        Err(_) => {
+            panic!("Kernel interrupt test timed out after 30 seconds");
+        }
+    }
+}
