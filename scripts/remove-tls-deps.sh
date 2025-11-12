@@ -297,6 +297,82 @@ PYTHON_SCRIPT
 
 fi
 
+# Remove OpenSSL imports and HTTPS code from server example
+SERVER_EXAMPLE="$DIR/../crates/kallichore_api/examples/server/server.rs"
+if [ -f "$SERVER_EXAMPLE" ]; then
+    echo "Removing OpenSSL/HTTPS code from server example..."
+
+    python3 - "$SERVER_EXAMPLE" <<'PYTHON_SCRIPT'
+import sys
+import re
+
+def fix_server_example(filepath):
+    with open(filepath, 'r') as f:
+        content = f.read()
+
+    # Remove the OpenSSL imports module entirely
+    content = re.sub(
+        r'#\[cfg\(not\(any\(target_os = "macos".*?\)\)\)\]\s*use openssl::.*?\n',
+        '',
+        content,
+        flags=re.DOTALL
+    )
+    
+    # Remove the entire `if https {` block
+    # This regex matches: `if https {` ... `}` (with proper brace matching)
+    lines = content.split('\n')
+    output = []
+    i = 0
+    skip_https_block = False
+    brace_depth = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        
+        # Start of https block
+        if re.match(r'^\s+if https \{', line):
+            skip_https_block = True
+            brace_depth = 1
+            i += 1
+            continue
+        
+        if skip_https_block:
+            # Count braces
+            brace_depth += line.count('{')
+            brace_depth -= line.count('}')
+            
+            # If we've closed all braces, we're done skipping
+            if brace_depth == 0:
+                skip_https_block = False
+            
+            i += 1
+            continue
+        
+        output.append(line)
+        i += 1
+    
+    with open(filepath, 'w') as f:
+        f.write('\n'.join(output))
+
+if __name__ == '__main__':
+    fix_server_example(sys.argv[1])
+PYTHON_SCRIPT
+
+fi
+
+# Fix unused variable warning in shell_wrapper.rs
+SHELL_WRAPPER="$DIR/../crates/kcserver/src/kernel_session/shell_wrapper.rs"
+if [ -f "$SHELL_WRAPPER" ]; then
+    echo "Fixing unused variable warning in shell_wrapper.rs..."
+    
+    # Add allow attribute for unused_variables on non-macOS Unix platforms (not Windows)
+    # Only match the non-Windows version (without underscore prefix)
+    sed -i.bak '/^[[:space:]]*#\[cfg(not(target_os = "windows"))\]/,/^[[:space:]]*fn build_login_shell_command/ {
+        s/^\([[:space:]]*\)resolved_env: \&HashMap<String, String>,/\1#[cfg_attr(not(target_os = "macos"), allow(unused_variables))] resolved_env: \&HashMap<String, String>,/
+    }' "$SHELL_WRAPPER"
+    rm -f "$SHELL_WRAPPER.bak"
+fi
+
 echo "TLS dependencies removed successfully!"
 echo ""
 echo "Summary of changes:"
@@ -306,3 +382,5 @@ echo "  - Removed platform-specific TLS dependency sections"
 echo "  - Removed TLS dependencies from dev-dependencies"
 echo "  - Fixed kcshared to use server-only features"
 echo "  - Removed HTTPS/TLS code from client (kept HTTP support)"
+echo "  - Removed OpenSSL imports and HTTPS code from server example"
+echo "  - Fixed unused variable warning in shell_wrapper.rs"

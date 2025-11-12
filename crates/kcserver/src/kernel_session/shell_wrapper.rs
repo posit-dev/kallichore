@@ -71,7 +71,10 @@ impl ShellCommandBuilder {
     fn build_login_shell_command(
         &self,
         argv: &[String],
-        resolved_env: &HashMap<String, String>,
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] resolved_env: &HashMap<
+            String,
+            String,
+        >,
     ) -> Result<Option<tokio::process::Command>, StartupError> {
         // Find a suitable login shell
         let login_shell = match self.find_login_shell() {
