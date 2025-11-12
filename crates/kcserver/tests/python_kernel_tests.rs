@@ -355,7 +355,8 @@ async fn test_multiple_kernel_sessions() {
             connection_timeout: Some(3),
             interrupt_mode: InterruptMode::Message,
             protocol_version: Some("5.3".to_string()),
-            run_in_shell: Some(false),
+            startup_environment: kallichore_api::models::StartupEnvironment::None,
+            startup_environment_arg: None,
         };
 
         let _created_session_id = create_session_with_client(&client, new_session).await;
@@ -452,7 +453,7 @@ async fn run_python_kernel_test_domain_socket(python_cmd: &str) {
 
     // Create session via HTTP over Unix socket
     let session_request = format!(
-        r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "ipykernel", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "run_in_shell": false, "session_mode": "console"}}"#,
+        r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "ipykernel", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "startup_environment": "none", "session_mode": "console"}}"#,
         session_id, python_cmd
     );
 
@@ -633,7 +634,7 @@ async fn run_python_kernel_test_named_pipe(python_cmd: &str, session_id: &str, p
         "connection_timeout": 30,
         "interrupt_mode": "message",
         "protocol_version": "5.3",
-        "run_in_shell": false
+        "startup_environment": "none"
     });
     let session_request = session_data.to_string();
 
@@ -805,7 +806,7 @@ async fn run_python_kernel_test_domain_socket_direct(
 
     // Create session via HTTP over Unix domain socket
     let session_request = format!(
-        r#"{{"session_id": "{}", "display_name": "Test Python Kernel", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "ipykernel", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 3, "interrupt_mode": "message", "protocol_version": "5.3", "run_in_shell": false}}"#,
+        r#"{{"session_id": "{}", "display_name": "Test Python Kernel", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "ipykernel", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 3, "interrupt_mode": "message", "protocol_version": "5.3", "startup_environment": "none"}}"#,
         session_id, python_cmd
     );
 
@@ -1409,7 +1410,7 @@ async fn test_kernel_starts_with_bad_shell_env_var() {
         // Generate a unique session ID
         let session_id = format!("test-bad-shell-{}", Uuid::new_v4());
 
-        // Create a session with run_in_shell=true but set SHELL to a non-existent path
+        // Create a session with startup_environment=Shell but set SHELL to a non-existent path
         let new_session = NewSession {
             session_id: session_id.clone(),
             display_name: "Test Bad Shell Session".to_string(),
@@ -1441,10 +1442,11 @@ async fn test_kernel_starts_with_bad_shell_env_var() {
             connection_timeout: Some(15),
             interrupt_mode: InterruptMode::Message,
             protocol_version: Some("5.3".to_string()),
-            run_in_shell: Some(true), // This is the key - enable run_in_shell with bad SHELL
+            startup_environment: kallichore_api::models::StartupEnvironment::Shell,
+            startup_environment_arg: None,
         };
 
-        println!("Creating session with run_in_shell=true and bad SHELL env var");
+        println!("Creating session with startup_environment=Shell and bad SHELL env var");
 
         // Create the session - this should succeed despite the bad SHELL value
         let _created_session_id = create_session_with_client(&client, new_session).await;
@@ -1510,7 +1512,7 @@ async fn test_kernel_starts_with_bad_shell_env_var() {
 
 #[cfg(not(target_os = "windows"))] // Shell behavior is Unix-specific
 #[tokio::test]
-async fn test_run_in_shell_functionality() {
+async fn test_startup_environment_functionality() {
     let test_result = tokio::time::timeout(Duration::from_secs(60), async {
         let python_cmd = if let Some(cmd) = get_python_executable().await {
             cmd
@@ -1534,7 +1536,8 @@ async fn test_run_in_shell_functionality() {
             server: &TestServer,
             python_cmd: &str,
             test_name: &str,
-            run_in_shell: bool,
+            startup_environment: kallichore_api::models::StartupEnvironment,
+            startup_environment_arg: Option<String>,
             shell_env: Option<&str>,
         ) -> String {
             let session_id = format!("test-shell-{}-{}", test_name, Uuid::new_v4());
@@ -1575,11 +1578,12 @@ async fn test_run_in_shell_functionality() {
                 connection_timeout: Some(15),
                 interrupt_mode: InterruptMode::Message,
                 protocol_version: Some("5.3".to_string()),
-                run_in_shell: Some(run_in_shell),
+                startup_environment: startup_environment.clone(),
+                startup_environment_arg: startup_environment_arg.clone(),
             };
 
-            println!("Creating session '{}' with run_in_shell={}, shell_env={:?}",
-                test_name, run_in_shell, shell_env);
+            println!("Creating session '{}' with startup_environment={:?}, startup_environment_arg={:?}, shell_env={:?}",
+                test_name, startup_environment, startup_environment_arg, shell_env);
 
             // Create the session
             let _created_session_id = create_session_with_client(client, new_session).await;
@@ -1654,7 +1658,10 @@ except Exception as e:
     print(f"Error running shell test script: {{e}}")
 "#,
                 test_name,
-                if run_in_shell { "shell" } else { "direct" },
+                match startup_environment {
+                    kallichore_api::models::StartupEnvironment::None => "direct",
+                    _ => "shell",
+                },
                 test_script_path.to_string_lossy()
             );
 
@@ -1731,8 +1738,13 @@ except Exception as e:
                 "Expected to find test marker in session '{}' output", test_name
             );
 
+            let expected_mode = match startup_environment {
+                kallichore_api::models::StartupEnvironment::None => "direct",
+                _ => "shell",
+            };
+
             assert!(
-                all_output.contains(&format!("Expected mode: {}", if run_in_shell { "shell" } else { "direct" })),
+                all_output.contains(&format!("Expected mode: {}", expected_mode)),
                 "Expected to find expected mode marker in session '{}' output", test_name
             );
 
@@ -1743,7 +1755,7 @@ except Exception as e:
             );
 
             // Check for shell-specific behavior from external script output
-            if run_in_shell {
+            if matches!(startup_environment, kallichore_api::models::StartupEnvironment::Shell | kallichore_api::models::StartupEnvironment::Command | kallichore_api::models::StartupEnvironment::Script) {
                 // When running in shell, the script should detect shell indicators
                 let has_shell_indicators = all_output.contains("Shell indicators:");
 
@@ -1766,33 +1778,36 @@ except Exception as e:
             session_id
         }
 
-        // Test 1: run_in_shell = false (default behavior)
+        // Test 1: Direct execution (no shell)
         let session_1 = test_shell_behavior_via_kernel(
             &client,
             &server,
             &python_cmd,
             "no-shell",
-            false,
+            kallichore_api::models::StartupEnvironment::None,
+            None,
             None
         ).await;
 
-        // Test 2: run_in_shell = true with default shell
+        // Test 2: Shell execution with default shell
         let session_2 = test_shell_behavior_via_kernel(
             &client,
             &server,
             &python_cmd,
             "default-shell",
-            true,
+            kallichore_api::models::StartupEnvironment::Shell,
+            None,
             None
         ).await;
 
-        // Test 3: run_in_shell = true with bash shell
+        // Test 3: Shell execution with bash
         let session_3 = test_shell_behavior_via_kernel(
             &client,
             &server,
             &python_cmd,
             "bash-shell",
-            true,
+            kallichore_api::models::StartupEnvironment::Shell,
+            None,
             Some("/bin/bash")
         ).await;
 
@@ -1811,10 +1826,10 @@ except Exception as e:
         // Give time for cleanup
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
-        println!("All run_in_shell functionality tests completed successfully!");
-        println!("✓ Verified that kernels execute code correctly with run_in_shell=false");
-        println!("✓ Verified that kernels execute code correctly with run_in_shell=true");
-        println!("✓ Verified that shell environment is properly set up when using run_in_shell");
+        println!("All startup_environment functionality tests completed successfully!");
+        println!("✓ Verified that kernels execute code correctly with startup_environment=None");
+        println!("✓ Verified that kernels execute code correctly with startup_environment=Shell");
+        println!("✓ Verified that shell environment is properly set up when using startup_environment");
 
         drop(server);
     })
@@ -1822,10 +1837,10 @@ except Exception as e:
 
     match test_result {
         Ok(_) => {
-            println!("run_in_shell test completed successfully");
+            println!("startup_environment test completed successfully");
         }
         Err(_) => {
-            panic!("run_in_shell test timed out after 60 seconds");
+            panic!("startup_environment test timed out after 60 seconds");
         }
     }
 }

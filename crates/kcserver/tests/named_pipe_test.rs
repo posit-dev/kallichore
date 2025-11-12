@@ -306,7 +306,7 @@ mod windows_named_pipe_tests {
             "continuation_prompt": "... ",
             "username": "test",
             "env": {},
-            "run_in_shell": false,
+            "startup_environment": "none",
             "interrupt_mode": "signal",
             "connection_timeout": 60,
             "protocol_version": "5.3"
@@ -484,7 +484,7 @@ mod windows_named_pipe_tests {
             "connection_timeout": 60,
             "interrupt_mode": "signal",
             "protocol_version": "5.3",
-            "run_in_shell": false
+            "startup_environment": "none"
         });
 
         println!("Step 1: Creating session: {}", session_id);

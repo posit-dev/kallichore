@@ -1,12 +1,10 @@
 use crate::server::Server;
+use headers::authorization::{Basic, Bearer};
 use jsonwebtoken::{decode, decode_header, errors as JwtError, DecodingKey, TokenData, Validation};
 use kallichore_api::{AuthenticationApi, Claims};
 use log::{debug, error};
 use swagger::auth::Authorization;
-use swagger::{
-    auth::{Basic, Bearer},
-    ApiError, Has, XSpanIdString,
-};
+use swagger::{ApiError, Has, XSpanIdString};
 
 // NOTE: Set environment variable RUST_LOG to the name of the executable (or "cargo run") to activate console logging for all loglevels.
 //     See https://docs.rs/env_logger/latest/env_logger/  for more details
@@ -77,7 +75,7 @@ where
     fn bearer_authorization(&self, bearer: &Bearer) -> Result<Authorization, ApiError> {
         debug!("\tAuthorizationApi: Received Bearer-token, {bearer:#?}");
 
-        match extract_token_data(&bearer.token, b"secret") {
+        match extract_token_data(&bearer.token(), b"secret") {
             Ok(auth_data) => {
                 debug!("\tUnpack auth_data as: {auth_data:#?}");
                 let authorization = build_authorization(auth_data.claims);

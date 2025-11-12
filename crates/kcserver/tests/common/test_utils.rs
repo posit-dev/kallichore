@@ -82,7 +82,8 @@ pub fn create_test_session(session_id: String, python_cmd: &str) -> NewSession {
         connection_timeout: Some(10),
         interrupt_mode: InterruptMode::Message,
         protocol_version: Some("5.3".to_string()),
-        run_in_shell: Some(false),
+        startup_environment: kallichore_api::models::StartupEnvironment::None,
+        startup_environment_arg: None,
     }
 }
 
@@ -238,7 +239,7 @@ pub async fn create_session_request_json(session_id: &str, python_cmd: &str) -> 
     let ipykernel_module = get_ipykernel_module(python_cmd).await?;
 
     Some(format!(
-        r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "{}", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "run_in_shell": false}}"#,
+        r#"{{"session_id": "{}", "display_name": "Test Session", "language": "python", "username": "testuser", "input_prompt": "In [{{}}]: ", "continuation_prompt": "   ...: ", "argv": ["{}", "-m", "{}", "-f", "{{connection_file}}"], "working_directory": "/tmp", "env": [], "connection_timeout": 60, "interrupt_mode": "message", "protocol_version": "5.3", "startup_environment": "none"}}"#,
         session_id, python_cmd, ipykernel_module
     ))
 }

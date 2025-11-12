@@ -16,13 +16,15 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::future::BoxFuture;
 use futures::{future, SinkExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use hyper::client::connect;
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Empty, Full};
+use hyper::body::Incoming;
 use hyper::header::{HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY, UPGRADE};
-use hyper::server::conn::Http;
 use hyper::service::Service;
 use hyper::upgrade::Upgraded;
-use hyper::{Body, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper::{Response, StatusCode};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder as HttpBuilder;
 use kallichore_api::models::{NewSession200Response, ServerConfigurationLogLevel, ServerStatus};
 use log::info;
 use log::trace;
@@ -34,6 +36,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::{any, env, usize};
+use tower::ServiceExt;
 use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Authorization, Push};
@@ -240,7 +243,7 @@ impl ServerConfig {
 // Generic server runner that handles signal management
 async fn run_server_with_signals<T, C>(server_future: T, _server: Server<C>, server_type: &str)
 where
-    T: Future<Output = Result<(), hyper::Error>>,
+    T: Future<Output = ()>,
 {
     #[cfg(unix)]
     {
@@ -251,11 +254,9 @@ where
 
         // Wait for either the server to complete or a SIGTERM/SIGINT signal
         tokio::select! {
-            result = server_future => {
+            _ = server_future => {
                 // Server completed normally (unlikely in this case)
-                if let Err(e) = result {
-                    log::error!("{} server error: {}", server_type, e);
-                }
+                log::info!("{} server completed", server_type);
             }
             _ = sigterm.recv() => {
                 log::info!("Received SIGTERM signal, initiating graceful shutdown");
@@ -271,9 +272,7 @@ where
     // On non-Unix systems, just run the server without signal handling
     #[cfg(not(unix))]
     {
-        if let Err(e) = server_future.await {
-            log::error!("{} server error: {}", server_type, e);
-        }
+        server_future.await;
     }
 }
 
@@ -300,11 +299,41 @@ async fn create_tcp_server(
     let service = WebsocketInterceptorMakeService::new(server.clone());
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+    let service = Arc::new(service);
 
-    // Create the HTTP server from the TcpListener
-    let server_future = hyper::server::Server::from_tcp(listener.into_std().unwrap())
-        .expect("Failed to create server from TcpListener")
-        .serve(service);
+    // Create the server future that accepts connections
+    let server_future = async move {
+        loop {
+            let (stream, addr) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    log::error!("Failed to accept connection: {}", e);
+                    continue;
+                }
+            };
+
+            let io = TokioIo::new(stream);
+            let make_service = service.clone();
+
+            tokio::spawn(async move {
+                // Call the MakeService to get a new service instance for this connection
+                let service_result = hyper::service::Service::call(&*make_service, &addr).await;
+                let mut svc = match service_result {
+                    Ok(svc) => svc,
+                    Err(e) => {
+                        log::error!("Failed to create service: {}", e);
+                        return;
+                    }
+                };
+
+                let builder = HttpBuilder::new(TokioExecutor::new());
+                // Use serve_connection_with_upgrades to support WebSocket upgrades
+                if let Err(e) = builder.serve_connection_with_upgrades(io, &mut svc).await {
+                    log::error!("Error serving connection: {}", e);
+                }
+            });
+        }
+    };
 
     run_server_with_signals(server_future, server, "TCP").await;
 }
@@ -333,10 +362,41 @@ async fn create_unix_server(
     let service = kallichore_api::server::MakeService::new(server.clone());
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+    let service = Arc::new(service);
 
-    // Create the HTTP server for Unix domain socket using hyperlocal
-    let incoming = hyperlocal::SocketIncoming::from_listener(listener);
-    let server_future = hyper::server::Server::builder(incoming).serve(service);
+    // Create the server future that accepts connections on Unix domain socket
+    let server_future = async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    log::error!("Failed to accept Unix socket connection: {}", e);
+                    continue;
+                }
+            };
+
+            let io = TokioIo::new(stream);
+            let make_service = service.clone();
+
+            tokio::spawn(async move {
+                // For Unix sockets, we use () as the target since there's no addr
+                let service_result = hyper::service::Service::call(&*make_service, &()).await;
+                let mut svc = match service_result {
+                    Ok(svc) => svc,
+                    Err(e) => {
+                        log::error!("Failed to create service: {}", e);
+                        return;
+                    }
+                };
+
+                let builder = HttpBuilder::new(TokioExecutor::new());
+                // Use serve_connection_with_upgrades to support WebSocket upgrades
+                if let Err(e) = builder.serve_connection_with_upgrades(io, &mut svc).await {
+                    log::error!("Error serving Unix socket connection: {}", e);
+                }
+            });
+        }
+    };
 
     run_server_with_signals(server_future, server, "Unix socket").await;
 }
@@ -348,7 +408,7 @@ async fn create_named_pipe_server(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
 ) {
-    use crate::named_pipe_connection::NamedPipeIncoming;
+    use tokio::net::windows::named_pipe::ServerOptions;
 
     let config = ServerConfig::new(token, idle_shutdown_hours, log_level, true);
     let server = config.create_server();
@@ -358,25 +418,55 @@ async fn create_named_pipe_server(
     let service = kallichore_api::server::MakeService::new(server);
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+    let service = Arc::new(service);
 
     log::info!("Starting named pipe HTTP server on: {}", pipe_name);
 
-    // Create the named pipe incoming connection stream
-    let incoming = match NamedPipeIncoming::new(pipe_name.clone()) {
-        Ok(incoming) => incoming,
-        Err(e) => {
-            log::error!("Failed to create named pipe incoming: {}", e);
-            return;
+    // Create the server future that accepts connections on named pipe
+    let server_future = async move {
+        loop {
+            // Create a new named pipe server for each connection
+            let pipe_server = match ServerOptions::new().create(&pipe_name) {
+                Ok(server) => server,
+                Err(e) => {
+                    log::error!("Failed to create named pipe server {}: {}", pipe_name, e);
+                    break;
+                }
+            };
+
+            // Wait for a client to connect
+            if let Err(e) = pipe_server.connect().await {
+                log::error!("Failed to connect client on named pipe {}: {}", pipe_name, e);
+                continue;
+            }
+
+            log::info!("Client connected to named pipe: {}", pipe_name);
+
+            let io = TokioIo::new(pipe_server);
+            let make_service = service.clone();
+
+            tokio::spawn(async move {
+                // For named pipes, we use () as the target since there's no addr
+                let service_result = hyper::service::Service::call(&*make_service, &()).await;
+                let mut svc = match service_result {
+                    Ok(svc) => svc,
+                    Err(e) => {
+                        log::error!("Failed to create service: {}", e);
+                        return;
+                    }
+                };
+
+                let builder = HttpBuilder::new(TokioExecutor::new());
+                // Use serve_connection_with_upgrades to support WebSocket upgrades
+                if let Err(e) = builder.serve_connection_with_upgrades(io, &mut svc).await {
+                    log::error!("Error serving named pipe connection: {}", e);
+                }
+            });
         }
     };
 
-    // Create the HTTP server for named pipe using our custom incoming implementation
-    let server_future = hyper::server::Server::builder(incoming).serve(service);
-
     // Named pipes on Windows don't support Unix-style signals, so just run the server
-    if let Err(e) = server_future.await {
-        log::error!("Named pipe server error: {}", e);
-    }
+    server_future.await;
 }
 
 #[derive(Clone)]
@@ -869,10 +959,10 @@ impl<C> Server<C> {
             };
             match data {
                 AuthData::Bearer(bearer) => {
-                    if bearer.token != *token {
+                    if bearer != token {
                         log::warn!(
                             "Rejecting request; invalid Bearer token '{}' supplied",
-                            bearer.token
+                            bearer
                         );
                         return false;
                     }
@@ -1047,7 +1137,8 @@ where
             continuation_prompt: session.continuation_prompt.clone(),
             username: session.username.clone(),
             env: session.env.clone(),
-            run_in_shell: session.run_in_shell.clone(),
+            startup_environment: session.startup_environment.clone(),
+            startup_environment_arg: session.startup_environment_arg.clone(),
             interrupt_mode: session.interrupt_mode.clone(),
             connection_timeout: session.connection_timeout.clone(),
             protocol_version: session.protocol_version.clone(),
@@ -1748,10 +1839,10 @@ impl<C> Server<C> {
     /// This is the actual implementation that handles the raw HTTP request
     async fn handle_channels_websocket_request(
         &self,
-        mut request: hyper::Request<Body>,
+        request: hyper::Request<Incoming>,
         session_id: String,
         _context: &C,
-    ) -> Result<Response<Body>, ApiError> {
+    ) -> Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError> {
         // TODO: This should also validate the bearer token to initiate the
         // websocket connection
         log::debug!(
@@ -1780,7 +1871,10 @@ impl<C> Server<C> {
                 ));
                 // Serialize the error to JSON
                 let err = serde_json::to_string(&err).unwrap();
-                let mut response = Response::new(err.into());
+                let body = Full::new(bytes::Bytes::from(err))
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
+                    .boxed();
+                let mut response = Response::new(body);
                 *response.status_mut() = StatusCode::BAD_REQUEST;
                 return Ok(response);
             }
@@ -1808,8 +1902,12 @@ impl<C> Server<C> {
             }
         }
 
+        // In hyper 1.x, we must initiate the upgrade BEFORE spawning the task
+        // The upgrade future captures the request and will complete when the response is sent
+        let upgrade_future = hyper::upgrade::on(request);
+
         tokio::task::spawn(async move {
-            match hyper::upgrade::on(&mut request).await {
+            match upgrade_future.await {
                 Ok(upgraded) => {
                     log::debug!("Creating session for websocket connection");
 
@@ -1839,8 +1937,10 @@ impl<C> Server<C> {
                         session_id
                     );
 
+                    // Wrap in TokioIo to convert from futures::io to tokio::io
+                    let io = TokioIo::new(upgraded);
                     let stream =
-                        WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
+                        WebSocketStream::from_raw_socket(io, Role::Server, None).await;
                     client_session.handle_channel_ws(stream).await;
                 }
                 Err(e) => {
@@ -1850,7 +1950,10 @@ impl<C> Server<C> {
         });
         let upgrade = HeaderValue::from_static("Upgrade");
         let websocket = HeaderValue::from_static("websocket");
-        let mut response = Response::new(Body::default());
+        let body = Empty::<bytes::Bytes>::new()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
+            .boxed();
+        let mut response = Response::new(body);
         *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
         *response.version_mut() = version;
         response.headers_mut().append(CONNECTION, upgrade);
@@ -2258,10 +2361,10 @@ where
 {
     fn channels_websocket_request(
         &self,
-        request: hyper::Request<Body>,
+        request: hyper::Request<Incoming>,
         session_id: String,
         context: &C,
-    ) -> BoxFuture<'static, Result<Response<Body>, ApiError>> {
+    ) -> BoxFuture<'static, Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>> {
         // Clone the data we need since we're moving into the future
         let server = self.clone();
         let context = context.clone();

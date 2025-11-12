@@ -48,9 +48,7 @@ async fn create_client_for_base_path(
         swagger::make_context!(
             ContextBuilder,
             EmptyContext,
-            Some(AuthData::Bearer(swagger::auth::Bearer {
-                token: token.to_string()
-            })),
+            Some(AuthData::Bearer(token.to_string())),
             XSpanIdString::default()
         )
     } else {

@@ -192,6 +192,22 @@ impl KernelSession {
         Ok(kernel_session)
     }
 
+    /// Strip startup markers from output to prevent them from leaking to users.
+    ///
+    /// The markers KALLICHORE_STARTUP_BEGIN and KALLICHORE_STARTUP_SUCCESS are used
+    /// internally to determine what failed during startup, but should never be visible
+    /// in user-facing output or error messages.
+    fn strip_startup_markers(output: &str) -> String {
+        output
+            .lines()
+            .filter(|line| {
+                !line.contains("KALLICHORE_STARTUP_BEGIN")
+                    && !line.contains("KALLICHORE_STARTUP_SUCCESS")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Start the kernel.
     ///
     /// # Returns
@@ -463,122 +479,244 @@ impl KernelSession {
             state.resolved_env = resolved_env.clone();
         }
 
-        // Check if we should run in a login shell
-        let run_in_shell = self.model.run_in_shell.unwrap_or(false);
+        // Validate startup_environment_arg usage
+        let startup_env = &self.model.startup_environment;
+        let startup_arg = &self.model.startup_environment_arg;
+
+        // Warn if arg is specified but not needed
+        if startup_arg.is_some() {
+            match startup_env {
+                models::StartupEnvironment::Command | models::StartupEnvironment::Script => {
+                    // Valid - these modes require an arg
+                }
+                _ => {
+                    log::warn!(
+                        "[session {}] startup_environment_arg specified but startup_environment is {:?} (ignored)",
+                        self.model.session_id,
+                        startup_env
+                    );
+                }
+            }
+        }
 
         // Create the command to start the kernel with the processed arguments
-        let shell_command = if run_in_shell {
-            #[cfg(not(target_os = "windows"))]
-            {
-                let candidates = vec![
-                    std::env::var("SHELL").unwrap_or_else(|_| String::from("")),
-                    String::from("/bin/bash"),
-                    String::from("/bin/sh"),
-                ];
+        let shell_command = match &self.model.startup_environment {
+            models::StartupEnvironment::None => {
+                // No shell wrapper - use direct execution
+                None
+            }
 
-                let mut login_shell = None;
-                for i in 0..candidates.len() {
-                    let shell_path = &candidates[i];
-                    // Ignore if empty (happens if SHELL is not set)
-                    if shell_path.is_empty() {
-                        continue;
+            models::StartupEnvironment::Shell
+            | models::StartupEnvironment::Command
+            | models::StartupEnvironment::Script => {
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let candidates = vec![
+                        std::env::var("SHELL").unwrap_or_else(|_| String::from("")),
+                        String::from("/bin/bash"),
+                        String::from("/bin/sh"),
+                    ];
+
+                    let mut login_shell = None;
+                    for i in 0..candidates.len() {
+                        let shell_path = &candidates[i];
+                        // Ignore if empty (happens if SHELL is not set)
+                        if shell_path.is_empty() {
+                            continue;
+                        }
+                        // Found a valid shell path
+                        if fs::metadata(&shell_path).is_ok() {
+                            login_shell = Some(shell_path);
+                            break;
+                        } else if i == 0 {
+                            // The first candidate comes from $SHELL. If it doesn't exist,
+                            // log a warning but continue to try the others.
+                            log::warn!(
+                                "[session {}] Shell path specified in $SHELL '{}' does not exist",
+                                self.model.session_id,
+                                shell_path
+                            );
+                        }
                     }
-                    // Found a valid shell path
-                    if fs::metadata(&shell_path).is_ok() {
-                        login_shell = Some(shell_path);
-                        break;
-                    } else if i == 0 {
-                        // The first candidate comes from $SHELL. If it doesn't exist,
-                        // log a warning but continue to try the others.
-                        log::warn!(
-                            "[session {}] Shell path specified in $SHELL '{}' does not exist",
+
+                    // If we found a login shell, use it to run the kernel
+                    if let Some(login_shell) = login_shell {
+                        log::debug!(
+                            "[session {}] Running kernel in login shell: {}",
                             self.model.session_id,
-                            shell_path
+                            login_shell
                         );
+
+                        // Build the base kernel command with escaping
+                        let mut kernel_command = argv
+                            .iter()
+                            .map(|arg| escape_for_shell(arg))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+
+                        // On macOS, if the DYLD_LIBRARY_PATH environment variable was
+                        // requested, set it explictly; it is not inherited by default
+                        // in login shells due to SIP.
+                        if let Some(dyld_path) = resolved_env.get("DYLD_LIBRARY_PATH") {
+                            log::debug!(
+                                "[session {}] Explicitly forwarding DYLD_LIBRARY_PATH: {}",
+                                self.model.session_id,
+                                dyld_path
+                            );
+                            kernel_command = format!(
+                                "DYLD_LIBRARY_PATH={} {}",
+                                escape_for_shell(dyld_path),
+                                kernel_command
+                            );
+                        }
+
+                        // Add startup command or script if specified
+                        // We inject marker echo statements to help distinguish startup failures from kernel failures
+                        kernel_command = match &self.model.startup_environment {
+                            models::StartupEnvironment::Command => {
+                                if let Some(cmd) = &self.model.startup_environment_arg {
+                                    log::debug!(
+                                        "[session {}] Executing startup command: {}",
+                                        self.model.session_id,
+                                        cmd
+                                    );
+                                    // Wrap command in markers to identify failure point
+                                    format!(
+                                        "echo 'KALLICHORE_STARTUP_BEGIN' && {{ {}; }} && echo 'KALLICHORE_STARTUP_SUCCESS' && {}",
+                                        cmd,
+                                        kernel_command
+                                    )
+                                } else {
+                                    log::warn!(
+                                        "[session {}] StartupEnvironment::Command specified but no command provided",
+                                        self.model.session_id
+                                    );
+                                    kernel_command
+                                }
+                            }
+
+                            models::StartupEnvironment::Script => {
+                                if let Some(script_path_str) = &self.model.startup_environment_arg {
+                                    // Resolve script path
+                                    let script_path =
+                                        if std::path::Path::new(script_path_str).is_absolute() {
+                                            std::path::PathBuf::from(script_path_str)
+                                        } else {
+                                            // Resolve relative to working directory
+                                            std::path::PathBuf::from(&working_directory)
+                                                .join(script_path_str)
+                                        };
+
+                                    // Validate script exists and is a file
+                                    match fs::metadata(&script_path) {
+                                        Ok(metadata) => {
+                                            if !metadata.is_file() {
+                                                let err = KSError::ProcessStartFailed(
+                                                    anyhow::anyhow!(
+                                                        "Startup script path '{}' exists but is not a file",
+                                                        script_path.display()
+                                                    ),
+                                                );
+                                                return Err(StartupError {
+                                                    exit_code: None,
+                                                    output: None,
+                                                    error: err.to_json(None),
+                                                });
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let err = KSError::ProcessStartFailed(anyhow::anyhow!(
+                                                "Startup script not found or cannot be read: '{}' ({})",
+                                                script_path.display(),
+                                                e
+                                            ));
+                                            return Err(StartupError {
+                                                exit_code: None,
+                                                output: None,
+                                                error: err.to_json(None),
+                                            });
+                                        }
+                                    }
+
+                                    log::debug!(
+                                        "[session {}] Sourcing startup script: {}",
+                                        self.model.session_id,
+                                        script_path.display()
+                                    );
+
+                                    // Determine shell type for proper source command
+                                    let source_cmd = match login_shell.split('/').last() {
+                                        Some("csh") | Some("tcsh") => "source", // csh uses 'source'
+                                        _ => ".", // sh/bash/zsh use '.' or 'source', '.' is more portable
+                                    };
+
+                                    // Wrap script in markers to identify failure point
+                                    format!(
+                                        "echo 'KALLICHORE_STARTUP_BEGIN' && {{ {} {}; }} && echo 'KALLICHORE_STARTUP_SUCCESS' && {}",
+                                        source_cmd,
+                                        escape_for_shell(&script_path.to_string_lossy()),
+                                        kernel_command
+                                    )
+                                } else {
+                                    log::warn!(
+                                        "[session {}] StartupEnvironment::Script specified but no script path provided",
+                                        self.model.session_id
+                                    );
+                                    kernel_command
+                                }
+                            }
+
+                            _ => kernel_command, // Shell mode - no prefix
+                        };
+
+                        // Determine login argument based on shell type
+                        let login_arg = match login_shell.split('/').last() {
+                            None => "-l", // Unknown shell, presume bash-alike
+                            Some(shell) => {
+                                match shell {
+                                    // csh-like shells don't support -c for login
+                                    // shells. Instead, we emulate a login shell by
+                                    // asking it to load the directory stack (-d)
+                                    "csh" => "-d",
+                                    "tcsh" => "-d",
+
+                                    // Bash and zsh support the long-form --login option
+                                    "bash" => "--login",
+                                    "zsh" => "--login",
+
+                                    // Sh only supports -l
+                                    "dash" => "-l",
+                                    "sh" => "-l",
+
+                                    // For all other shells, presume -l
+                                    _ => "-l",
+                                }
+                            }
+                        };
+
+                        // Create the shell command
+                        let mut cmd = tokio::process::Command::new(login_shell);
+                        cmd.args(&[login_arg, "-c", &kernel_command]);
+                        Some(cmd)
+                    } else {
+                        log::warn!(
+                            "[session {}] No valid login shell found; running kernel without a login shell",
+                            self.model.session_id
+                        );
+                        None
                     }
                 }
 
-                // If we found a login shell, use it to run the kernel
-                if let Some(login_shell) = login_shell {
+                #[cfg(target_os = "windows")]
+                {
+                    // On Windows, these modes have no effect
                     log::debug!(
-                        "[session {}] Running kernel in login shell: {}",
-                        self.model.session_id,
-                        login_shell
-                    );
-                    // Create the original command as a string with proper shell escaping
-                    let mut original_command = argv
-                        .iter()
-                        .map(|arg| escape_for_shell(arg))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-
-                    // On macOS, if the DYLD_LIBRARY_PATH environment variable was
-                    // requested, set it explictly; it is not inherited by default
-                    // in login shells due to SIP.
-                    if let Some(dyld_path) = resolved_env.get("DYLD_LIBRARY_PATH") {
-                        log::debug!(
-                            "[session {}] Explicitly forwarding DYLD_LIBRARY_PATH: {}",
-                            self.model.session_id,
-                            dyld_path
-                        );
-                        original_command = format!(
-                            "DYLD_LIBRARY_PATH={} {}",
-                            escape_for_shell(dyld_path),
-                            original_command
-                        );
-                    }
-
-                    let login_arg = match login_shell.split('/').last() {
-                        None => {
-                            // Unknown shell, presume bash-alike
-                            "-l"
-                        }
-                        Some(shell) => {
-                            match shell {
-                                // csh-like shells don't support -c for login
-                                // shells. Instead, we emulate a login shell by
-                                // asking it to load the directory stack (-d)
-                                "csh" => "-d",
-                                "tcsh" => "-d",
-
-                                // Bash and zsh support the long-form --login option
-                                "bash" => "--login",
-                                "zsh" => "--login",
-
-                                // Sh only supports -l
-                                "dash" => "-l",
-                                "sh" => "-l",
-
-                                // For all other shells, presume -l
-                                _ => "-l",
-                            }
-                        }
-                    };
-
-                    // Create a command that uses the login shell.
-                    let mut cmd = tokio::process::Command::new(login_shell);
-                    cmd.args(&[login_arg, "-c", &original_command]);
-                    Some(cmd)
-                } else {
-                    log::warn!(
-                        "[session {}] No valid login shell found; running kernel without a login shell",
+                        "[session {}] startup_environment parameter ignored on Windows",
                         self.model.session_id
                     );
                     None
                 }
             }
-
-            #[cfg(target_os = "windows")]
-            {
-                // On Windows, just use the command as is (run_in_shell has no effect)
-                log::debug!(
-                    "[session {}] run_in_shell parameter ignored on Windows",
-                    self.model.session_id
-                );
-                None
-            }
-        } else {
-            None
         };
 
         // If we formed a shell command, start the kernel with the shell
@@ -793,40 +931,124 @@ impl KernelSession {
             Ok(StartupStatus::ConnectionFailed(output, err)) => {
                 // This error is emitted when the ZeroMQ proxy fails to connect
                 // to the ZeroMQ sockets of the kernel.
+
+                // Determine what failed by analyzing the output markers
+                let error_context = match &self.model.startup_environment {
+                    models::StartupEnvironment::Command => {
+                        if output.contains("KALLICHORE_STARTUP_BEGIN") {
+                            if output.contains("KALLICHORE_STARTUP_SUCCESS") {
+                                "Kernel started but failed to connect to ZeroMQ sockets"
+                            } else {
+                                "Startup command failed before kernel could start"
+                            }
+                        } else {
+                            "Failed to initialize startup environment"
+                        }
+                    }
+
+                    models::StartupEnvironment::Script => {
+                        if output.contains("KALLICHORE_STARTUP_BEGIN") {
+                            if output.contains("KALLICHORE_STARTUP_SUCCESS") {
+                                "Kernel started but failed to connect to ZeroMQ sockets"
+                            } else {
+                                "Startup script failed before kernel could start"
+                            }
+                        } else {
+                            "Failed to initialize startup environment"
+                        }
+                    }
+
+                    _ => "Kernel failed to connect to ZeroMQ sockets",
+                };
+
+                // Strip markers from output before showing to user
+                let clean_output = Self::strip_startup_markers(&output);
+
                 log::error!(
-                    "[session {}] Startup failed. Can't connect to kernel: {}",
+                    "[session {}] {}: {}",
                     self.connection.session_id.clone(),
+                    error_context,
                     err
                 );
                 log::error!(
                     "[session {}] Output before failure: \n{}",
                     self.connection.session_id.clone(),
-                    output
+                    clean_output
                 );
+
                 Err(StartupError {
                     exit_code: Some(130),
-                    output: Some(output),
-                    error: err.to_json(None),
+                    output: Some(clean_output),
+                    error: err.to_json(Some(error_context.to_string())),
                 })
             }
             Ok(StartupStatus::AbnormalExit(exit_code, output, err)) => {
                 // This error is emitted when the process exits before it
                 // finishes starting.
+
+                // Determine what failed by analyzing the output markers
+                let error_context = match &self.model.startup_environment {
+                    models::StartupEnvironment::Command => {
+                        if output.contains("KALLICHORE_STARTUP_BEGIN") {
+                            if output.contains("KALLICHORE_STARTUP_SUCCESS") {
+                                // Got past startup command, so kernel failed
+                                String::from("Kernel failed to start")
+                            } else {
+                                // Startup command failed
+                                if let Some(cmd) = &self.model.startup_environment_arg {
+                                    format!("Startup command failed: '{}'", cmd)
+                                } else {
+                                    String::from("Startup command failed")
+                                }
+                            }
+                        } else {
+                            // Didn't even get to startup command (shell issue?)
+                            String::from("Failed to initialize startup environment")
+                        }
+                    }
+
+                    models::StartupEnvironment::Script => {
+                        if output.contains("KALLICHORE_STARTUP_BEGIN") {
+                            if output.contains("KALLICHORE_STARTUP_SUCCESS") {
+                                // Got past startup script, so kernel failed
+                                String::from("Kernel failed to start")
+                            } else {
+                                // Startup script failed
+                                if let Some(script) = &self.model.startup_environment_arg {
+                                    format!("Startup script failed: '{}'", script)
+                                } else {
+                                    String::from("Startup script failed")
+                                }
+                            }
+                        } else {
+                            // Didn't even get to startup script (shell issue?)
+                            String::from("Failed to initialize startup environment")
+                        }
+                    }
+
+                    _ => String::from("Kernel failed to start"),
+                };
+
+                // Strip markers from output before showing to user
+                let clean_output = Self::strip_startup_markers(&output);
+
                 log::error!(
-                    "[session {}] Startup failed; abnormal exit with code {}: {}",
+                    "[session {}] {}: exit code {}: {}",
                     self.connection.session_id.clone(),
+                    error_context,
                     exit_code,
                     err
                 );
                 log::error!(
                     "[session {}] Output before exit: \n{}",
                     self.connection.session_id.clone(),
-                    output
+                    clean_output
                 );
+
                 Err(StartupError {
                     exit_code: Some(exit_code),
-                    output: Some(output),
-                    error: err.to_json(None),
+                    output: Some(clean_output),
+                    error: err.to_json(Some(error_context)),
                 })
             }
             Err(e) => {

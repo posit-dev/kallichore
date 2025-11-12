@@ -3,7 +3,7 @@
 
 #![allow(missing_docs)]
 
-use clap::{App, Arg};
+use clap::{Arg, Command};
 
 mod server;
 mod server_auth;
@@ -14,9 +14,9 @@ mod server_auth;
 async fn main() {
     env_logger::init();
 
-    let matches = App::new("server")
+    let matches = Command::new("server")
         .arg(
-            Arg::with_name("https")
+            Arg::new("https")
                 .long("https")
                 .help("Whether to use HTTPS or not"),
         )
@@ -24,5 +24,5 @@ async fn main() {
 
     let addr = "127.0.0.1:8080";
 
-    server::create(addr, matches.is_present("https")).await;
+    server::create(addr, matches.contains_id("https")).await;
 }
