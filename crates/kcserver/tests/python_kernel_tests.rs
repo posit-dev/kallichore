@@ -1845,6 +1845,391 @@ except Exception as e:
     }
 }
 
+#[cfg(not(target_os = "windows"))] // Shell behavior is Unix-specific
+#[tokio::test]
+async fn test_startup_environment_command_mode() {
+    let test_result = tokio::time::timeout(Duration::from_secs(60), async {
+        let python_cmd = if let Some(cmd) = get_python_executable().await {
+            cmd
+        } else {
+            println!("Skipping test: No Python executable found");
+            return;
+        };
+
+        if !is_ipykernel_available().await {
+            println!("Skipping test: ipykernel not available for {}", python_cmd);
+            return;
+        }
+
+        // Start a test server
+        let server = TestServer::start().await;
+        let client = server.create_client().await;
+
+        let session_id = format!("test-command-mode-{}", Uuid::new_v4());
+
+        // Create a session with StartupEnvironment::Command that sets an environment variable
+        let new_session = NewSession {
+            session_id: session_id.clone(),
+            display_name: "Test Command Mode Session".to_string(),
+            language: "python".to_string(),
+            username: "testuser".to_string(),
+            input_prompt: "In [{}]: ".to_string(),
+            continuation_prompt: "   ...: ".to_string(),
+            notebook_uri: None,
+            session_mode: SessionMode::Console,
+            argv: vec![
+                python_cmd.clone(),
+                "-m".to_string(),
+                "ipykernel".to_string(),
+                "-f".to_string(),
+                "{connection_file}".to_string(),
+            ],
+            working_directory: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+            env: vec![],
+            connection_timeout: Some(15),
+            interrupt_mode: InterruptMode::Message,
+            protocol_version: Some("5.3".to_string()),
+            startup_environment: kallichore_api::models::StartupEnvironment::Command,
+            startup_environment_arg: Some("export TEST_KALLI_VAR=from_command".to_string()),
+        };
+
+        println!("Creating session with StartupEnvironment::Command");
+
+        // Create the session
+        let _created_session_id = create_session_with_client(&client, new_session).await;
+
+        // Start the session
+        println!("Starting kernel session with command mode...");
+        let start_response = client
+            .start_session(session_id.clone())
+            .await
+            .expect("Failed to start session");
+
+        println!("Start response: {:?}", start_response);
+
+        // Verify the session started successfully
+        match &start_response {
+            kallichore_api::StartSessionResponse::Started(_) => {
+                println!("✓ Session started successfully");
+            }
+            kallichore_api::StartSessionResponse::StartFailed(error) => {
+                panic!("Session failed to start: {:?}", error);
+            }
+            _ => {
+                panic!("Unexpected start response: {:?}", start_response);
+            }
+        }
+
+        // Wait for kernel to fully start
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+
+        // Create WebSocket connection to the kernel
+        let ws_url = format!(
+            "ws://localhost:{}/sessions/{}/channels",
+            server.port(),
+            session_id
+        );
+
+        let mut comm = CommunicationChannel::create_websocket(&ws_url)
+            .await
+            .expect("Failed to create websocket");
+
+        // Wait for WebSocket to be ready
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Execute Python code to check the environment variable
+        let test_code = r#"
+import os
+env_value = os.environ.get('TEST_KALLI_VAR', 'NOT_SET')
+print(f"TEST_KALLI_VAR={env_value}")
+"#;
+
+        let execute_request = WebsocketMessage::Jupyter(JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_id: Uuid::new_v4().to_string(),
+                msg_type: "execute_request".to_string(),
+            },
+            parent_header: None,
+            channel: JupyterChannel::Shell,
+            content: serde_json::json!({
+                "code": test_code,
+                "silent": false,
+                "store_history": false,
+                "user_expressions": {},
+                "allow_stdin": false,
+                "stop_on_error": true
+            }),
+            metadata: serde_json::json!({}),
+            buffers: vec![],
+        });
+
+        println!("Executing code to check environment variable...");
+        comm.send_message(&execute_request)
+            .await
+            .expect("Failed to send execute request");
+
+        // Collect output
+        let mut all_output = String::new();
+        let start_time = std::time::Instant::now();
+        let timeout_duration = Duration::from_secs(10);
+
+        while start_time.elapsed() < timeout_duration {
+            match tokio::time::timeout(Duration::from_millis(500), comm.receive_message()).await {
+                Ok(Ok(Some(message_text))) => {
+                    if let Ok(message) = serde_json::from_str::<WebsocketMessage>(&message_text) {
+                        match message {
+                            WebsocketMessage::Jupyter(jupyter_msg) => {
+                                if jupyter_msg.header.msg_type == "stream" {
+                                    if let Some(text) = jupyter_msg.content.get("text").and_then(|v| v.as_str()) {
+                                        all_output.push_str(text);
+                                    }
+                                } else if jupyter_msg.header.msg_type == "execute_reply" {
+                                    println!("Received execute_reply");
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
+                    println!("Error receiving message: {}", e);
+                    break;
+                }
+                Err(_) => {}
+            }
+        }
+
+        println!("Output from kernel:\n{}", all_output);
+
+        // Verify the environment variable was set correctly
+        assert!(
+            all_output.contains("TEST_KALLI_VAR=from_command"),
+            "Expected to find 'TEST_KALLI_VAR=from_command' in output, got: {}",
+            all_output
+        );
+
+        println!("✓ Command mode test passed! Environment variable was set correctly");
+
+        // Clean up
+        if let Err(e) = comm.close().await {
+            println!("Failed to close communication channel: {}", e);
+        }
+
+        drop(server);
+    })
+    .await;
+
+    match test_result {
+        Ok(_) => {
+            println!("Startup environment command mode test completed successfully");
+        }
+        Err(_) => {
+            panic!("Startup environment command mode test timed out after 60 seconds");
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))] // Shell behavior is Unix-specific
+#[tokio::test]
+async fn test_startup_environment_script_mode() {
+    let test_result = tokio::time::timeout(Duration::from_secs(60), async {
+        let python_cmd = if let Some(cmd) = get_python_executable().await {
+            cmd
+        } else {
+            println!("Skipping test: No Python executable found");
+            return;
+        };
+
+        if !is_ipykernel_available().await {
+            println!("Skipping test: ipykernel not available for {}", python_cmd);
+            return;
+        }
+
+        // Create a temporary startup script
+        let temp_dir = tempfile::tempdir().unwrap();
+        let script_path = temp_dir.path().join("startup_script.sh");
+        std::fs::write(&script_path, "#!/bin/bash\nexport TEST_KALLI_VAR=from_script\n").unwrap();
+
+        println!("Created startup script at: {}", script_path.display());
+
+        // Start a test server
+        let server = TestServer::start().await;
+        let client = server.create_client().await;
+
+        let session_id = format!("test-script-mode-{}", Uuid::new_v4());
+
+        // Create a session with StartupEnvironment::Script that sets an environment variable
+        let new_session = NewSession {
+            session_id: session_id.clone(),
+            display_name: "Test Script Mode Session".to_string(),
+            language: "python".to_string(),
+            username: "testuser".to_string(),
+            input_prompt: "In [{}]: ".to_string(),
+            continuation_prompt: "   ...: ".to_string(),
+            notebook_uri: None,
+            session_mode: SessionMode::Console,
+            argv: vec![
+                python_cmd.clone(),
+                "-m".to_string(),
+                "ipykernel".to_string(),
+                "-f".to_string(),
+                "{connection_file}".to_string(),
+            ],
+            working_directory: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+            env: vec![],
+            connection_timeout: Some(15),
+            interrupt_mode: InterruptMode::Message,
+            protocol_version: Some("5.3".to_string()),
+            startup_environment: kallichore_api::models::StartupEnvironment::Script,
+            startup_environment_arg: Some(script_path.to_string_lossy().to_string()),
+        };
+
+        println!("Creating session with StartupEnvironment::Script");
+
+        // Create the session
+        let _created_session_id = create_session_with_client(&client, new_session).await;
+
+        // Start the session
+        println!("Starting kernel session with script mode...");
+        let start_response = client
+            .start_session(session_id.clone())
+            .await
+            .expect("Failed to start session");
+
+        println!("Start response: {:?}", start_response);
+
+        // Verify the session started successfully
+        match &start_response {
+            kallichore_api::StartSessionResponse::Started(_) => {
+                println!("✓ Session started successfully");
+            }
+            kallichore_api::StartSessionResponse::StartFailed(error) => {
+                panic!("Session failed to start: {:?}", error);
+            }
+            _ => {
+                panic!("Unexpected start response: {:?}", start_response);
+            }
+        }
+
+        // Wait for kernel to fully start
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+
+        // Create WebSocket connection to the kernel
+        let ws_url = format!(
+            "ws://localhost:{}/sessions/{}/channels",
+            server.port(),
+            session_id
+        );
+
+        let mut comm = CommunicationChannel::create_websocket(&ws_url)
+            .await
+            .expect("Failed to create websocket");
+
+        // Wait for WebSocket to be ready
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Execute Python code to check the environment variable
+        let test_code = r#"
+import os
+env_value = os.environ.get('TEST_KALLI_VAR', 'NOT_SET')
+print(f"TEST_KALLI_VAR={env_value}")
+"#;
+
+        let execute_request = WebsocketMessage::Jupyter(JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_id: Uuid::new_v4().to_string(),
+                msg_type: "execute_request".to_string(),
+            },
+            parent_header: None,
+            channel: JupyterChannel::Shell,
+            content: serde_json::json!({
+                "code": test_code,
+                "silent": false,
+                "store_history": false,
+                "user_expressions": {},
+                "allow_stdin": false,
+                "stop_on_error": true
+            }),
+            metadata: serde_json::json!({}),
+            buffers: vec![],
+        });
+
+        println!("Executing code to check environment variable...");
+        comm.send_message(&execute_request)
+            .await
+            .expect("Failed to send execute request");
+
+        // Collect output
+        let mut all_output = String::new();
+        let start_time = std::time::Instant::now();
+        let timeout_duration = Duration::from_secs(10);
+
+        while start_time.elapsed() < timeout_duration {
+            match tokio::time::timeout(Duration::from_millis(500), comm.receive_message()).await {
+                Ok(Ok(Some(message_text))) => {
+                    if let Ok(message) = serde_json::from_str::<WebsocketMessage>(&message_text) {
+                        match message {
+                            WebsocketMessage::Jupyter(jupyter_msg) => {
+                                if jupyter_msg.header.msg_type == "stream" {
+                                    if let Some(text) = jupyter_msg.content.get("text").and_then(|v| v.as_str()) {
+                                        all_output.push_str(text);
+                                    }
+                                } else if jupyter_msg.header.msg_type == "execute_reply" {
+                                    println!("Received execute_reply");
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => {
+                    println!("Error receiving message: {}", e);
+                    break;
+                }
+                Err(_) => {}
+            }
+        }
+
+        println!("Output from kernel:\n{}", all_output);
+
+        // Verify the environment variable was set correctly
+        assert!(
+            all_output.contains("TEST_KALLI_VAR=from_script"),
+            "Expected to find 'TEST_KALLI_VAR=from_script' in output, got: {}",
+            all_output
+        );
+
+        println!("✓ Script mode test passed! Environment variable was set correctly");
+
+        // Clean up
+        if let Err(e) = comm.close().await {
+            println!("Failed to close communication channel: {}", e);
+        }
+
+        drop(server);
+    })
+    .await;
+
+    match test_result {
+        Ok(_) => {
+            println!("Startup environment script mode test completed successfully");
+        }
+        Err(_) => {
+            panic!("Startup environment script mode test timed out after 60 seconds");
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_kernel_interrupt() {
     let test_result = tokio::time::timeout(Duration::from_secs(30), async {
