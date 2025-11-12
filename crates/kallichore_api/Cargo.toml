@@ -10,7 +10,7 @@ edition = "2018"
 [features]
 default = ["client", "server"]
 client = [
-    "hyper", "hyper-util/http1", "hyper-util/http2", "hyper-openssl", "hyper-tls", "native-tls", "openssl", "url"
+    "hyper", "hyper-util/http1", "hyper-util/http2", "url"
 ]
 server = [
    "serde_ignored", "hyper", "regex", "percent-encoding", "url", "lazy_static"
@@ -21,20 +21,12 @@ cli = [
 ]
 conversion = ["frunk", "frunk_derives", "frunk_core", "frunk-enum-core", "frunk-enum-derive"]
 
-[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "ios"))'.dependencies]
-native-tls = { version = "0.2", optional = true }
-hyper-tls = { version = "0.6", optional = true }
-
-[target.'cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))'.dependencies]
-hyper-openssl = { version = "0.10", optional = true }
-openssl = { version = "0.10", optional = true }
-
 [dependencies]
 # Common
 async-trait = "0.1.88"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-swagger = { version = "7.0.0-rc2", features = ["serdejson", "server", "client", "tls"] }
+swagger = { version = "7.0.0-rc2", features = ["serdejson", "server", "client"] }
 headers = "0.4.0"
 log = "0.4.27"
 mime = "0.3"
@@ -84,12 +76,7 @@ always_send = "0.1.1"
 clap = "4.5"
 env_logger = "0.11"
 tokio = { version = "1.45", features = ["full"] }
-native-tls = "0.2"
 pin-project = "1.1.10"
-
-[target.'cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))'.dev-dependencies]
-tokio-openssl = "0.6"
-openssl = "0.10"
 
 [[example]]
 name = "client"
