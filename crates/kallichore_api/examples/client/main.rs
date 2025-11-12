@@ -64,8 +64,8 @@ fn main() {
                 .index(1),
         )
         .arg(
-            Arg::new("https")
-                .long("https")
+            Arg::new("http")
+                .long("http")
                 .help("Whether to use HTTPS or not"),
         )
         .arg(
@@ -108,10 +108,10 @@ fn main() {
         None
     };
 
-    let is_https = matches.contains_id("https");
+    let is_https = matches.contains_id("http");
     let base_url = format!(
         "{}://{}:{}",
-        if is_https { "https" } else { "http" },
+        if is_https { "http" } else { "http" },
         matches.get_one::<String>("host").unwrap(),
         matches.get_one::<u16>("port").unwrap()
     );
@@ -126,7 +126,7 @@ fn main() {
     let mut client: Box<dyn ApiNoContext<ClientContext>> = if is_https {
         // Using Simple HTTPS
         let client =
-            Box::new(Client::try_new_https(&base_url).expect("Failed to create HTTPS client"));
+            Box::new(Client::try_new_http(&base_url).expect("Failed to create HTTP client"));
         Box::new(client.with_context(context))
     } else {
         // Using HTTP

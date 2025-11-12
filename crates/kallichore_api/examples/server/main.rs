@@ -16,13 +16,13 @@ async fn main() {
 
     let matches = Command::new("server")
         .arg(
-            Arg::new("https")
-                .long("https")
+            Arg::new("http")
+                .long("http")
                 .help("Whether to use HTTPS or not"),
         )
         .get_matches();
 
     let addr = "127.0.0.1:8080";
 
-    server::create(addr, matches.contains_id("https")).await;
+    server::create(addr, matches.contains_id("http")).await;
 }

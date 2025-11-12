@@ -10,16 +10,16 @@ then
 fi
 
 # Get the path to this script
-DIR="$( dirname -- "${BASH_SOURCE[0]}"; )";
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Move to the directory containing the API implementation
-cd $DIR/../crates/kallichore_api
+cd "$DIR/../crates/kallichore_api"
 
 # Generate the API
 openapi-generator generate -i ../../kallichore.json -g rust-server --additional-properties=packageName=kallichore_api
 
 # Remove unwanted TLS/HTTPS/OpenSSL dependencies
-$DIR/remove-tls-deps.sh
+"$DIR/remove-tls-deps.sh"
 
 # Format all of the generated Rust code
 cargo fmt

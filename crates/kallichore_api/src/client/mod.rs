@@ -183,7 +183,6 @@ pub enum HyperClient {
             BoxBody<Bytes, Infallible>,
         >,
     ),
-    Https(hyper_util::client::legacy::Client<HttpsConnector, BoxBody<Bytes, Infallible>>),
 }
 
 impl Service<Request<BoxBody<Bytes, Infallible>>> for HyperClient {
@@ -194,7 +193,6 @@ impl Service<Request<BoxBody<Bytes, Infallible>>> for HyperClient {
     fn call(&self, req: Request<BoxBody<Bytes, Infallible>>) -> Self::Future {
         match self {
             HyperClient::Http(client) => client.request(req),
-            HyperClient::Https(client) => client.request(req),
         }
     }
 }
@@ -220,18 +218,11 @@ where
                 hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                     .build(connector.build()),
             ),
-            "https" => {
-                let connector = connector
-                    .https()
-                    .build()
-                    .map_err(ClientInitError::SslError)?;
-                HyperClient::Https(
-                    hyper_util::client::legacy::Client::builder(
-                        hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .build(connector),
-                )
-            }
+            // "https" => { // HTTPS support removed
+            //                 let connector = connector.https()
+            //                    .build()
+            //                    .map_err(ClientInitError::SslError)?;
+            //             },
             _ => {
                 return Err(ClientInitError::InvalidScheme);
             }
@@ -274,89 +265,6 @@ where
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "ios"))]
-type HttpsConnector = hyper_tls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
-
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-type HttpsConnector = hyper_openssl::client::legacy::HttpsConnector<
-    hyper_util::client::legacy::connect::HttpConnector,
->;
-
-impl<C>
-    Client<
-        DropContextService<
-            hyper_util::service::TowerToHyperService<
-                hyper_util::client::legacy::Client<HttpsConnector, BoxBody<Bytes, Infallible>>,
-            >,
-            C,
-        >,
-        C,
-    >
-where
-    C: Clone + Send + Sync + 'static,
-{
-    /// Create a client with a TLS connection to the server
-    ///
-    /// # Arguments
-    /// * `base_path` - base path of the client API, i.e. "<http://www.my-api-implementation.com>"
-    pub fn try_new_https(base_path: &str) -> Result<Self, ClientInitError> {
-        let https_connector = Connector::builder()
-            .https()
-            .build()
-            .map_err(ClientInitError::SslError)?;
-        Self::try_new_with_connector(base_path, Some("https"), https_connector)
-    }
-
-    /// Create a client with a TLS connection to the server using a pinned certificate
-    ///
-    /// # Arguments
-    /// * `base_path` - base path of the client API, i.e. "<http://www.my-api-implementation.com>"
-    /// * `ca_certificate` - Path to CA certificate used to authenticate the server
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    pub fn try_new_https_pinned<CA>(
-        base_path: &str,
-        ca_certificate: CA,
-    ) -> Result<Self, ClientInitError>
-    where
-        CA: AsRef<Path>,
-    {
-        let https_connector = Connector::builder()
-            .https()
-            .pin_server_certificate(ca_certificate)
-            .build()
-            .map_err(ClientInitError::SslError)?;
-        Self::try_new_with_connector(base_path, Some("https"), https_connector)
-    }
-
-    /// Create a client with a mutually authenticated TLS connection to the server.
-    ///
-    /// # Arguments
-    /// * `base_path` - base path of the client API, i.e. "<http://www.my-api-implementation.com>"
-    /// * `ca_certificate` - Path to CA certificate used to authenticate the server
-    /// * `client_key` - Path to the client private key
-    /// * `client_certificate` - Path to the client's public certificate associated with the private key
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    pub fn try_new_https_mutual<CA, K, D>(
-        base_path: &str,
-        ca_certificate: CA,
-        client_key: K,
-        client_certificate: D,
-    ) -> Result<Self, ClientInitError>
-    where
-        CA: AsRef<Path>,
-        K: AsRef<Path>,
-        D: AsRef<Path>,
-    {
-        let https_connector = Connector::builder()
-            .https()
-            .pin_server_certificate(ca_certificate)
-            .client_authentication(client_key, client_certificate)
-            .build()
-            .map_err(ClientInitError::SslError)?;
-        Self::try_new_with_connector(base_path, Some("https"), https_connector)
-    }
-}
-
 impl<S, C> Client<S, C>
 where
     S: Service<(Request<BoxBody<Bytes, Infallible>>, C)> + Clone + Sync + Send + 'static,
@@ -391,14 +299,6 @@ pub enum ClientInitError {
 
     /// Missing Hostname
     MissingHost,
-
-    /// SSL Connection Error
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "ios"))]
-    SslError(native_tls::Error),
-
-    /// SSL Connection Error
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    SslError(openssl::error::ErrorStack),
 }
 
 impl From<hyper::http::uri::InvalidUri> for ClientInitError {
