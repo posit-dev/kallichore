@@ -33,6 +33,7 @@ pub enum KSError {
     NoProcess(String),
     RestartFailed(anyhow::Error),
     ExitedBeforeConnection,
+    #[allow(dead_code)]
     NoKernelInfo(anyhow::Error),
     StartFailed(anyhow::Error),
     HandshakeFailed(String, anyhow::Error),
