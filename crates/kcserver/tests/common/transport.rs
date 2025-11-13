@@ -203,7 +203,7 @@ impl CommunicationChannel {
             // WebSocket handshake successful
             // Convert the buffered reader back to the underlying stream
             let stream = reader.into_inner();
-            
+
             // Create WebSocket stream from the raw socket
             // Any remaining buffered data is preserved in the stream
             let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
@@ -275,7 +275,7 @@ impl CommunicationChannel {
             // WebSocket handshake successful
             // Convert the buffered reader back to the underlying pipe
             let pipe = reader.into_inner();
-            
+
             // Create WebSocket stream from the raw pipe
             let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
                 pipe,
@@ -284,13 +284,13 @@ impl CommunicationChannel {
             )
             .await;
             let (sender, receiver) = ws_stream.split();
-            Ok(CommunicationChannel::NamedPipe { 
-                sender,
-                receiver,
-            })
+            Ok(CommunicationChannel::NamedPipe { sender, receiver })
         } else {
             // Fallback to raw pipe without WebSocket protocol
-            println!("WebSocket handshake failed on named pipe, status: {}", status_line);
+            println!(
+                "WebSocket handshake failed on named pipe, status: {}",
+                status_line
+            );
             let pipe = reader.into_inner();
             let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
                 pipe,
@@ -299,10 +299,7 @@ impl CommunicationChannel {
             )
             .await;
             let (sender, receiver) = ws_stream.split();
-            Ok(CommunicationChannel::NamedPipe { 
-                sender,
-                receiver,
-            })
+            Ok(CommunicationChannel::NamedPipe { sender, receiver })
         }
     }
 }
