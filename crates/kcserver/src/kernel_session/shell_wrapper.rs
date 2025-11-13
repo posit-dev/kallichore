@@ -10,9 +10,12 @@
 
 use kallichore_api::models::{self, StartupError};
 use std::collections::HashMap;
+#[cfg(not(target_os = "windows"))]
 use std::fs;
 
+#[cfg(not(target_os = "windows"))]
 use super::utils::escape_for_shell;
+#[cfg(not(target_os = "windows"))]
 use crate::error::KSError;
 
 /// Builds shell commands for starting kernels with various startup environments.
@@ -24,9 +27,11 @@ pub struct ShellCommandBuilder {
     startup_env: models::StartupEnvironment,
 
     /// Optional argument for Command or Script modes
+    #[cfg(not(target_os = "windows"))]
     startup_arg: Option<String>,
 
     /// Working directory for resolving relative paths
+    #[cfg(not(target_os = "windows"))]
     working_directory: String,
 }
 
@@ -35,13 +40,15 @@ impl ShellCommandBuilder {
     pub fn new(
         session_id: String,
         startup_env: models::StartupEnvironment,
-        startup_arg: Option<String>,
-        working_directory: String,
+        #[cfg(not(target_os = "windows"))] startup_arg: Option<String>,
+        #[cfg(not(target_os = "windows"))] working_directory: String,
     ) -> Self {
         Self {
             session_id,
             startup_env,
+            #[cfg(not(target_os = "windows"))]
             startup_arg,
+            #[cfg(not(target_os = "windows"))]
             working_directory,
         }
     }
@@ -185,6 +192,7 @@ impl ShellCommandBuilder {
     }
 
     /// Wrap the kernel command with a startup command.
+    #[cfg(not(target_os = "windows"))]
     fn wrap_with_startup_command(&self, kernel_command: String) -> Result<String, StartupError> {
         if let Some(cmd) = &self.startup_arg {
             log::debug!(
@@ -208,6 +216,7 @@ impl ShellCommandBuilder {
     }
 
     /// Wrap the kernel command with a startup script.
+    #[cfg(not(target_os = "windows"))]
     fn wrap_with_startup_script(
         &self,
         kernel_command: String,

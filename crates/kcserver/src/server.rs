@@ -36,7 +36,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::{any, env, usize};
-use tower::ServiceExt;
 use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Authorization, Push};
@@ -54,6 +53,7 @@ use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tower::ServiceExt;
 
 use kallichore_api::models::ConnectionInfo;
 use kallichore_api::server::MakeService;
@@ -273,6 +273,7 @@ where
     #[cfg(not(unix))]
     {
         server_future.await;
+        log::info!("{} server completed", server_type);
     }
 }
 
@@ -436,7 +437,11 @@ async fn create_named_pipe_server(
 
             // Wait for a client to connect
             if let Err(e) = pipe_server.connect().await {
-                log::error!("Failed to connect client on named pipe {}: {}", pipe_name, e);
+                log::error!(
+                    "Failed to connect client on named pipe {}: {}",
+                    pipe_name,
+                    e
+                );
                 continue;
             }
 
@@ -1939,8 +1944,7 @@ impl<C> Server<C> {
 
                     // Wrap in TokioIo to convert from futures::io to tokio::io
                     let io = TokioIo::new(upgraded);
-                    let stream =
-                        WebSocketStream::from_raw_socket(io, Role::Server, None).await;
+                    let stream = WebSocketStream::from_raw_socket(io, Role::Server, None).await;
                     client_session.handle_channel_ws(stream).await;
                 }
                 Err(e) => {
