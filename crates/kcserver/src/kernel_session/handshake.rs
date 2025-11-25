@@ -20,6 +20,7 @@ use crate::{
     connection_file::ConnectionFile,
     error::KSError,
     kernel_connection::KernelConnection,
+    kernel_session::utils::strip_startup_markers,
     registration_file::RegistrationFile,
     registration_socket::{HandshakeResult, RegistrationSocket},
     startup_status::StartupStatus,
@@ -35,6 +36,12 @@ pub struct HandshakeCoordinator {
 
     /// Channel to send messages to the WebSocket
     ws_json_tx: Sender<WebsocketMessage>,
+
+    /// The shell used for startup (for error reporting)
+    shell_used: Option<String>,
+
+    /// The startup command/script executed (for error reporting)
+    startup_command: Option<String>,
 }
 
 impl HandshakeCoordinator {
@@ -43,11 +50,15 @@ impl HandshakeCoordinator {
         session_id: String,
         connection: KernelConnection,
         ws_json_tx: Sender<WebsocketMessage>,
+        shell_used: Option<String>,
+        startup_command: Option<String>,
     ) -> Self {
         Self {
             session_id,
             connection,
             ws_json_tx,
+            shell_used,
+            startup_command,
         }
     }
 
@@ -271,16 +282,36 @@ impl HandshakeCoordinator {
         match startup_status {
             Ok(StartupStatus::AbnormalExit(exit_code, output, error)) => {
                 // The kernel exited before the handshake could complete
+
+                // Strip internal markers from output
+                let clean_output = strip_startup_markers(&output);
+
+                // Build context for the error message
+                let mut error_context = String::new();
+                if let Some(shell) = &self.shell_used {
+                    error_context.push_str(&format!("Shell: {}\n", shell));
+                }
+                if let Some(cmd) = &self.startup_command {
+                    error_context.push_str(&format!("Startup command: {}\n", cmd));
+                }
+                error_context.push_str("The kernel exited before a connection could be established");
+
                 log::error!(
                     "[session {}] Kernel exited during handshake with code {}: {}",
                     self.session_id,
                     exit_code,
                     error
                 );
+                log::error!(
+                    "[session {}] Output before exit: \n{}",
+                    self.session_id,
+                    clean_output
+                );
+
                 Err(StartupError {
                     exit_code: Some(exit_code),
-                    output: Some(output),
-                    error: KSError::ExitedBeforeConnection.to_json(None),
+                    output: Some(clean_output),
+                    error: KSError::ExitedBeforeConnection.to_json(Some(error_context)),
                 })
             }
             Ok(status) => {

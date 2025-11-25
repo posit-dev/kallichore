@@ -190,6 +190,8 @@ impl KernelSession {
                 self.connection.session_id.clone(),
                 self.connection.clone(),
                 self.ws_json_tx.clone(),
+                None, // shell_used not yet determined
+                None, // startup_command not yet determined
             );
 
             let (path, socket, rx) = handshake_coord.setup_registration_socket().await?;
@@ -287,6 +289,8 @@ impl KernelSession {
                 self.connection.session_id.clone(),
                 self.connection.clone(),
                 self.ws_json_tx.clone(),
+                coordinator.shell_used.clone(),
+                coordinator.startup_command.clone(),
             );
 
             match handshake_coord
