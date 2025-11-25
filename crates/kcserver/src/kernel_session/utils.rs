@@ -81,6 +81,50 @@ pub fn make_message_id() -> String {
         .collect()
 }
 
+/// Escape a string for use in a PowerShell command (Windows).
+///
+/// This function escapes a string so that it can be safely used as an argument
+/// to a PowerShell command. It wraps the string in single quotes, which is the
+/// safest option in PowerShell. If the string contains single quotes, they are
+/// escaped by doubling them ('').
+///
+/// # Arguments
+///
+/// * `s` - The string to escape
+///
+/// # Returns
+///
+/// The escaped string
+#[cfg(target_os = "windows")]
+pub fn escape_for_powershell(s: &str) -> String {
+    // If the string is empty, return ''
+    if s.is_empty() {
+        return "''".to_string();
+    }
+
+    // If the string doesn't contain any special characters that need escaping
+    // in PowerShell, we can return it as-is
+    if !s.chars().any(|c| "'\"$`;&|<>()[]{}\\".contains(c) || c.is_whitespace()) {
+        return s.to_string();
+    }
+
+    // Otherwise, wrap in single quotes and escape any internal single quotes
+    let mut result = String::with_capacity(s.len() + 2);
+    result.push('\'');
+
+    // In PowerShell, single quotes are escaped by doubling them
+    for ch in s.chars() {
+        if ch == '\'' {
+            result.push_str("''");
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result.push('\'');
+    result
+}
+
 /// Strip startup markers from output to prevent them from leaking to users.
 ///
 /// The markers KALLICHORE_STARTUP_BEGIN and KALLICHORE_STARTUP_SUCCESS are used

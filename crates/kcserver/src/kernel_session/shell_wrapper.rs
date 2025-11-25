@@ -10,12 +10,12 @@
 
 use kallichore_api::models::{self, StartupError};
 use std::collections::HashMap;
-#[cfg(not(target_os = "windows"))]
 use std::fs;
 
 #[cfg(not(target_os = "windows"))]
 use super::utils::escape_for_shell;
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "windows")]
+use super::utils::escape_for_powershell;
 use crate::error::KSError;
 
 /// Information about the shell command that was built.
@@ -39,11 +39,9 @@ pub struct ShellCommandBuilder {
     startup_env: models::StartupEnvironment,
 
     /// Optional argument for Command or Script modes
-    #[cfg(not(target_os = "windows"))]
     startup_arg: Option<String>,
 
     /// Working directory for resolving relative paths
-    #[cfg(not(target_os = "windows"))]
     working_directory: String,
 }
 
@@ -52,15 +50,13 @@ impl ShellCommandBuilder {
     pub fn new(
         session_id: String,
         startup_env: models::StartupEnvironment,
-        #[cfg(not(target_os = "windows"))] startup_arg: Option<String>,
-        #[cfg(not(target_os = "windows"))] working_directory: String,
+        startup_arg: Option<String>,
+        working_directory: String,
     ) -> Self {
         Self {
             session_id,
             startup_env,
-            #[cfg(not(target_os = "windows"))]
             startup_arg,
-            #[cfg(not(target_os = "windows"))]
             working_directory,
         }
     }
@@ -167,18 +163,149 @@ impl ShellCommandBuilder {
         }))
     }
 
-    /// On Windows, startup environment settings are ignored.
+    /// On Windows, use PowerShell to wrap commands with startup environments.
     #[cfg(target_os = "windows")]
     fn build_shell_command(
         &self,
-        _argv: &[String],
+        argv: &[String],
         _resolved_env: &HashMap<String, String>,
     ) -> Result<Option<ShellCommandInfo>, StartupError> {
         log::debug!(
-            "[session {}] startup_environment parameter ignored on Windows",
-            self.session_id
+            "[session {}] Building PowerShell command on Windows for startup_environment={:?}",
+            self.session_id,
+            self.startup_env
         );
-        Ok(None)
+
+        // Build the base kernel command using PowerShell call operator (&)
+        // First argument is the executable, rest are arguments
+        let executable = &argv[0];
+        let args = &argv[1..];
+
+        // Build the PowerShell invocation command: & 'executable' 'arg1' 'arg2' ...
+        let mut kernel_command = format!("& {}", escape_for_powershell(executable));
+        for arg in args {
+            kernel_command.push_str(" ");
+            kernel_command.push_str(&escape_for_powershell(arg));
+        }
+
+        // Add startup command or script if specified
+        kernel_command = match self.startup_env {
+            models::StartupEnvironment::Command => {
+                self.wrap_with_startup_command_windows(kernel_command)?
+            }
+            models::StartupEnvironment::Script => {
+                self.wrap_with_startup_script_windows(kernel_command)?
+            }
+            models::StartupEnvironment::Shell => {
+                // For Shell mode on Windows, just run in PowerShell without a startup command
+                kernel_command
+            }
+            models::StartupEnvironment::None => {
+                // This shouldn't be called for None mode
+                return Ok(None);
+            }
+        };
+
+        // Create the PowerShell command
+        let mut cmd = tokio::process::Command::new("powershell.exe");
+        cmd.args(&["-NoProfile", "-Command", &kernel_command]);
+
+        Ok(Some(ShellCommandInfo {
+            command: cmd,
+            shell_used: Some("powershell.exe".to_string()),
+            startup_arg: self.startup_arg.clone(),
+        }))
+    }
+
+    /// Wrap the kernel command with a startup command (Windows/PowerShell).
+    #[cfg(target_os = "windows")]
+    fn wrap_with_startup_command_windows(&self, kernel_command: String) -> Result<String, StartupError> {
+        if let Some(cmd) = &self.startup_arg {
+            log::debug!(
+                "[session {}] Executing startup command on Windows: {}",
+                self.session_id,
+                cmd
+            );
+            // Wrap command in markers to identify failure point
+            // Use PowerShell's Write-Host for output markers
+            Ok(format!(
+                "Write-Host 'KALLICHORE_STARTUP_BEGIN'; try {{ {}; Write-Host 'KALLICHORE_STARTUP_SUCCESS'; {} }} catch {{ Write-Host \"Error: $_\"; throw }}",
+                cmd,
+                kernel_command
+            ))
+        } else {
+            log::warn!(
+                "[session {}] StartupEnvironment::Command specified but no command provided",
+                self.session_id
+            );
+            Ok(kernel_command)
+        }
+    }
+
+    /// Wrap the kernel command with a startup script (Windows/PowerShell).
+    #[cfg(target_os = "windows")]
+    fn wrap_with_startup_script_windows(&self, kernel_command: String) -> Result<String, StartupError> {
+        let script_path_str = match &self.startup_arg {
+            Some(path) => path,
+            None => {
+                log::warn!(
+                    "[session {}] StartupEnvironment::Script specified but no script path provided",
+                    self.session_id
+                );
+                return Ok(kernel_command);
+            }
+        };
+
+        // Resolve script path
+        let script_path = if std::path::Path::new(script_path_str).is_absolute() {
+            std::path::PathBuf::from(script_path_str)
+        } else {
+            // Resolve relative to working directory
+            std::path::PathBuf::from(&self.working_directory).join(script_path_str)
+        };
+
+        // Validate script exists and is a file
+        match fs::metadata(&script_path) {
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    let err = KSError::ProcessStartFailed(anyhow::anyhow!(
+                        "Startup script path '{}' exists but is not a file",
+                        script_path.display()
+                    ));
+                    return Err(StartupError {
+                        exit_code: None,
+                        output: None,
+                        error: err.to_json(None),
+                    });
+                }
+            }
+            Err(e) => {
+                let err = KSError::ProcessStartFailed(anyhow::anyhow!(
+                    "Startup script not found or cannot be read: '{}' ({})",
+                    script_path.display(),
+                    e
+                ));
+                return Err(StartupError {
+                    exit_code: None,
+                    output: None,
+                    error: err.to_json(None),
+                });
+            }
+        }
+
+        log::debug!(
+            "[session {}] Sourcing startup script on Windows: {}",
+            self.session_id,
+            script_path.display()
+        );
+
+        // Wrap script in markers to identify failure point
+        // Use dot-sourcing (.) to execute the script in the current scope
+        Ok(format!(
+            "Write-Host 'KALLICHORE_STARTUP_BEGIN'; try {{ . {}; Write-Host 'KALLICHORE_STARTUP_SUCCESS'; {} }} catch {{ Write-Host \"Error: $_\"; throw }}",
+            escape_for_powershell(&script_path.to_string_lossy()),
+            kernel_command
+        ))
     }
 
     /// Find a suitable shell.

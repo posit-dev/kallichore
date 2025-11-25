@@ -140,17 +140,11 @@ impl StartupCoordinator {
         working_directory: &str,
     ) -> Result<tokio::process::Command, StartupError> {
         // Create the shell command builder
-        #[cfg(not(target_os = "windows"))]
         let shell_builder = ShellCommandBuilder::new(
             self.session_id.clone(),
             self.model.startup_environment.clone(),
             self.model.startup_environment_arg.clone(),
             working_directory.to_string(),
-        );
-        #[cfg(target_os = "windows")]
-        let shell_builder = ShellCommandBuilder::new(
-            self.session_id.clone(),
-            self.model.startup_environment.clone(),
         );
 
         // Try to build a shell-wrapped command
