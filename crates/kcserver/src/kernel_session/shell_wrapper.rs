@@ -79,15 +79,13 @@ impl ShellCommandBuilder {
 
             models::StartupEnvironment::Shell
             | models::StartupEnvironment::Command
-            | models::StartupEnvironment::Script => {
-                self.build_login_shell_command(argv, resolved_env)
-            }
+            | models::StartupEnvironment::Script => self.build_shell_command(argv, resolved_env),
         }
     }
 
-    /// Build a command that runs the kernel in a login shell.
+    /// Build a command that runs the kernel in a shell.
     #[cfg(not(target_os = "windows"))]
-    fn build_login_shell_command(
+    fn build_shell_command(
         &self,
         argv: &[String],
         #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] resolved_env: &HashMap<
@@ -95,22 +93,29 @@ impl ShellCommandBuilder {
             String,
         >,
     ) -> Result<Option<ShellCommandInfo>, StartupError> {
-        // Find a suitable login shell
-        let login_shell = match self.find_login_shell() {
+        // Find a suitable shell
+        let shell = match self.find_shell() {
             Some(shell) => shell,
             None => {
                 log::warn!(
-                    "[session {}] No valid login shell found; running kernel without a login shell",
+                    "[session {}] No valid shell found; running kernel without a shell",
                     self.session_id
                 );
                 return Ok(None);
             }
         };
 
+        let is_interactive = self.startup_arg.is_some();
+
         log::debug!(
-            "[session {}] Running kernel in login shell: {}",
+            "[session {}] Running kernel in {} shell: {}",
             self.session_id,
-            login_shell
+            if is_interactive {
+                "interactive"
+            } else {
+                "login"
+            },
+            shell
         );
 
         // Build the base kernel command with escaping
@@ -143,28 +148,28 @@ impl ShellCommandBuilder {
                 self.wrap_with_startup_command(kernel_command)?
             }
             models::StartupEnvironment::Script => {
-                self.wrap_with_startup_script(kernel_command, &login_shell)?
+                self.wrap_with_startup_script(kernel_command, &shell)?
             }
             _ => kernel_command, // Shell mode - no prefix
         };
 
-        // Determine login argument based on shell type
-        let login_arg = self.get_login_arg(&login_shell);
+        // Determine shell flag based on shell type and mode
+        let shell_flag = self.get_shell_flag(&shell, is_interactive);
 
         // Create the shell command
-        let mut cmd = tokio::process::Command::new(&login_shell);
-        cmd.args(&[login_arg, "-c", &kernel_command]);
+        let mut cmd = tokio::process::Command::new(&shell);
+        cmd.args(&[shell_flag, "-c", &kernel_command]);
 
         Ok(Some(ShellCommandInfo {
             command: cmd,
-            shell_used: Some(login_shell),
+            shell_used: Some(shell),
             startup_arg: self.startup_arg.clone(),
         }))
     }
 
     /// On Windows, startup environment settings are ignored.
     #[cfg(target_os = "windows")]
-    fn build_login_shell_command(
+    fn build_shell_command(
         &self,
         _argv: &[String],
         _resolved_env: &HashMap<String, String>,
@@ -176,9 +181,9 @@ impl ShellCommandBuilder {
         Ok(None)
     }
 
-    /// Find a suitable login shell.
+    /// Find a suitable shell.
     #[cfg(not(target_os = "windows"))]
-    fn find_login_shell(&self) -> Option<String> {
+    fn find_shell(&self) -> Option<String> {
         let candidates = vec![
             std::env::var("SHELL").unwrap_or_else(|_| String::from("")),
             String::from("/bin/bash"),
@@ -308,26 +313,30 @@ impl ShellCommandBuilder {
         ))
     }
 
-    /// Get the login argument for a specific shell.
+    /// Get the shell flag for a specific shell and mode.
     #[cfg(not(target_os = "windows"))]
-    fn get_login_arg(&self, login_shell: &str) -> &'static str {
-        match login_shell.split('/').last() {
-            None => "-l", // Unknown shell, presume bash-alike
-            Some(shell) => match shell {
-                // csh-like shells don't support -c for login shells.
-                // Instead, we emulate a login shell by asking it to load
-                // the directory stack (-d)
-                "csh" | "tcsh" => "-d",
+    fn get_shell_flag(&self, shell: &str, is_interactive: bool) -> &'static str {
+        if is_interactive {
+            "-i"
+        } else {
+            match shell.split('/').last() {
+                None => "-l", // Unknown shell, presume bash-alike
+                Some(shell_name) => match shell_name {
+                    // csh-like shells don't support -c for login shells.
+                    // Instead, we emulate a login shell by asking it to load
+                    // the directory stack (-d)
+                    "csh" | "tcsh" => "-d",
 
-                // Bash and zsh support the long-form --login option
-                "bash" | "zsh" => "--login",
+                    // Bash and zsh support the long-form --login option
+                    "bash" | "zsh" => "--login",
 
-                // Sh and dash only support -l
-                "dash" | "sh" => "-l",
+                    // Sh and dash only support -l
+                    "dash" | "sh" => "-l",
 
-                // For all other shells, presume -l
-                _ => "-l",
-            },
+                    // For all other shells, presume -l
+                    _ => "-l",
+                },
+            }
         }
     }
 }

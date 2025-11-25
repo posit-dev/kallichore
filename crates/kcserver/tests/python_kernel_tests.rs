@@ -1983,7 +1983,9 @@ print(f"TEST_KALLI_VAR={env_value}")
                         match message {
                             WebsocketMessage::Jupyter(jupyter_msg) => {
                                 if jupyter_msg.header.msg_type == "stream" {
-                                    if let Some(text) = jupyter_msg.content.get("text").and_then(|v| v.as_str()) {
+                                    if let Some(text) =
+                                        jupyter_msg.content.get("text").and_then(|v| v.as_str())
+                                    {
                                         all_output.push_str(text);
                                     }
                                 } else if jupyter_msg.header.msg_type == "execute_reply" {
@@ -2053,7 +2055,11 @@ async fn test_startup_environment_script_mode() {
         // Create a temporary startup script
         let temp_dir = tempfile::tempdir().unwrap();
         let script_path = temp_dir.path().join("startup_script.sh");
-        std::fs::write(&script_path, "#!/bin/bash\nexport TEST_KALLI_VAR=from_script\n").unwrap();
+        std::fs::write(
+            &script_path,
+            "#!/bin/bash\nexport TEST_KALLI_VAR=from_script\n",
+        )
+        .unwrap();
 
         println!("Created startup script at: {}", script_path.display());
 
@@ -2179,7 +2185,9 @@ print(f"TEST_KALLI_VAR={env_value}")
                         match message {
                             WebsocketMessage::Jupyter(jupyter_msg) => {
                                 if jupyter_msg.header.msg_type == "stream" {
-                                    if let Some(text) = jupyter_msg.content.get("text").and_then(|v| v.as_str()) {
+                                    if let Some(text) =
+                                        jupyter_msg.content.get("text").and_then(|v| v.as_str())
+                                    {
                                         all_output.push_str(text);
                                     }
                                 } else if jupyter_msg.header.msg_type == "execute_reply" {
