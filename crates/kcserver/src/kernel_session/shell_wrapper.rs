@@ -18,6 +18,18 @@ use super::utils::escape_for_shell;
 #[cfg(not(target_os = "windows"))]
 use crate::error::KSError;
 
+/// Information about the shell command that was built.
+pub struct ShellCommandInfo {
+    /// The tokio Command to execute
+    pub command: tokio::process::Command,
+
+    /// The shell that will be used (e.g., "/bin/bash")
+    pub shell_used: Option<String>,
+
+    /// The startup command or script path
+    pub startup_arg: Option<String>,
+}
+
 /// Builds shell commands for starting kernels with various startup environments.
 pub struct ShellCommandBuilder {
     /// Session ID for logging
@@ -56,12 +68,12 @@ impl ShellCommandBuilder {
     /// Build a command to start the kernel, optionally wrapped in a shell.
     ///
     /// Returns `None` if no shell wrapper is needed (StartupEnvironment::None),
-    /// or `Some(Command)` with the shell wrapper configured.
+    /// or `Some(ShellCommandInfo)` with the shell wrapper configured and metadata.
     pub fn build_command(
         &self,
         argv: &[String],
         resolved_env: &HashMap<String, String>,
-    ) -> Result<Option<tokio::process::Command>, StartupError> {
+    ) -> Result<Option<ShellCommandInfo>, StartupError> {
         match self.startup_env {
             models::StartupEnvironment::None => Ok(None),
 
@@ -82,7 +94,7 @@ impl ShellCommandBuilder {
             String,
             String,
         >,
-    ) -> Result<Option<tokio::process::Command>, StartupError> {
+    ) -> Result<Option<ShellCommandInfo>, StartupError> {
         // Find a suitable login shell
         let login_shell = match self.find_login_shell() {
             Some(shell) => shell,
@@ -140,9 +152,14 @@ impl ShellCommandBuilder {
         let login_arg = self.get_login_arg(&login_shell);
 
         // Create the shell command
-        let mut cmd = tokio::process::Command::new(login_shell);
+        let mut cmd = tokio::process::Command::new(&login_shell);
         cmd.args(&[login_arg, "-c", &kernel_command]);
-        Ok(Some(cmd))
+
+        Ok(Some(ShellCommandInfo {
+            command: cmd,
+            shell_used: Some(login_shell),
+            startup_arg: self.startup_arg.clone(),
+        }))
     }
 
     /// On Windows, startup environment settings are ignored.
@@ -151,7 +168,7 @@ impl ShellCommandBuilder {
         &self,
         _argv: &[String],
         _resolved_env: &HashMap<String, String>,
-    ) -> Result<Option<tokio::process::Command>, StartupError> {
+    ) -> Result<Option<ShellCommandInfo>, StartupError> {
         log::debug!(
             "[session {}] startup_environment parameter ignored on Windows",
             self.session_id

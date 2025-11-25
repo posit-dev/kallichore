@@ -147,13 +147,15 @@ impl KernelSession {
     /// The kernel info, as a JSON object.
     pub async fn start(&self) -> Result<serde_json::Value, StartupError> {
         // Create the startup coordinator
-        let coordinator = StartupCoordinator {
+        let mut coordinator = StartupCoordinator {
             session_id: self.connection.session_id.clone(),
             model: self.model.clone(),
             state: self.state.clone(),
             argv: self.argv.clone(),
             #[cfg(windows)]
             interrupt_event_handle: self.interrupt_event_handle,
+            shell_used: None,
+            startup_command: None,
         };
 
         // Validate that the session can be started

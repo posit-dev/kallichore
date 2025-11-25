@@ -42,6 +42,12 @@ pub struct StartupCoordinator {
     /// Interrupt event handle (Windows only)
     #[cfg(windows)]
     pub interrupt_event_handle: Option<isize>,
+
+    /// The shell used for startup (for error reporting)
+    pub shell_used: Option<String>,
+
+    /// The startup command/script executed (for error reporting)
+    pub startup_command: Option<String>,
 }
 
 impl StartupCoordinator {
@@ -128,7 +134,7 @@ impl StartupCoordinator {
 
     /// Build the command to start the kernel.
     pub async fn build_command(
-        &self,
+        &mut self,
         argv: &[String],
         resolved_env: &HashMap<String, String>,
         working_directory: &str,
@@ -148,11 +154,16 @@ impl StartupCoordinator {
         );
 
         // Try to build a shell-wrapped command
-        let shell_command = shell_builder.build_command(argv, resolved_env)?;
+        let shell_command_info = shell_builder.build_command(argv, resolved_env)?;
 
         // If we formed a shell command, use it; otherwise, use the original args
-        let mut cmd = match shell_command {
-            Some(command) => command,
+        let mut cmd = match shell_command_info {
+            Some(info) => {
+                // Store shell and startup command information for error reporting
+                self.shell_used = info.shell_used;
+                self.startup_command = info.startup_arg;
+                info.command
+            }
             None => {
                 let mut cmd = tokio::process::Command::new(&argv[0]);
                 cmd.args(&argv[1..]);
@@ -332,7 +343,7 @@ impl StartupCoordinator {
                 Err(StartupError {
                     exit_code: Some(130),
                     output: Some(clean_output),
-                    error: err.to_json(Some(error_context.to_string())),
+                    error: err.to_json(Some(error_context)),
                 })
             }
             Ok(StartupStatus::AbnormalExit(exit_code, output, err)) => {
@@ -374,57 +385,119 @@ impl StartupCoordinator {
     }
 
     /// Determine the context for a connection failure based on output.
-    fn determine_connection_failure_context(&self, output: &str) -> &'static str {
+    fn determine_connection_failure_context(&self, output: &str) -> String {
+        // Build shell context prefix if available
+        let shell_context = self
+            .shell_used
+            .as_ref()
+            .map(|s| format!("Shell: {}\n", s))
+            .unwrap_or_default();
+
         match self.model.startup_environment {
             models::StartupEnvironment::Command => {
+                let cmd_context = self
+                    .startup_command
+                    .as_ref()
+                    .map(|c| format!("Startup command: {}\n", c))
+                    .unwrap_or_default();
+
                 if output.contains("KALLICHORE_STARTUP_BEGIN") {
                     if output.contains("KALLICHORE_STARTUP_SUCCESS") {
-                        "Kernel failed to connect to ZeroMQ sockets"
+                        format!(
+                            "{}{}Kernel failed to connect to ZeroMQ sockets",
+                            shell_context, cmd_context
+                        )
                     } else {
-                        "Startup command failed to execute"
+                        format!(
+                            "{}{}Startup command failed to execute",
+                            shell_context, cmd_context
+                        )
                     }
                 } else {
-                    "Startup command failed before execution"
+                    format!(
+                        "{}{}Startup command failed before execution",
+                        shell_context, cmd_context
+                    )
                 }
             }
             models::StartupEnvironment::Script => {
+                let script_context = self
+                    .startup_command
+                    .as_ref()
+                    .map(|c| format!("Startup script: {}\n", c))
+                    .unwrap_or_default();
+
                 if output.contains("KALLICHORE_STARTUP_BEGIN") {
                     if output.contains("KALLICHORE_STARTUP_SUCCESS") {
-                        "Kernel failed to connect to ZeroMQ sockets"
+                        format!(
+                            "{}{}Kernel failed to connect to ZeroMQ sockets",
+                            shell_context, script_context
+                        )
                     } else {
-                        "Startup script failed to execute"
+                        format!(
+                            "{}{}Startup script failed to execute",
+                            shell_context, script_context
+                        )
                     }
                 } else {
-                    "Startup script failed before execution"
+                    format!(
+                        "{}{}Startup script failed before execution",
+                        shell_context, script_context
+                    )
                 }
             }
-            _ => "Kernel failed to connect to ZeroMQ sockets",
+            _ => String::from("Kernel failed to connect to ZeroMQ sockets"),
         }
     }
 
     /// Determine the context for an abnormal exit based on output.
     fn determine_abnormal_exit_context(&self, output: &str) -> String {
+        // Build shell context prefix if available
+        let shell_context = self
+            .shell_used
+            .as_ref()
+            .map(|s| format!("Shell: {}\n", s))
+            .unwrap_or_default();
+
         match self.model.startup_environment {
             models::StartupEnvironment::Command => {
+                let cmd_context = self
+                    .startup_command
+                    .as_ref()
+                    .map(|c| format!("Startup command: {}\n", c))
+                    .unwrap_or_default();
+
                 if output.contains("KALLICHORE_STARTUP_BEGIN") {
                     if output.contains("KALLICHORE_STARTUP_SUCCESS") {
-                        String::from("Kernel failed to start")
+                        format!("{}{}Kernel failed to start", shell_context, cmd_context)
                     } else {
-                        String::from("Startup command failed")
+                        format!("{}{}Startup command failed", shell_context, cmd_context)
                     }
                 } else {
-                    String::from("Startup command could not be executed")
+                    format!(
+                        "{}{}Startup command could not be executed",
+                        shell_context, cmd_context
+                    )
                 }
             }
             models::StartupEnvironment::Script => {
+                let script_context = self
+                    .startup_command
+                    .as_ref()
+                    .map(|c| format!("Startup script: {}\n", c))
+                    .unwrap_or_default();
+
                 if output.contains("KALLICHORE_STARTUP_BEGIN") {
                     if output.contains("KALLICHORE_STARTUP_SUCCESS") {
-                        String::from("Kernel failed to start")
+                        format!("{}{}Kernel failed to start", shell_context, script_context)
                     } else {
-                        String::from("Startup script failed")
+                        format!("{}{}Startup script failed", shell_context, script_context)
                     }
                 } else {
-                    String::from("Startup script could not be executed")
+                    format!(
+                        "{}{}Startup script could not be executed",
+                        shell_context, script_context
+                    )
                 }
             }
             _ => String::from("Kernel failed to start"),
