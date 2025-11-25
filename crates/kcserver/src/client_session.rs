@@ -14,6 +14,7 @@ use async_channel::Sender;
 use futures::SinkExt;
 use futures::StreamExt;
 use hyper::upgrade::Upgraded;
+use hyper_util::rt::TokioIo;
 use kcshared::jupyter_message::JupyterMessage;
 use kcshared::kernel_message::KernelMessage;
 use kcshared::websocket_message::WebsocketMessage;
@@ -120,7 +121,7 @@ impl ClientSession {
         }
     }
 
-    pub async fn handle_channel_ws(&self, ws_stream: WebSocketStream<Upgraded>) {
+    pub async fn handle_channel_ws(&self, ws_stream: WebSocketStream<TokioIo<Upgraded>>) {
         self.handle_websocket_stream(ws_stream).await;
     }
 

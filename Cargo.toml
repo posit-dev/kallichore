@@ -3,7 +3,7 @@
 
 members = [
     "crates/kcshared",
-    "crates/kcclient",
+    # "crates/kcclient", # Excluded by remove-tls-deps.sh (depends on Client)
     "crates/kcserver",
     "crates/kallichore_api",
 ]

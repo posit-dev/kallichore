@@ -162,6 +162,8 @@ impl CommunicationChannel {
     pub async fn create_domain_socket(
         socket_path: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
         let stream = tokio::net::UnixStream::connect(socket_path).await?;
 
         // Try to create a proper WebSocket connection with handshake
@@ -174,17 +176,36 @@ impl CommunicationChannel {
              Sec-WebSocket-Version: 13\r\n\r\n"
         );
 
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut stream = stream;
         stream.write_all(request.as_bytes()).await?;
 
-        // Read the response headers
-        let mut buffer = [0; 1024];
-        let bytes_read = stream.read(&mut buffer).await?;
-        let response = String::from_utf8_lossy(&buffer[..bytes_read]);
+        // Use a buffered reader to properly read the HTTP response line by line
+        // This ensures we don't consume any bytes beyond the HTTP headers
+        let mut reader = BufReader::new(stream);
 
-        if response.contains("101 Switching Protocols") {
-            // WebSocket handshake successful, create WebSocket stream
+        // Read the status line
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line).await?;
+
+        // Read headers until we find the empty line that marks the end
+        let mut headers = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).await?;
+            if line.trim().is_empty() {
+                break; // End of headers
+            }
+            headers.push(line);
+        }
+
+        // Check if handshake was successful
+        if status_line.contains("101 Switching Protocols") {
+            // WebSocket handshake successful
+            // Convert the buffered reader back to the underlying stream
+            let stream = reader.into_inner();
+
+            // Create WebSocket stream from the raw socket
+            // Any remaining buffered data is preserved in the stream
             let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
                 stream,
                 tokio_tungstenite::tungstenite::protocol::Role::Client,
@@ -195,7 +216,8 @@ impl CommunicationChannel {
             Ok(CommunicationChannel::DomainSocket { sender, receiver })
         } else {
             // Fallback to raw socket without WebSocket protocol
-            println!("WebSocket handshake failed, response: {}", response);
+            println!("WebSocket handshake failed, status: {}", status_line);
+            let stream = reader.into_inner();
             let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
                 stream,
                 tokio_tungstenite::tungstenite::protocol::Role::Client,
@@ -212,6 +234,8 @@ impl CommunicationChannel {
     pub async fn create_named_pipe(
         pipe_path: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
         let pipe = tokio::net::windows::named_pipe::ClientOptions::new().open(pipe_path)?;
 
         // Send WebSocket handshake request
@@ -224,17 +248,35 @@ impl CommunicationChannel {
              Sec-WebSocket-Version: 13\r\n\r\n"
         );
 
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut pipe = pipe;
         pipe.write_all(request.as_bytes()).await?;
 
-        // Read the response headers
-        let mut buffer = [0; 1024];
-        let bytes_read = pipe.read(&mut buffer).await?;
-        let response = String::from_utf8_lossy(&buffer[..bytes_read]);
+        // Use a buffered reader to properly read the HTTP response line by line
+        // This ensures we don't consume any bytes beyond the HTTP headers
+        let mut reader = BufReader::new(pipe);
 
-        if response.contains("101 Switching Protocols") {
-            // WebSocket handshake successful, create WebSocket stream
+        // Read the status line
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line).await?;
+
+        // Read headers until we find the empty line that marks the end
+        let mut headers = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).await?;
+            if line.trim().is_empty() {
+                break; // End of headers
+            }
+            headers.push(line);
+        }
+
+        // Check if handshake was successful
+        if status_line.contains("101 Switching Protocols") {
+            // WebSocket handshake successful
+            // Convert the buffered reader back to the underlying pipe
+            let pipe = reader.into_inner();
+
+            // Create WebSocket stream from the raw pipe
             let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
                 pipe,
                 tokio_tungstenite::tungstenite::protocol::Role::Client,
@@ -242,13 +284,14 @@ impl CommunicationChannel {
             )
             .await;
             let (sender, receiver) = ws_stream.split();
-            Ok(CommunicationChannel::NamedPipe { 
-                sender,
-                receiver,
-            })
+            Ok(CommunicationChannel::NamedPipe { sender, receiver })
         } else {
             // Fallback to raw pipe without WebSocket protocol
-            println!("WebSocket handshake failed on named pipe, response: {}", response);
+            println!(
+                "WebSocket handshake failed on named pipe, status: {}",
+                status_line
+            );
+            let pipe = reader.into_inner();
             let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
                 pipe,
                 tokio_tungstenite::tungstenite::protocol::Role::Client,
@@ -256,10 +299,7 @@ impl CommunicationChannel {
             )
             .await;
             let (sender, receiver) = ws_stream.split();
-            Ok(CommunicationChannel::NamedPipe { 
-                sender,
-                receiver,
-            })
+            Ok(CommunicationChannel::NamedPipe { sender, receiver })
         }
     }
 }

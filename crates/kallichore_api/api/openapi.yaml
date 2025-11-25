@@ -18,7 +18,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/sessionList'
+                $ref: "#/components/schemas/sessionList"
           description: List of active sessions
       summary: List active sessions
     put:
@@ -27,20 +27,20 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/newSession'
+              $ref: "#/components/schemas/newSession"
         required: true
       responses:
         "200":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/new_session_200_response'
+                $ref: "#/components/schemas/new_session_200_response"
           description: The session ID
         "400":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Invalid request
         "401":
           content: {}
@@ -68,7 +68,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Failed to delete session
         "401":
           content: {}
@@ -94,13 +94,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/activeSession'
+                $ref: "#/components/schemas/activeSession"
           description: Session details
         "400":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Failed to get session
         "404":
           content:
@@ -128,7 +128,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/startupError'
+                $ref: "#/components/schemas/startupError"
           description: Start failed
         "404":
           content:
@@ -154,7 +154,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/restartSession'
+              $ref: "#/components/schemas/restartSession"
         required: false
       responses:
         "200":
@@ -166,7 +166,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/startupError'
+                $ref: "#/components/schemas/startupError"
           description: Restart failed
         "401":
           content: {}
@@ -198,7 +198,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Kill failed
         "401":
           content: {}
@@ -224,7 +224,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/connectionInfo'
+              $ref: "#/components/schemas/connectionInfo"
         required: true
       responses:
         "200":
@@ -236,7 +236,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Adoption failed
         "404":
           content:
@@ -263,13 +263,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/connectionInfo'
+                $ref: "#/components/schemas/connectionInfo"
           description: Connection Info
         "500":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Failed
         "401":
           content: {}
@@ -301,7 +301,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Interrupt failed
         "401":
           content: {}
@@ -336,7 +336,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Invalid request
         "401":
           content: {}
@@ -361,7 +361,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Shutdown failed
         "401":
           content: {}
@@ -376,13 +376,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/serverStatus'
+                $ref: "#/components/schemas/serverStatus"
           description: Server status and information
         "400":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Error
       summary: Get server status and information
   /client_heartbeat:
@@ -393,7 +393,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/clientHeartbeat'
+              $ref: "#/components/schemas/clientHeartbeat"
         required: true
       responses:
         "200":
@@ -411,13 +411,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/serverConfiguration'
+                $ref: "#/components/schemas/serverConfiguration"
           description: The current server configuration
         "400":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Failed to get configuration
       summary: Get the server configuration
     post:
@@ -427,7 +427,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/serverConfiguration'
+              $ref: "#/components/schemas/serverConfiguration"
         required: true
       responses:
         "200":
@@ -439,7 +439,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/error'
+                $ref: "#/components/schemas/error"
           description: Error
       summary: Change the server configuration
 components:
@@ -467,7 +467,7 @@ components:
     envVarActions:
       description: A list of environment variable actions to perform
       items:
-        $ref: '#/components/schemas/varAction'
+        $ref: "#/components/schemas/varAction"
       type: array
     sessionMode:
       description: The mode in which the session is running
@@ -486,7 +486,7 @@ components:
     varAction:
       properties:
         action:
-          $ref: '#/components/schemas/varActionType'
+          $ref: "#/components/schemas/varActionType"
         name:
           description: The name of the variable to act on
           type: string
@@ -566,10 +566,20 @@ components:
             \ during startup, if any"
           type: string
         error:
-          $ref: '#/components/schemas/error'
+          $ref: "#/components/schemas/error"
       required:
       - error
       type: object
+    startupEnvironment:
+      description: "The kernel's startup environment: 'none' for normal startup, 'shell'\
+        \ for a login shell, 'command' for a preflight command, 'script' to run a\
+        \ script. Only relevant on POSIX-like systems."
+      enum:
+      - none
+      - shell
+      - command
+      - script
+      type: string
     status:
       description: The status of the session
       enum:
@@ -619,7 +629,7 @@ components:
             type: string
           type: array
         session_mode:
-          $ref: '#/components/schemas/sessionMode'
+          $ref: "#/components/schemas/sessionMode"
         working_directory:
           description: The working directory in which to start the session.
           type: string
@@ -629,7 +639,7 @@ components:
         env:
           description: A list of environment variable actions to perform
           items:
-            $ref: '#/components/schemas/varAction'
+            $ref: "#/components/schemas/varAction"
           type: array
         connection_timeout:
           default: 30
@@ -637,16 +647,16 @@ components:
             ZeroMQ sockets before timing out
           type: integer
         interrupt_mode:
-          $ref: '#/components/schemas/interrupt_mode'
+          $ref: "#/components/schemas/interrupt_mode"
         protocol_version:
           default: "5.3"
           description: The Jupyter protocol version supported by the underlying kernel
           type: string
-        run_in_shell:
-          default: false
-          description: Whether to run the session inside a login shell; only relevant
-            on POSIX systems
-          type: boolean
+        startup_environment:
+          $ref: "#/components/schemas/startupEnvironment"
+        startup_environment_arg:
+          description: The command or script to run before starting the session
+          type: string
       required:
       - argv
       - continuation_prompt
@@ -657,6 +667,7 @@ components:
       - language
       - session_id
       - session_mode
+      - startup_environment
       - username
       - working_directory
       type: object
@@ -669,7 +680,7 @@ components:
         env:
           description: A list of environment variable actions to perform
           items:
-            $ref: '#/components/schemas/varAction'
+            $ref: "#/components/schemas/varAction"
           type: array
       type: object
     execution_queue:
@@ -750,7 +761,7 @@ components:
           description: The interpreter language
           type: string
         interrupt_mode:
-          $ref: '#/components/schemas/interrupt_mode'
+          $ref: "#/components/schemas/interrupt_mode"
         initial_env:
           additionalProperties:
             type: string
@@ -764,7 +775,7 @@ components:
           format: date-time
           type: string
         session_mode:
-          $ref: '#/components/schemas/sessionMode'
+          $ref: "#/components/schemas/sessionMode"
         working_directory:
           description: The session's current working directory
           type: string
@@ -778,9 +789,9 @@ components:
           description: The text to use to prompt for input continuations
           type: string
         execution_queue:
-          $ref: '#/components/schemas/execution_queue'
+          $ref: "#/components/schemas/execution_queue"
         status:
-          $ref: '#/components/schemas/status'
+          $ref: "#/components/schemas/status"
         kernel_info:
           description: "The kernel information, as returned by the kernel_info_request\
             \ message"
@@ -933,7 +944,7 @@ components:
           type: integer
         sessions:
           items:
-            $ref: '#/components/schemas/activeSession'
+            $ref: "#/components/schemas/activeSession"
           type: array
       required:
       - sessions
@@ -949,7 +960,7 @@ components:
             idle sessions (-1 if idle shutdown is disabled)
           type: integer
         log_level:
-          $ref: '#/components/schemas/serverConfiguration_log_level'
+          $ref: "#/components/schemas/serverConfiguration_log_level"
       type: object
     new_session_200_response:
       example:

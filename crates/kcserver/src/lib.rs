@@ -18,8 +18,6 @@ pub mod jupyter_messages;
 pub mod kernel_connection;
 pub mod kernel_session;
 pub mod kernel_state;
-#[cfg(windows)]
-pub mod named_pipe_connection;
 pub mod registration_file;
 pub mod registration_socket;
 pub mod server;

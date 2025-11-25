@@ -501,7 +501,8 @@ fn main() {
                 working_directory: working_directory.to_string_lossy().to_string(),
                 connection_timeout: Some(30),
                 protocol_version: Some("5.3".to_string()),
-                run_in_shell: Some(false),
+                startup_environment: models::StartupEnvironment::None,
+                startup_environment_arg: None,
                 env,
                 interrupt_mode: models::InterruptMode::Message,
             };

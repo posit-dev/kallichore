@@ -8,10 +8,12 @@
 
 //! Custom service wrapper that intercepts websocket requests to provide raw HTTP request access.
 
-use std::task::{Context, Poll};
-
 use futures::future::BoxFuture;
-use hyper::{Body, Request, Response};
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Incoming;
+use hyper::{Request, Response};
+use hyper::service::Service as HyperService;
 use swagger::{ApiError, Authorization, Has, XSpanIdString};
 
 use kallichore_api::Api;
@@ -24,10 +26,10 @@ where
 {
     fn channels_websocket_request(
         &self,
-        request: Request<Body>,
+        request: Request<Incoming>,
         session_id: String,
         context: &C,
-    ) -> BoxFuture<'static, Result<Response<Body>, ApiError>>;
+    ) -> BoxFuture<'static, Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>>;
 }
 
 /// A service wrapper that intercepts websocket channel requests to provide raw HTTP request access.
@@ -69,20 +71,16 @@ where
     }
 }
 
-impl<T, C> hyper::service::Service<(Request<Body>, C)> for WebsocketInterceptorService<T, C>
+impl<T, C> hyper::service::Service<(Request<Incoming>, C)> for WebsocketInterceptorService<T, C>
 where
     T: Api<C> + ApiWebsocketExt<C> + Clone + Send + Sync + 'static,
     C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
-    type Response = Response<Body>;
+    type Response = Response<BoxBody<bytes::Bytes, std::io::Error>>;
     type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner_service.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: (Request<Body>, C)) -> Self::Future {
+    fn call(&self, req: (Request<Incoming>, C)) -> Self::Future {
         let (request, context) = req;
         let method = request.method().clone();
         let path = request.uri().path().to_string();
@@ -104,7 +102,11 @@ where
                             log::error!("Websocket request handler error: {:?}", e);
                             let response = Response::builder()
                                 .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(Body::from("Internal server error during websocket upgrade"))
+                                .body(
+                                    Full::new(bytes::Bytes::from("Internal server error during websocket upgrade"))
+                                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
+                                        .boxed()
+                                )
                                 .expect("Unable to create error response");
                             Ok(response)
                         }
@@ -112,13 +114,33 @@ where
                 })
             } else {
                 // If we can't extract session_id, fall back to the normal service
-                let mut inner_service = self.inner_service.clone();
-                Box::pin(async move { inner_service.call((request, context)).await })
+                let inner_service = self.inner_service.clone();
+                Box::pin(async move {
+                    HyperService::call(&inner_service, (request, context))
+                        .await
+                        .map(|response| {
+                            response.map(|body| {
+                                body.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                    .boxed()
+                            })
+                        })
+                        .map_err(|e| e.into())
+                })
             }
         } else {
             // For all other requests, delegate to the generated service
-            let mut inner_service = self.inner_service.clone();
-            Box::pin(async move { inner_service.call((request, context)).await })
+            let inner_service = self.inner_service.clone();
+            Box::pin(async move {
+                HyperService::call(&inner_service, (request, context))
+                    .await
+                    .map(|response| {
+                        response.map(|body| {
+                            body.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                .boxed()
+                        })
+                    })
+                    .map_err(|e| e.into())
+            })
         }
     }
 }
@@ -190,11 +212,7 @@ where
     type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
     type Future = futures::future::Ready<Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, _target: Target) -> Self::Future {
+    fn call(&self, _target: Target) -> Self::Future {
         let service = WebsocketInterceptorService::new(self.api_impl.clone());
         futures::future::ready(Ok(service))
     }

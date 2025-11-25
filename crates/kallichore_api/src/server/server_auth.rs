@@ -1,9 +1,7 @@
 use super::Service;
 use crate::{Api, AuthenticationApi};
-use swagger::{
-    auth::{Basic, Bearer},
-    ApiError, Authorization, Has, XSpanIdString,
-};
+use headers::authorization::{Basic, Bearer};
+use swagger::{ApiError, Authorization, Has, XSpanIdString};
 
 impl<T, C> AuthenticationApi for Service<T, C>
 where

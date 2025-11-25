@@ -1,5 +1,6 @@
 //! CLI tool driving the API client
 use anyhow::{anyhow, Context, Result};
+use clap::Parser;
 use dialoguer::Confirm;
 use log::{debug, info};
 // models may be unused if all inputs are primitive types
@@ -13,7 +14,6 @@ use kallichore_api::{
     StartSessionResponse,
 };
 use simple_logger::SimpleLogger;
-use structopt::StructOpt;
 use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
 
 type ClientContext = swagger::make_context_ty!(
@@ -23,57 +23,57 @@ type ClientContext = swagger::make_context_ty!(
     XSpanIdString
 );
 
-#[derive(StructOpt, Debug)]
-#[structopt(
+#[derive(Parser, Debug)]
+#[clap(
     name = "Kallichore API",
     version = "1.0.0",
     about = "CLI access to Kallichore API"
 )]
 struct Cli {
-    #[structopt(subcommand)]
+    #[clap(subcommand)]
     operation: Operation,
 
     /// Address or hostname of the server hosting this API, including optional port
-    #[structopt(short = "a", long, default_value = "http://localhost")]
+    #[clap(short = 'a', long, default_value = "http://localhost")]
     server_address: String,
 
     /// Path to the client private key if using client-side TLS authentication
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    #[structopt(long, requires_all(&["client-certificate", "server-certificate"]))]
+    #[clap(long, requires_all(&["client_certificate", "server_certificate"]))]
     client_key: Option<String>,
 
     /// Path to the client's public certificate associated with the private key
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    #[structopt(long, requires_all(&["client-key", "server-certificate"]))]
+    #[clap(long, requires_all(&["client_key", "server_certificate"]))]
     client_certificate: Option<String>,
 
     /// Path to CA certificate used to authenticate the server
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-    #[structopt(long)]
+    #[clap(long)]
     server_certificate: Option<String>,
 
     /// If set, write output to file instead of stdout
-    #[structopt(short, long)]
+    #[clap(short, long)]
     output_file: Option<String>,
 
-    #[structopt(flatten)]
+    #[command(flatten)]
     verbosity: clap_verbosity_flag::Verbosity,
 
     /// Don't ask for any confirmation prompts
     #[allow(dead_code)]
-    #[structopt(short, long)]
+    #[clap(short, long)]
     force: bool,
 
     /// Bearer token if used for authentication
-    #[structopt(env = "KALLICHORE_API_BEARER_TOKEN", hide_env_values = true)]
+    #[arg(env = "KALLICHORE_API_BEARER_TOKEN", hide_env = true)]
     bearer_token: Option<String>,
 }
 
-#[derive(StructOpt, Debug)]
+#[derive(Parser, Debug)]
 enum Operation {
     /// Notify the server that a client is connected
     ClientHeartbeat {
-        #[structopt(parse(try_from_str = parse_json))]
+        #[clap(value_parser = parse_json::<models::ClientHeartbeat>)]
         client_heartbeat: models::ClientHeartbeat,
     },
     /// Get the server configuration
@@ -82,14 +82,14 @@ enum Operation {
     ListSessions {},
     /// Create a new session
     NewSession {
-        #[structopt(parse(try_from_str = parse_json))]
+        #[clap(value_parser = parse_json::<models::NewSession>)]
         new_session: models::NewSession,
     },
     /// Get server status and information
     ServerStatus {},
     /// Change the server configuration
     SetServerConfiguration {
-        #[structopt(parse(try_from_str = parse_json))]
+        #[clap(value_parser = parse_json::<models::ServerConfiguration>)]
         server_configuration: models::ServerConfiguration,
     },
     /// Shut down all sessions and the server itself
@@ -97,7 +97,7 @@ enum Operation {
     /// Adopt an existing session
     AdoptSession {
         session_id: String,
-        #[structopt(parse(try_from_str = parse_json))]
+        #[clap(value_parser = parse_json::<models::ConnectionInfo>)]
         connection_info: models::ConnectionInfo,
     },
     /// Upgrade to a WebSocket or domain socket for channel communication
@@ -115,7 +115,7 @@ enum Operation {
     /// Restart a session
     RestartSession {
         session_id: String,
-        #[structopt(parse(try_from_str = parse_json))]
+        #[clap(value_parser = parse_json::<models::RestartSession>)]
         restart_session: Option<models::RestartSession>,
     },
     /// Start a session
@@ -165,7 +165,7 @@ fn create_client(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Cli::from_args();
+    let args = Cli::parse();
     if let Some(log_level) = args.verbosity.log_level() {
         SimpleLogger::new()
             .with_level(log_level.to_level_filter())
@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
 
     if let Some(ref bearer_token) = args.bearer_token {
         debug!("Using bearer token");
-        auth_data = Some(AuthData::bearer(bearer_token));
+        auth_data = AuthData::bearer(bearer_token);
     }
 
     #[allow(trivial_casts)]
@@ -487,6 +487,6 @@ fn prompt(force: bool, text: &str) -> Result<()> {
 
 // May be unused if all inputs are primitive types
 #[allow(dead_code)]
-fn parse_json<'a, T: serde::de::Deserialize<'a>>(json_string: &'a str) -> Result<T> {
+fn parse_json<T: serde::de::DeserializeOwned>(json_string: &str) -> Result<T> {
     serde_json::from_str(json_string).map_err(|err| anyhow!("Error parsing input: {}", err))
 }

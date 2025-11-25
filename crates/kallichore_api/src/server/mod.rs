@@ -1,13 +1,18 @@
+use bytes::Bytes;
 use futures::{future, future::BoxFuture, future::FutureExt, stream, stream::TryStreamExt, Stream};
+use http_body_util::{combinators::BoxBody, Full};
 use hyper::header::{HeaderName, HeaderValue, CONTENT_TYPE};
-use hyper::{Body, HeaderMap, Request, Response, StatusCode};
+use hyper::{
+    body::{Body, Incoming},
+    HeaderMap, Request, Response, StatusCode,
+};
 use log::warn;
 #[allow(unused_imports)]
 use std::convert::{TryFrom, TryInto};
-use std::error::Error;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::task::{Context, Poll};
+use std::{convert::Infallible, error::Error};
 pub use swagger::auth::Authorization;
 use swagger::auth::Scopes;
 use swagger::{ApiError, BodyExt, Has, RequestParser, XSpanIdString};
@@ -18,7 +23,8 @@ use crate::{header, models, AuthenticationApi};
 
 pub use crate::context;
 
-type ServiceFuture = BoxFuture<'static, Result<Response<Body>, crate::ServiceError>>;
+type ServiceFuture =
+    BoxFuture<'static, Result<Response<BoxBody<Bytes, Infallible>>, crate::ServiceError>>;
 
 use crate::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
@@ -136,6 +142,19 @@ where
     }
 }
 
+impl<T, C> Clone for MakeService<T, C>
+where
+    T: Api<C> + Clone + Send + 'static,
+    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            api_impl: self.api_impl.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
 impl<T, C, Target> hyper::service::Service<Target> for MakeService<T, C>
 where
     T: Api<C> + Clone + Send + 'static,
@@ -145,21 +164,17 @@ where
     type Error = crate::ServiceError;
     type Future = future::Ready<Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, target: Target) -> Self::Future {
+    fn call(&self, target: Target) -> Self::Future {
         let service = Service::new(self.api_impl.clone());
 
         future::ok(service)
     }
 }
 
-fn method_not_allowed() -> Result<Response<Body>, crate::ServiceError> {
+fn method_not_allowed() -> Result<Response<BoxBody<Bytes, Infallible>>, crate::ServiceError> {
     Ok(Response::builder()
         .status(StatusCode::METHOD_NOT_ALLOWED)
-        .body(Body::empty())
+        .body(BoxBody::new(http_body_util::Empty::new()))
         .expect("Unable to create Method Not Allowed response"))
 }
 
@@ -198,27 +213,38 @@ where
     }
 }
 
-impl<T, C> hyper::service::Service<(Request<Body>, C)> for Service<T, C>
+#[allow(dead_code)]
+fn body_from_string(s: String) -> BoxBody<Bytes, Infallible> {
+    BoxBody::new(Full::new(Bytes::from(s)))
+}
+
+fn body_from_str(s: &str) -> BoxBody<Bytes, Infallible> {
+    BoxBody::new(Full::new(Bytes::copy_from_slice(s.as_bytes())))
+}
+
+impl<T, C, ReqBody> hyper::service::Service<(Request<ReqBody>, C)> for Service<T, C>
 where
     T: Api<C> + Clone + Send + Sync + 'static,
     C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
+    ReqBody: Body + Send + 'static,
+    ReqBody::Error: Into<Box<dyn Error + Send + Sync>> + Send,
+    ReqBody::Data: Send,
 {
-    type Response = Response<Body>;
+    type Response = Response<BoxBody<Bytes, Infallible>>;
     type Error = crate::ServiceError;
     type Future = ServiceFuture;
 
-    fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
-        self.api_impl.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: (Request<Body>, C)) -> Self::Future {
-        async fn run<T, C>(
+    fn call(&self, req: (Request<ReqBody>, C)) -> Self::Future {
+        async fn run<T, C, ReqBody>(
             mut api_impl: T,
-            req: (Request<Body>, C),
-        ) -> Result<Response<Body>, crate::ServiceError>
+            req: (Request<ReqBody>, C),
+        ) -> Result<Response<BoxBody<Bytes, Infallible>>, crate::ServiceError>
         where
             T: Api<C> + Clone + Send + 'static,
             C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
+            ReqBody: Body + Send + 'static,
+            ReqBody::Error: Into<Box<dyn Error + Send + Sync>> + Send,
+            ReqBody::Data: Send,
         {
             let (request, context) = req;
             let (parts, body) = request.into_parts();
@@ -231,23 +257,24 @@ where
                     // Handle body parameters (note that non-required body parameters will ignore garbage
                     // values, rather than causing a 400 response). Produce warning header and logs for
                     // any unused fields.
-                    let result = body.into_raw().await;
+                    let result = http_body_util::BodyExt::collect(body)
+                        .await
+                        .map(|f| f.to_bytes().to_vec());
                     match result {
                         Ok(body) => {
                             let mut unused_elements: Vec<String> = vec![];
                             let param_client_heartbeat: Option<models::ClientHeartbeat> = if !body
                                 .is_empty()
                             {
-                                let deserializer =
-                                    &mut serde_json::Deserializer::from_slice(&*body);
+                                let deserializer = &mut serde_json::Deserializer::from_slice(&body);
                                 match serde_ignored::deserialize(deserializer, |path| {
-                                            warn!("Ignoring unknown field in body: {}", path);
+                                            warn!("Ignoring unknown field in body: {path}");
                                             unused_elements.push(path.to_string());
                                     }) {
                                         Ok(param_client_heartbeat) => param_client_heartbeat,
                                         Err(e) => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from(format!("Couldn't parse body parameter ClientHeartbeat - doesn't match schema: {}", e)))
+                                                        .body(BoxBody::new(format!("Couldn't parse body parameter ClientHeartbeat - doesn't match schema: {e}")))
                                                         .expect("Unable to create Bad Request response for invalid body parameter ClientHeartbeat due to schema")),
                                     }
                             } else {
@@ -257,14 +284,15 @@ where
                                     Some(param_client_heartbeat) => param_client_heartbeat,
                                     None => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from("Missing required body parameter ClientHeartbeat"))
+                                                        .body(BoxBody::new("Missing required body parameter ClientHeartbeat".to_string()))
                                                         .expect("Unable to create Bad Request response for missing body parameter ClientHeartbeat")),
                                 };
 
                             let result = api_impl
                                 .client_heartbeat(param_client_heartbeat, &context)
                                 .await;
-                            let mut response = Response::new(Body::empty());
+                            let mut response =
+                                Response::new(BoxBody::new(http_body_util::Empty::new()));
                             response.headers_mut().insert(
                                 HeaderName::from_static("x-span-id"),
                                 HeaderValue::from_str(
@@ -282,8 +310,7 @@ where
                                     HeaderName::from_static("warning"),
                                     HeaderValue::from_str(
                                         format!(
-                                            "Ignoring unknown fields in body: {:?}",
-                                            unused_elements
+                                            "Ignoring unknown fields in body: {unused_elements:?}"
                                         )
                                         .as_str(),
                                     )
@@ -296,20 +323,21 @@ where
                                         *response.status_mut() = StatusCode::from_u16(200)
                                             .expect("Unable to turn 200 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                 },
                                 Err(_) => {
                                     // Application code returned an error. This should not happen, as the implementation should
                                     // return a valid response.
                                     *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                                    *response.body_mut() = Body::from("An internal error occurred");
+                                    *response.body_mut() =
+                                        body_from_str("An internal error occurred");
                                 }
                             }
 
@@ -317,7 +345,10 @@ where
                         }
                         Err(e) => Ok(Response::builder()
                             .status(StatusCode::BAD_REQUEST)
-                            .body(Body::from(format!("Unable to read body: {}", e)))
+                            .body(body_from_string(format!(
+                                "Unable to read body: {}",
+                                e.into()
+                            )))
                             .expect(
                                 "Unable to create Bad Request response due to unable to read body",
                             )),
@@ -327,7 +358,7 @@ where
                 // GetServerConfiguration - GET /server_configuration
                 hyper::Method::GET if path.matched(paths::ID_SERVER_CONFIGURATION) => {
                     let result = api_impl.get_server_configuration(&context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -341,41 +372,37 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                GetServerConfigurationResponse::TheCurrentServerConfiguration(
-                                    body,
-                                ) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                GetServerConfigurationResponse::FailedToGetConfiguration(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(400)
-                                        .expect("Unable to turn 400 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
+                        Ok(rsp) => match rsp {
+                            GetServerConfigurationResponse::TheCurrentServerConfiguration(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            GetServerConfigurationResponse::FailedToGetConfiguration(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -385,7 +412,7 @@ where
                 // ListSessions - GET /sessions
                 hyper::Method::GET if path.matched(paths::ID_SESSIONS) => {
                     let result = api_impl.list_sessions(&context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -399,27 +426,25 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                ListSessionsResponse::ListOfActiveSessions(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
+                        Ok(rsp) => match rsp {
+                            ListSessionsResponse::ListOfActiveSessions(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -431,22 +456,23 @@ where
                     // Handle body parameters (note that non-required body parameters will ignore garbage
                     // values, rather than causing a 400 response). Produce warning header and logs for
                     // any unused fields.
-                    let result = body.into_raw().await;
+                    let result = http_body_util::BodyExt::collect(body)
+                        .await
+                        .map(|f| f.to_bytes().to_vec());
                     match result {
                         Ok(body) => {
                             let mut unused_elements: Vec<String> = vec![];
                             let param_new_session: Option<models::NewSession> = if !body.is_empty()
                             {
-                                let deserializer =
-                                    &mut serde_json::Deserializer::from_slice(&*body);
+                                let deserializer = &mut serde_json::Deserializer::from_slice(&body);
                                 match serde_ignored::deserialize(deserializer, |path| {
-                                            warn!("Ignoring unknown field in body: {}", path);
+                                            warn!("Ignoring unknown field in body: {path}");
                                             unused_elements.push(path.to_string());
                                     }) {
                                         Ok(param_new_session) => param_new_session,
                                         Err(e) => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from(format!("Couldn't parse body parameter NewSession - doesn't match schema: {}", e)))
+                                                        .body(BoxBody::new(format!("Couldn't parse body parameter NewSession - doesn't match schema: {e}")))
                                                         .expect("Unable to create Bad Request response for invalid body parameter NewSession due to schema")),
                                     }
                             } else {
@@ -456,12 +482,13 @@ where
                                     Some(param_new_session) => param_new_session,
                                     None => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from("Missing required body parameter NewSession"))
+                                                        .body(BoxBody::new("Missing required body parameter NewSession".to_string()))
                                                         .expect("Unable to create Bad Request response for missing body parameter NewSession")),
                                 };
 
                             let result = api_impl.new_session(param_new_session, &context).await;
-                            let mut response = Response::new(Body::empty());
+                            let mut response =
+                                Response::new(BoxBody::new(http_body_util::Empty::new()));
                             response.headers_mut().insert(
                                 HeaderName::from_static("x-span-id"),
                                 HeaderValue::from_str(
@@ -479,8 +506,7 @@ where
                                     HeaderName::from_static("warning"),
                                     HeaderValue::from_str(
                                         format!(
-                                            "Ignoring unknown fields in body: {:?}",
-                                            unused_elements
+                                            "Ignoring unknown fields in body: {unused_elements:?}"
                                         )
                                         .as_str(),
                                     )
@@ -493,25 +519,25 @@ where
                                         *response.status_mut() = StatusCode::from_u16(200)
                                             .expect("Unable to turn 200 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                     NewSessionResponse::InvalidRequest(body) => {
                                         *response.status_mut() = StatusCode::from_u16(400)
                                             .expect("Unable to turn 400 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                     NewSessionResponse::Unauthorized => {
                                         *response.status_mut() = StatusCode::from_u16(401)
@@ -522,7 +548,8 @@ where
                                     // Application code returned an error. This should not happen, as the implementation should
                                     // return a valid response.
                                     *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                                    *response.body_mut() = Body::from("An internal error occurred");
+                                    *response.body_mut() =
+                                        body_from_str("An internal error occurred");
                                 }
                             }
 
@@ -530,7 +557,10 @@ where
                         }
                         Err(e) => Ok(Response::builder()
                             .status(StatusCode::BAD_REQUEST)
-                            .body(Body::from(format!("Unable to read body: {}", e)))
+                            .body(body_from_string(format!(
+                                "Unable to read body: {}",
+                                e.into()
+                            )))
                             .expect(
                                 "Unable to create Bad Request response due to unable to read body",
                             )),
@@ -540,7 +570,7 @@ where
                 // ServerStatus - GET /status
                 hyper::Method::GET if path.matched(paths::ID_STATUS) => {
                     let result = api_impl.server_status(&context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -554,39 +584,37 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                ServerStatusResponse::ServerStatusAndInformation(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                ServerStatusResponse::Error(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(400)
-                                        .expect("Unable to turn 400 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
+                        Ok(rsp) => match rsp {
+                            ServerStatusResponse::ServerStatusAndInformation(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            ServerStatusResponse::Error(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -598,22 +626,24 @@ where
                     // Handle body parameters (note that non-required body parameters will ignore garbage
                     // values, rather than causing a 400 response). Produce warning header and logs for
                     // any unused fields.
-                    let result = body.into_raw().await;
+                    let result = http_body_util::BodyExt::collect(body)
+                        .await
+                        .map(|f| f.to_bytes().to_vec());
                     match result {
                         Ok(body) => {
                             let mut unused_elements: Vec<String> = vec![];
                             let param_server_configuration: Option<models::ServerConfiguration> =
                                 if !body.is_empty() {
                                     let deserializer =
-                                        &mut serde_json::Deserializer::from_slice(&*body);
+                                        &mut serde_json::Deserializer::from_slice(&body);
                                     match serde_ignored::deserialize(deserializer, |path| {
-                                            warn!("Ignoring unknown field in body: {}", path);
+                                            warn!("Ignoring unknown field in body: {path}");
                                             unused_elements.push(path.to_string());
                                     }) {
                                         Ok(param_server_configuration) => param_server_configuration,
                                         Err(e) => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from(format!("Couldn't parse body parameter ServerConfiguration - doesn't match schema: {}", e)))
+                                                        .body(BoxBody::new(format!("Couldn't parse body parameter ServerConfiguration - doesn't match schema: {e}")))
                                                         .expect("Unable to create Bad Request response for invalid body parameter ServerConfiguration due to schema")),
                                     }
                                 } else {
@@ -623,14 +653,15 @@ where
                                     Some(param_server_configuration) => param_server_configuration,
                                     None => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from("Missing required body parameter ServerConfiguration"))
+                                                        .body(BoxBody::new("Missing required body parameter ServerConfiguration".to_string()))
                                                         .expect("Unable to create Bad Request response for missing body parameter ServerConfiguration")),
                                 };
 
                             let result = api_impl
                                 .set_server_configuration(param_server_configuration, &context)
                                 .await;
-                            let mut response = Response::new(Body::empty());
+                            let mut response =
+                                Response::new(BoxBody::new(http_body_util::Empty::new()));
                             response.headers_mut().insert(
                                 HeaderName::from_static("x-span-id"),
                                 HeaderValue::from_str(
@@ -648,8 +679,7 @@ where
                                     HeaderName::from_static("warning"),
                                     HeaderValue::from_str(
                                         format!(
-                                            "Ignoring unknown fields in body: {:?}",
-                                            unused_elements
+                                            "Ignoring unknown fields in body: {unused_elements:?}"
                                         )
                                         .as_str(),
                                     )
@@ -662,32 +692,33 @@ where
                                         *response.status_mut() = StatusCode::from_u16(200)
                                             .expect("Unable to turn 200 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                     SetServerConfigurationResponse::Error(body) => {
                                         *response.status_mut() = StatusCode::from_u16(400)
                                             .expect("Unable to turn 400 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                 },
                                 Err(_) => {
                                     // Application code returned an error. This should not happen, as the implementation should
                                     // return a valid response.
                                     *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                                    *response.body_mut() = Body::from("An internal error occurred");
+                                    *response.body_mut() =
+                                        body_from_str("An internal error occurred");
                                 }
                             }
 
@@ -695,7 +726,10 @@ where
                         }
                         Err(e) => Ok(Response::builder()
                             .status(StatusCode::BAD_REQUEST)
-                            .body(Body::from(format!("Unable to read body: {}", e)))
+                            .body(body_from_string(format!(
+                                "Unable to read body: {}",
+                                e.into()
+                            )))
                             .expect(
                                 "Unable to create Bad Request response due to unable to read body",
                             )),
@@ -705,7 +739,7 @@ where
                 // ShutdownServer - POST /shutdown
                 hyper::Method::POST if path.matched(paths::ID_SHUTDOWN) => {
                     let result = api_impl.shutdown_server(&context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -719,43 +753,41 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                ShutdownServerResponse::ShuttingDown(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                ShutdownServerResponse::ShutdownFailed(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(400)
-                                        .expect("Unable to turn 400 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                ShutdownServerResponse::Unauthorized => {
-                                    *response.status_mut() = StatusCode::from_u16(401)
-                                        .expect("Unable to turn 401 into a StatusCode");
-                                }
+                        Ok(rsp) => match rsp {
+                            ShutdownServerResponse::ShuttingDown(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            ShutdownServerResponse::ShutdownFailed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            ShutdownServerResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -778,35 +810,36 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     // Handle body parameters (note that non-required body parameters will ignore garbage
                     // values, rather than causing a 400 response). Produce warning header and logs for
                     // any unused fields.
-                    let result = body.into_raw().await;
+                    let result = http_body_util::BodyExt::collect(body)
+                        .await
+                        .map(|f| f.to_bytes().to_vec());
                     match result {
                         Ok(body) => {
                             let mut unused_elements: Vec<String> = vec![];
                             let param_connection_info: Option<models::ConnectionInfo> = if !body
                                 .is_empty()
                             {
-                                let deserializer =
-                                    &mut serde_json::Deserializer::from_slice(&*body);
+                                let deserializer = &mut serde_json::Deserializer::from_slice(&body);
                                 match serde_ignored::deserialize(deserializer, |path| {
-                                            warn!("Ignoring unknown field in body: {}", path);
+                                            warn!("Ignoring unknown field in body: {path}");
                                             unused_elements.push(path.to_string());
                                     }) {
                                         Ok(param_connection_info) => param_connection_info,
                                         Err(e) => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from(format!("Couldn't parse body parameter ConnectionInfo - doesn't match schema: {}", e)))
+                                                        .body(BoxBody::new(format!("Couldn't parse body parameter ConnectionInfo - doesn't match schema: {e}")))
                                                         .expect("Unable to create Bad Request response for invalid body parameter ConnectionInfo due to schema")),
                                     }
                             } else {
@@ -816,14 +849,15 @@ where
                                     Some(param_connection_info) => param_connection_info,
                                     None => return Ok(Response::builder()
                                                         .status(StatusCode::BAD_REQUEST)
-                                                        .body(Body::from("Missing required body parameter ConnectionInfo"))
+                                                        .body(BoxBody::new("Missing required body parameter ConnectionInfo".to_string()))
                                                         .expect("Unable to create Bad Request response for missing body parameter ConnectionInfo")),
                                 };
 
                             let result = api_impl
                                 .adopt_session(param_session_id, param_connection_info, &context)
                                 .await;
-                            let mut response = Response::new(Body::empty());
+                            let mut response =
+                                Response::new(BoxBody::new(http_body_util::Empty::new()));
                             response.headers_mut().insert(
                                 HeaderName::from_static("x-span-id"),
                                 HeaderValue::from_str(
@@ -841,8 +875,7 @@ where
                                     HeaderName::from_static("warning"),
                                     HeaderValue::from_str(
                                         format!(
-                                            "Ignoring unknown fields in body: {:?}",
-                                            unused_elements
+                                            "Ignoring unknown fields in body: {unused_elements:?}"
                                         )
                                         .as_str(),
                                     )
@@ -855,25 +888,25 @@ where
                                         *response.status_mut() = StatusCode::from_u16(200)
                                             .expect("Unable to turn 200 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                     AdoptSessionResponse::AdoptionFailed(body) => {
                                         *response.status_mut() = StatusCode::from_u16(500)
                                             .expect("Unable to turn 500 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                     AdoptSessionResponse::SessionNotFound => {
                                         *response.status_mut() = StatusCode::from_u16(404)
@@ -888,7 +921,8 @@ where
                                     // Application code returned an error. This should not happen, as the implementation should
                                     // return a valid response.
                                     *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                                    *response.body_mut() = Body::from("An internal error occurred");
+                                    *response.body_mut() =
+                                        body_from_str("An internal error occurred");
                                 }
                             }
 
@@ -896,7 +930,10 @@ where
                         }
                         Err(e) => Ok(Response::builder()
                             .status(StatusCode::BAD_REQUEST)
-                            .body(Body::from(format!("Unable to read body: {}", e)))
+                            .body(body_from_string(format!(
+                                "Unable to read body: {}",
+                                e.into()
+                            )))
                             .expect(
                                 "Unable to create Bad Request response due to unable to read body",
                             )),
@@ -919,17 +956,17 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     let result = api_impl.channels_upgrade(param_session_id, &context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -943,47 +980,45 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                ChannelsUpgradeResponse::UpgradedConnection(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                ChannelsUpgradeResponse::InvalidRequest(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(400)
-                                        .expect("Unable to turn 400 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                ChannelsUpgradeResponse::Unauthorized => {
-                                    *response.status_mut() = StatusCode::from_u16(401)
-                                        .expect("Unable to turn 401 into a StatusCode");
-                                }
-                                ChannelsUpgradeResponse::SessionNotFound => {
-                                    *response.status_mut() = StatusCode::from_u16(404)
-                                        .expect("Unable to turn 404 into a StatusCode");
-                                }
+                        Ok(rsp) => match rsp {
+                            ChannelsUpgradeResponse::UpgradedConnection(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            ChannelsUpgradeResponse::InvalidRequest(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            ChannelsUpgradeResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            ChannelsUpgradeResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -1008,17 +1043,17 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     let result = api_impl.connection_info(param_session_id, &context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -1032,47 +1067,45 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                ConnectionInfoResponse::ConnectionInfo(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                ConnectionInfoResponse::Failed(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(500)
-                                        .expect("Unable to turn 500 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                ConnectionInfoResponse::Unauthorized => {
-                                    *response.status_mut() = StatusCode::from_u16(401)
-                                        .expect("Unable to turn 401 into a StatusCode");
-                                }
-                                ConnectionInfoResponse::SessionNotFound => {
-                                    *response.status_mut() = StatusCode::from_u16(404)
-                                        .expect("Unable to turn 404 into a StatusCode");
-                                }
+                        Ok(rsp) => match rsp {
+                            ConnectionInfoResponse::ConnectionInfo(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            ConnectionInfoResponse::Failed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(500)
+                                    .expect("Unable to turn 500 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            ConnectionInfoResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            ConnectionInfoResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -1095,17 +1128,17 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     let result = api_impl.delete_session(param_session_id, &context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -1119,47 +1152,45 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                DeleteSessionResponse::SessionDeleted(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                DeleteSessionResponse::FailedToDeleteSession(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(400)
-                                        .expect("Unable to turn 400 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                DeleteSessionResponse::Unauthorized => {
-                                    *response.status_mut() = StatusCode::from_u16(401)
-                                        .expect("Unable to turn 401 into a StatusCode");
-                                }
-                                DeleteSessionResponse::SessionNotFound => {
-                                    *response.status_mut() = StatusCode::from_u16(404)
-                                        .expect("Unable to turn 404 into a StatusCode");
-                                }
+                        Ok(rsp) => match rsp {
+                            DeleteSessionResponse::SessionDeleted(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            DeleteSessionResponse::FailedToDeleteSession(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            DeleteSessionResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            DeleteSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -1182,17 +1213,17 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     let result = api_impl.get_session(param_session_id, &context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -1206,43 +1237,41 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                GetSessionResponse::SessionDetails(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                GetSessionResponse::FailedToGetSession(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(400)
-                                        .expect("Unable to turn 400 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                GetSessionResponse::SessionNotFound => {
-                                    *response.status_mut() = StatusCode::from_u16(404)
-                                        .expect("Unable to turn 404 into a StatusCode");
-                                }
+                        Ok(rsp) => match rsp {
+                            GetSessionResponse::SessionDetails(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            GetSessionResponse::FailedToGetSession(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            GetSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -1265,17 +1294,17 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     let result = api_impl.interrupt_session(param_session_id, &context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -1289,47 +1318,45 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                InterruptSessionResponse::Interrupted(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                InterruptSessionResponse::InterruptFailed(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(400)
-                                        .expect("Unable to turn 400 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                InterruptSessionResponse::Unauthorized => {
-                                    *response.status_mut() = StatusCode::from_u16(401)
-                                        .expect("Unable to turn 401 into a StatusCode");
-                                }
-                                InterruptSessionResponse::SessionNotFound => {
-                                    *response.status_mut() = StatusCode::from_u16(404)
-                                        .expect("Unable to turn 404 into a StatusCode");
-                                }
+                        Ok(rsp) => match rsp {
+                            InterruptSessionResponse::Interrupted(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            InterruptSessionResponse::InterruptFailed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            InterruptSessionResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            InterruptSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -1352,17 +1379,17 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     let result = api_impl.kill_session(param_session_id, &context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -1376,47 +1403,45 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                KillSessionResponse::Killed(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                KillSessionResponse::KillFailed(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(400)
-                                        .expect("Unable to turn 400 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                KillSessionResponse::Unauthorized => {
-                                    *response.status_mut() = StatusCode::from_u16(401)
-                                        .expect("Unable to turn 401 into a StatusCode");
-                                }
-                                KillSessionResponse::SessionNotFound => {
-                                    *response.status_mut() = StatusCode::from_u16(404)
-                                        .expect("Unable to turn 404 into a StatusCode");
-                                }
+                        Ok(rsp) => match rsp {
+                            KillSessionResponse::Killed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            KillSessionResponse::KillFailed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            KillSessionResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            KillSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -1439,41 +1464,42 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     // Handle body parameters (note that non-required body parameters will ignore garbage
                     // values, rather than causing a 400 response). Produce warning header and logs for
                     // any unused fields.
-                    let result = body.into_raw().await;
+                    let result = http_body_util::BodyExt::collect(body)
+                        .await
+                        .map(|f| f.to_bytes().to_vec());
                     match result {
                         Ok(body) => {
                             let mut unused_elements: Vec<String> = vec![];
-                            let param_restart_session: Option<models::RestartSession> =
-                                if !body.is_empty() {
-                                    let deserializer =
-                                        &mut serde_json::Deserializer::from_slice(&*body);
-                                    match serde_ignored::deserialize(deserializer, |path| {
-                                        warn!("Ignoring unknown field in body: {}", path);
-                                        unused_elements.push(path.to_string());
-                                    }) {
-                                        Ok(param_restart_session) => param_restart_session,
-                                        Err(_) => None,
-                                    }
-                                } else {
-                                    None
-                                };
+                            let param_restart_session: Option<models::RestartSession> = if !body
+                                .is_empty()
+                            {
+                                let deserializer = &mut serde_json::Deserializer::from_slice(&body);
+                                serde_ignored::deserialize(deserializer, |path| {
+                                    warn!("Ignoring unknown field in body: {path}");
+                                    unused_elements.push(path.to_string());
+                                })
+                                .unwrap_or_default()
+                            } else {
+                                None
+                            };
 
                             let result = api_impl
                                 .restart_session(param_session_id, param_restart_session, &context)
                                 .await;
-                            let mut response = Response::new(Body::empty());
+                            let mut response =
+                                Response::new(BoxBody::new(http_body_util::Empty::new()));
                             response.headers_mut().insert(
                                 HeaderName::from_static("x-span-id"),
                                 HeaderValue::from_str(
@@ -1491,8 +1517,7 @@ where
                                     HeaderName::from_static("warning"),
                                     HeaderValue::from_str(
                                         format!(
-                                            "Ignoring unknown fields in body: {:?}",
-                                            unused_elements
+                                            "Ignoring unknown fields in body: {unused_elements:?}"
                                         )
                                         .as_str(),
                                     )
@@ -1505,25 +1530,25 @@ where
                                         *response.status_mut() = StatusCode::from_u16(200)
                                             .expect("Unable to turn 200 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                     RestartSessionResponse::RestartFailed(body) => {
                                         *response.status_mut() = StatusCode::from_u16(500)
                                             .expect("Unable to turn 500 into a StatusCode");
                                         response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
                                         // JSON Body
                                         let body = serde_json::to_string(&body)
                                             .expect("impossible to fail to serialize");
-                                        *response.body_mut() = Body::from(body);
+                                        *response.body_mut() = body_from_string(body);
                                     }
                                     RestartSessionResponse::Unauthorized => {
                                         *response.status_mut() = StatusCode::from_u16(401)
@@ -1538,7 +1563,8 @@ where
                                     // Application code returned an error. This should not happen, as the implementation should
                                     // return a valid response.
                                     *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                                    *response.body_mut() = Body::from("An internal error occurred");
+                                    *response.body_mut() =
+                                        body_from_str("An internal error occurred");
                                 }
                             }
 
@@ -1546,7 +1572,10 @@ where
                         }
                         Err(e) => Ok(Response::builder()
                             .status(StatusCode::BAD_REQUEST)
-                            .body(Body::from(format!("Unable to read body: {}", e)))
+                            .body(body_from_string(format!(
+                                "Unable to read body: {}",
+                                e.into()
+                            )))
                             .expect(
                                 "Unable to create Bad Request response due to unable to read body",
                             )),
@@ -1569,17 +1598,17 @@ where
                         Ok(param_session_id) => param_session_id,
                         Err(e) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't parse path parameter session_id: {}", e)))
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
                                         .expect("Unable to create Bad Request response for invalid path parameter")),
                     },
                     Err(_) => return Ok(Response::builder()
                                         .status(StatusCode::BAD_REQUEST)
-                                        .body(Body::from(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
                                         .expect("Unable to create Bad Request response for invalid percent decode"))
                 };
 
                     let result = api_impl.start_session(param_session_id, &context).await;
-                    let mut response = Response::new(Body::empty());
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
                     response.headers_mut().insert(
                         HeaderName::from_static("x-span-id"),
                         HeaderValue::from_str(
@@ -1593,47 +1622,45 @@ where
                     );
 
                     match result {
-                        Ok(rsp) => {
-                            match rsp {
-                                StartSessionResponse::Started(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(200)
-                                        .expect("Unable to turn 200 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                StartSessionResponse::StartFailed(body) => {
-                                    *response.status_mut() = StatusCode::from_u16(500)
-                                        .expect("Unable to turn 500 into a StatusCode");
-                                    response.headers_mut().insert(
-                                                        CONTENT_TYPE,
-                                                        HeaderValue::from_str("application/json")
-                                                            .expect("Unable to create Content-Type header for application/json"));
-                                    // JSON Body
-                                    let body = serde_json::to_string(&body)
-                                        .expect("impossible to fail to serialize");
-                                    *response.body_mut() = Body::from(body);
-                                }
-                                StartSessionResponse::SessionNotFound => {
-                                    *response.status_mut() = StatusCode::from_u16(404)
-                                        .expect("Unable to turn 404 into a StatusCode");
-                                }
-                                StartSessionResponse::Unauthorized => {
-                                    *response.status_mut() = StatusCode::from_u16(401)
-                                        .expect("Unable to turn 401 into a StatusCode");
-                                }
+                        Ok(rsp) => match rsp {
+                            StartSessionResponse::Started(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
                             }
-                        }
+                            StartSessionResponse::StartFailed(body) => {
+                                *response.status_mut() = StatusCode::from_u16(500)
+                                    .expect("Unable to turn 500 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            StartSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                            StartSessionResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                        },
                         Err(_) => {
                             // Application code returned an error. This should not happen, as the implementation should
                             // return a valid response.
                             *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                            *response.body_mut() = Body::from("An internal error occurred");
+                            *response.body_mut() = body_from_str("An internal error occurred");
                         }
                     }
 
@@ -1657,7 +1684,7 @@ where
                 _ if path.matched(paths::ID_STATUS) => method_not_allowed(),
                 _ => Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)
-                    .body(Body::empty())
+                    .body(BoxBody::new(http_body_util::Empty::new()))
                     .expect("Unable to create Not Found response")),
             }
         }
