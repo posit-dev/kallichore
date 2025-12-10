@@ -183,21 +183,11 @@ jobs:
                   cargo clean
                   cargo build ${{ matrix.flavor == 'release' && '--release' || '' }} --target ${{ matrix.rust_target_prefix }}-pc-windows-msvc
 
-            - name: Create archive
-              shell: pwsh
-              run: |
-                  # Compress the server to an archive
-                  $params = @{
-                    Path = "target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\${{ matrix.flavor }}\kcserver.exe", "LICENSE.txt"
-                    DestinationPath = "kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip"
-                  }
-                  Compress-Archive @params
-
-            - name: Upload client archive
+            - name: Upload unsigned executable for signing
               uses: actions/upload-artifact@v4
               with:
-                  name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-archive
-                  path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip
+                  name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-unsigned
+                  path: target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\${{ matrix.flavor }}\kcserver.exe
 
     build_linux:
         name: "Build Linux"
@@ -217,7 +207,7 @@ jobs:
                 arch: [x64, arm64]
                 flavor: [debug, release]
         with:
-            unsigned_artifact_name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-archive
+            unsigned_artifact_name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-unsigned
             signed_artifact_name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-signed
 
     repackage_signed_windows:
