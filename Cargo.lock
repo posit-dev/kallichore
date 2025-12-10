@@ -1191,7 +1191,7 @@ dependencies = [
 
 [[package]]
 name = "kcserver"
-version = "0.1.60"
+version = "0.1.61"
 dependencies = [
  "anyhow",
  "async-channel",

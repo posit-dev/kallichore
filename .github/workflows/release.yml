@@ -183,21 +183,11 @@ jobs:
                   cargo clean
                   cargo build ${{ matrix.flavor == 'release' && '--release' || '' }} --target ${{ matrix.rust_target_prefix }}-pc-windows-msvc
 
-            - name: Create archive
-              shell: pwsh
-              run: |
-                  # Compress the server to an archive
-                  $params = @{
-                    Path = "target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\${{ matrix.flavor }}\kcserver.exe", "LICENSE.txt"
-                    DestinationPath = "kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip"
-                  }
-                  Compress-Archive @params
-
-            - name: Upload client archive
+            - name: Upload unsigned executable for signing
               uses: actions/upload-artifact@v4
               with:
-                  name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-archive
-                  path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip
+                  name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-unsigned
+                  path: target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\${{ matrix.flavor }}\kcserver.exe
 
     build_linux:
         name: "Build Linux"
@@ -207,10 +197,57 @@ jobs:
         with:
             version: ${{ needs.get_version.outputs.KALLICHORE_VERSION }}
 
+    sign_windows:
+        name: "Sign Windows Binaries"
+        uses: posit-dev/posit-gh-actions/.github/workflows/sign-windows.yml@main
+        needs: [build_windows, get_version]
+        secrets: inherit
+        strategy:
+            matrix:
+                arch: [x64, arm64]
+                flavor: [debug, release]
+        with:
+            unsigned_artifact_name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-unsigned
+            signed_artifact_name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-signed
+
+    repackage_signed_windows:
+        name: Repackage Signed Windows Binaries
+        runs-on: windows-latest
+        needs: [sign_windows, get_version]
+        strategy:
+            matrix:
+                arch: [x64, arm64]
+                flavor: [debug, release]
+        steps:
+            - name: Checkout sources
+              uses: actions/checkout@v4
+
+            - name: Download signed executable
+              uses: actions/download-artifact@v4
+              with:
+                  name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-signed
+                  path: signed
+
+            - name: Create signed archive
+              shell: pwsh
+              run: |
+                  # Create the signed archive with the signed executable and license
+                  $params = @{
+                    Path = "signed\kcserver.exe", "LICENSE.txt"
+                    DestinationPath = "kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip"
+                  }
+                  Compress-Archive @params
+
+            - name: Upload signed archive
+              uses: actions/upload-artifact@v4
+              with:
+                  name: kallichore-${{ matrix.flavor }}-windows-${{ matrix.arch }}-signed-archive
+                  path: kallichore-${{ needs.get_version.outputs.KALLICHORE_VERSION }}-${{ matrix.flavor }}-windows-${{ matrix.arch }}.zip
+
     create_release:
         name: Create Release
         runs-on: ubuntu-latest
-        needs: [do_release, get_version, build_macos, build_windows, build_linux]
+        needs: [do_release, get_version, build_macos, repackage_signed_windows, build_linux]
         env:
             GITHUB_TOKEN: ${{ github.token }}
         outputs:
@@ -256,12 +293,12 @@ jobs:
             - name: Download Kallichore for Windows x64 (${{ matrix.flavor}})
               uses: actions/download-artifact@v4
               with:
-                  name: kallichore-${{ matrix.flavor }}-windows-x64-archive
+                  name: kallichore-${{ matrix.flavor }}-windows-x64-signed-archive
 
             - name: Download Kallichore for Windows arm64 (${{ matrix.flavor}})
               uses: actions/download-artifact@v4
               with:
-                  name: kallichore-${{ matrix.flavor }}-windows-arm64-archive
+                  name: kallichore-${{ matrix.flavor }}-windows-arm64-signed-archive
 
             - name: Download Kallichore for Linux x64 (${{ matrix.flavor}})
               uses: actions/download-artifact@v4
@@ -460,7 +497,7 @@ jobs:
     status:
         if: ${{ failure() }}
         runs-on: self-hosted
-        needs: [build_macos, build_windows, get_version]
+        needs: [build_macos, build_windows, sign_windows, repackage_signed_windows, get_version]
         steps:
             - name: Notify slack if build fails
               uses: slackapi/slack-github-action@v1.24.0
