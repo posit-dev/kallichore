@@ -330,7 +330,9 @@ async fn create_tcp_server(
                 let builder = HttpBuilder::new(TokioExecutor::new());
                 // Use serve_connection_with_upgrades to support WebSocket upgrades
                 if let Err(e) = builder.serve_connection_with_upgrades(io, &mut svc).await {
-                    log::error!("Error serving connection: {}", e);
+                    // Connection shutdown errors are common and expected when clients
+                    // disconnect - only log at debug level to avoid noise
+                    log::debug!("TCP connection ended ({}): {}", addr, e);
                 }
             });
         }
@@ -471,7 +473,9 @@ async fn create_named_pipe_server(
                 let builder = HttpBuilder::new(TokioExecutor::new());
                 // Use serve_connection_with_upgrades to support WebSocket upgrades
                 if let Err(e) = builder.serve_connection_with_upgrades(io, &mut svc).await {
-                    log::error!("Error serving named pipe connection: {}", e);
+                    // Connection shutdown errors are common and expected when clients
+                    // disconnect - only log at debug level to avoid noise
+                    log::debug!("Named pipe connection ended: {}", e);
                 }
             });
         }
