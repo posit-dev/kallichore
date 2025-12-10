@@ -354,7 +354,7 @@ async fn create_unix_server(
         log_level,
         true,
         socket_dir,
-        main_server_socket,
+        main_server_socket.clone(),
     );
     let server = config.create_server();
 
@@ -364,6 +364,9 @@ async fn create_unix_server(
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
     let service = Arc::new(service);
+
+    // Clone socket path for use in the async block
+    let socket_path_for_logging = main_server_socket.clone();
 
     // Create the server future that accepts connections on Unix domain socket
     let server_future = async move {
@@ -378,6 +381,7 @@ async fn create_unix_server(
 
             let io = TokioIo::new(stream);
             let make_service = service.clone();
+            let socket_path = socket_path_for_logging.clone();
 
             tokio::spawn(async move {
                 // For Unix sockets, we use () as the target since there's no addr
@@ -393,7 +397,10 @@ async fn create_unix_server(
                 let builder = HttpBuilder::new(TokioExecutor::new());
                 // Use serve_connection_with_upgrades to support WebSocket upgrades
                 if let Err(e) = builder.serve_connection_with_upgrades(io, &mut svc).await {
-                    log::error!("Error serving Unix socket connection: {}", e);
+                    // Connection shutdown errors are common and expected when clients
+                    // disconnect - only log at debug level to avoid noise
+                    let socket_info = socket_path.as_deref().unwrap_or("unknown");
+                    log::debug!("Unix socket connection ended ({}): {}", socket_info, e);
                 }
             });
         }
