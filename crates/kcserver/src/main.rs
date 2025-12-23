@@ -28,6 +28,7 @@ mod kernel_session;
 mod kernel_state;
 mod registration_file;
 mod registration_socket;
+mod resource_monitor;
 mod server;
 mod startup_status;
 mod transport;
@@ -179,6 +180,12 @@ struct Args {
     /// idle.
     #[arg(short, long)]
     idle_shutdown_hours: Option<u16>,
+
+    /// The interval in milliseconds at which resource usage is sampled. A value
+    /// of 0 disables resource usage sampling. If not specified, defaults to
+    /// 1000 ms.
+    #[arg(short, long)]
+    resource_sample_interval: Option<u16>,
 
     /// The log level to use. Valid values are "trace", "debug", "info", "warn",
     /// and "error". If not specified, the default log level is "info", or the
@@ -401,6 +408,9 @@ async fn main() {
     // Convert the transport to a server listener
     let server_listener = transport.into_server_listener();
 
+    // Determine the resource sample interval (default to 1000ms if not specified)
+    let resource_sample_interval_ms = args.resource_sample_interval.unwrap_or(1000) as u64;
+
     // Pass the listener to the server
     server::create_with_listener(
         server_listener,
@@ -410,6 +420,7 @@ async fn main() {
         #[cfg(unix)]
         args.socket_dir,
         main_server_socket,
+        resource_sample_interval_ms,
     )
     .await;
 }

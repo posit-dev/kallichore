@@ -10,6 +10,7 @@
 
 #![allow(unused_imports)]
 
+use crate::resource_monitor;
 use crate::websocket_service::ApiWebsocketExt;
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -107,6 +108,7 @@ pub async fn create_with_listener(
     log_level: Option<String>,
     #[cfg(unix)] socket_dir: Option<String>,
     _main_server_socket: Option<String>,
+    resource_sample_interval_ms: u64,
 ) {
     match listener {
         ServerListener::Tcp(tcp_listener) => {
@@ -117,10 +119,18 @@ pub async fn create_with_listener(
                 idle_shutdown_hours,
                 log_level,
                 socket_dir,
+                resource_sample_interval_ms,
             )
             .await;
             #[cfg(not(unix))]
-            create_tcp_server(tcp_listener, token, idle_shutdown_hours, log_level).await;
+            create_tcp_server(
+                tcp_listener,
+                token,
+                idle_shutdown_hours,
+                log_level,
+                resource_sample_interval_ms,
+            )
+            .await;
         }
         #[cfg(unix)]
         ServerListener::Unix(unix_listener) => {
@@ -131,12 +141,20 @@ pub async fn create_with_listener(
                 log_level,
                 socket_dir,
                 _main_server_socket,
+                resource_sample_interval_ms,
             )
             .await;
         }
         #[cfg(windows)]
         ServerListener::NamedPipe(pipe_name) => {
-            create_named_pipe_server(pipe_name, token, idle_shutdown_hours, log_level).await;
+            create_named_pipe_server(
+                pipe_name,
+                token,
+                idle_shutdown_hours,
+                log_level,
+                resource_sample_interval_ms,
+            )
+            .await;
         }
     }
 }
@@ -155,10 +173,28 @@ pub async fn create(
     let listener = tokio::net::TcpListener::from_std(listener)
         .expect("Failed to convert to tokio TcpListener");
 
+    // Default resource sample interval of 1000ms
+    let resource_sample_interval_ms = 1000u64;
+
     #[cfg(unix)]
-    create_tcp_server(listener, token, idle_shutdown_hours, log_level, None).await;
+    create_tcp_server(
+        listener,
+        token,
+        idle_shutdown_hours,
+        log_level,
+        None,
+        resource_sample_interval_ms,
+    )
+    .await;
     #[cfg(not(unix))]
-    create_tcp_server(listener, token, idle_shutdown_hours, log_level).await;
+    create_tcp_server(
+        listener,
+        token,
+        idle_shutdown_hours,
+        log_level,
+        resource_sample_interval_ms,
+    )
+    .await;
 }
 
 struct ServerConfig {
@@ -166,6 +202,7 @@ struct ServerConfig {
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
     uses_domain_sockets_or_pipes: bool,
+    resource_sample_interval_ms: u64,
     #[cfg(unix)]
     socket_dir: Option<String>,
     #[cfg(unix)]
@@ -181,12 +218,14 @@ impl ServerConfig {
         uses_domain_sockets_or_pipes: bool,
         socket_dir: Option<String>,
         main_server_socket: Option<String>,
+        resource_sample_interval_ms: u64,
     ) -> Self {
         Self {
             token,
             idle_shutdown_hours,
             log_level,
             uses_domain_sockets_or_pipes,
+            resource_sample_interval_ms,
             socket_dir,
             main_server_socket,
         }
@@ -198,12 +237,14 @@ impl ServerConfig {
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         uses_domain_sockets_or_pipes: bool,
+        resource_sample_interval_ms: u64,
     ) -> Self {
         Self {
             token,
             idle_shutdown_hours,
             log_level,
             uses_domain_sockets_or_pipes,
+            resource_sample_interval_ms,
         }
     }
 
@@ -226,6 +267,7 @@ impl ServerConfig {
             self.uses_domain_sockets_or_pipes,
             self.socket_dir.clone(),
             self.main_server_socket.clone(),
+            self.resource_sample_interval_ms,
         )
     }
 
@@ -236,6 +278,7 @@ impl ServerConfig {
             self.idle_shutdown_hours,
             self.effective_log_level(),
             self.uses_domain_sockets_or_pipes,
+            self.resource_sample_interval_ms,
         )
     }
 }
@@ -283,6 +326,7 @@ async fn create_tcp_server(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
     #[cfg(unix)] socket_dir: Option<String>,
+    resource_sample_interval_ms: u64,
 ) {
     #[cfg(unix)]
     let config = ServerConfig::new(
@@ -292,9 +336,16 @@ async fn create_tcp_server(
         false,
         socket_dir,
         None,
+        resource_sample_interval_ms,
     );
     #[cfg(not(unix))]
-    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, false);
+    let config = ServerConfig::new(
+        token,
+        idle_shutdown_hours,
+        log_level,
+        false,
+        resource_sample_interval_ms,
+    );
     let server = config.create_server();
 
     let service = WebsocketInterceptorMakeService::new(server.clone());
@@ -349,6 +400,7 @@ async fn create_unix_server(
     log_level: Option<String>,
     socket_dir: Option<String>,
     main_server_socket: Option<String>,
+    resource_sample_interval_ms: u64,
 ) {
     let config = ServerConfig::new(
         token,
@@ -357,6 +409,7 @@ async fn create_unix_server(
         true,
         socket_dir,
         main_server_socket.clone(),
+        resource_sample_interval_ms,
     );
     let server = config.create_server();
 
@@ -417,10 +470,17 @@ async fn create_named_pipe_server(
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
+    resource_sample_interval_ms: u64,
 ) {
     use tokio::net::windows::named_pipe::ServerOptions;
 
-    let config = ServerConfig::new(token, idle_shutdown_hours, log_level, true);
+    let config = ServerConfig::new(
+        token,
+        idle_shutdown_hours,
+        log_level,
+        true,
+        resource_sample_interval_ms,
+    );
     let server = config.create_server();
 
     // For named pipes, use the regular API service instead of the websocket interceptor
@@ -500,6 +560,9 @@ pub struct Server<C> {
     #[allow(dead_code)]
     log_level: Option<String>, // Channel to signal changes to idle configuration
     idle_config_update_tx: Sender<Option<u16>>,
+    // Resource sampling interval in milliseconds (0 = disabled)
+    #[allow(dead_code)]
+    resource_sample_interval_ms: u64,
     // Track whether this server is using Unix domain sockets
     #[cfg(unix)]
     #[allow(dead_code)]
@@ -530,6 +593,7 @@ impl<C> Server<C> {
         uses_domain_sockets: bool,
         socket_dir: Option<String>,
         main_server_socket: Option<String>,
+        resource_sample_interval_ms: u64,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -549,6 +613,12 @@ impl<C> Server<C> {
             idle_config_update_rx,
         );
 
+        // Start the global resource monitor
+        resource_monitor::start_global_resource_monitor(
+            kernel_sessions.clone(),
+            resource_sample_interval_ms,
+        );
+
         Server {
             token,
             started_time: std::time::Instant::now(),
@@ -560,6 +630,7 @@ impl<C> Server<C> {
             idle_shutdown_hours: shared_idle_hours,
             log_level,
             idle_config_update_tx,
+            resource_sample_interval_ms,
             uses_domain_sockets,
             #[cfg(unix)]
             active_domain_sockets: Arc::new(RwLock::new(vec![])),
@@ -576,6 +647,7 @@ impl<C> Server<C> {
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         uses_named_pipes: bool,
+        resource_sample_interval_ms: u64,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -595,6 +667,12 @@ impl<C> Server<C> {
             idle_config_update_rx,
         );
 
+        // Start the global resource monitor
+        resource_monitor::start_global_resource_monitor(
+            kernel_sessions.clone(),
+            resource_sample_interval_ms,
+        );
+
         Server {
             token,
             started_time: std::time::Instant::now(),
@@ -606,6 +684,7 @@ impl<C> Server<C> {
             idle_shutdown_hours: shared_idle_hours,
             log_level,
             idle_config_update_tx,
+            resource_sample_interval_ms,
             uses_named_pipes,
         }
     }
@@ -616,6 +695,7 @@ impl<C> Server<C> {
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         _uses_domain_sockets: bool,
+        resource_sample_interval_ms: u64,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -635,6 +715,12 @@ impl<C> Server<C> {
             idle_config_update_rx,
         );
 
+        // Start the global resource monitor
+        resource_monitor::start_global_resource_monitor(
+            kernel_sessions.clone(),
+            resource_sample_interval_ms,
+        );
+
         Server {
             token,
             started_time: std::time::Instant::now(),
@@ -646,6 +732,7 @@ impl<C> Server<C> {
             idle_shutdown_hours: shared_idle_hours,
             log_level,
             idle_config_update_tx,
+            resource_sample_interval_ms,
         }
     }
 

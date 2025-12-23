@@ -30,6 +30,25 @@ pub struct StatusUpdate {
     pub reason: Option<String>,
 }
 
+/// A resource usage update from the kernel
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceUpdate {
+    /// The CPU usage percentage for the kernel process and its children.
+    pub cpu_percent: u64,
+
+    /// The memory usage in bytes for the kernel process and its children.
+    pub memory_bytes: u64,
+
+    /// The thread count for the kernel process and its children.
+    pub thread_count: u64,
+
+    /// The current sampling period in milliseconds.
+    pub sampling_period_ms: u64,
+
+    /// A timestamp indicating when the resource usage was measured.
+    pub timestamp: u64,
+}
+
 /// Messages that are sent from Kallichore to the client about the kernel
 /// itself. For messages bridging the Jupyter protocol, see `JupyterMessage`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +71,10 @@ pub enum KernelMessage {
     /// The kernel's working directory has changed. The parameter is the new
     /// working directory.
     WorkingDirChanged(String),
+
+    /// The kernel's resource usage has changed. The parameter is the new
+    /// resource usage information.
+    ResourceUsage(ResourceUpdate),
 
     /// The websocket connection to the client is about to be closed. The
     /// parameter is the reason for the disconnection.
