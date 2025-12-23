@@ -560,9 +560,10 @@ pub struct Server<C> {
     #[allow(dead_code)]
     log_level: Option<String>, // Channel to signal changes to idle configuration
     idle_config_update_tx: Sender<Option<u16>>,
-    // Resource sampling interval in milliseconds (0 = disabled)
-    #[allow(dead_code)]
-    resource_sample_interval_ms: u64,
+    // Shared, thread-safe storage for resource sampling interval in milliseconds (0 = disabled)
+    resource_sample_interval_ms: Arc<RwLock<u64>>,
+    // Channel to signal changes to resource sampling interval
+    resource_interval_update_tx: Sender<u64>,
     // Track whether this server is using Unix domain sockets
     #[cfg(unix)]
     #[allow(dead_code)]
@@ -613,10 +614,16 @@ impl<C> Server<C> {
             idle_config_update_rx,
         );
 
+        // Create shared storage and channel for resource sampling interval
+        let shared_resource_interval = Arc::new(RwLock::new(resource_sample_interval_ms));
+        let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
+
         // Start the global resource monitor
         resource_monitor::start_global_resource_monitor(
             kernel_sessions.clone(),
             resource_sample_interval_ms,
+            resource_interval_update_rx,
+            shared_resource_interval.clone(),
         );
 
         Server {
@@ -630,7 +637,8 @@ impl<C> Server<C> {
             idle_shutdown_hours: shared_idle_hours,
             log_level,
             idle_config_update_tx,
-            resource_sample_interval_ms,
+            resource_sample_interval_ms: shared_resource_interval,
+            resource_interval_update_tx,
             uses_domain_sockets,
             #[cfg(unix)]
             active_domain_sockets: Arc::new(RwLock::new(vec![])),
@@ -667,10 +675,16 @@ impl<C> Server<C> {
             idle_config_update_rx,
         );
 
+        // Create shared storage and channel for resource sampling interval
+        let shared_resource_interval = Arc::new(RwLock::new(resource_sample_interval_ms));
+        let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
+
         // Start the global resource monitor
         resource_monitor::start_global_resource_monitor(
             kernel_sessions.clone(),
             resource_sample_interval_ms,
+            resource_interval_update_rx,
+            shared_resource_interval.clone(),
         );
 
         Server {
@@ -684,7 +698,8 @@ impl<C> Server<C> {
             idle_shutdown_hours: shared_idle_hours,
             log_level,
             idle_config_update_tx,
-            resource_sample_interval_ms,
+            resource_sample_interval_ms: shared_resource_interval,
+            resource_interval_update_tx,
             uses_named_pipes,
         }
     }
@@ -715,10 +730,16 @@ impl<C> Server<C> {
             idle_config_update_rx,
         );
 
+        // Create shared storage and channel for resource sampling interval
+        let shared_resource_interval = Arc::new(RwLock::new(resource_sample_interval_ms));
+        let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
+
         // Start the global resource monitor
         resource_monitor::start_global_resource_monitor(
             kernel_sessions.clone(),
             resource_sample_interval_ms,
+            resource_interval_update_rx,
+            shared_resource_interval.clone(),
         );
 
         Server {
@@ -732,7 +753,8 @@ impl<C> Server<C> {
             idle_shutdown_hours: shared_idle_hours,
             log_level,
             idle_config_update_tx,
-            resource_sample_interval_ms,
+            resource_sample_interval_ms: shared_resource_interval,
+            resource_interval_update_tx,
         }
     }
 
@@ -1852,6 +1874,12 @@ where
             idle_hours_guard.map(|hours| hours as i32)
         };
 
+        // Read the resource_sample_interval_ms from the shared value
+        let resource_interval = {
+            let resource_interval_guard = self.resource_sample_interval_ms.read().unwrap();
+            Some(*resource_interval_guard as i32)
+        };
+
         // Convert log_level from String to ServerConfigurationLogLevel
         let log_level_enum =
             self.log_level
@@ -1870,6 +1898,7 @@ where
             kallichore_api::GetServerConfigurationResponse::TheCurrentServerConfiguration(
                 models::ServerConfiguration {
                     idle_shutdown_hours: idle_hours,
+                    resource_sample_interval_ms: resource_interval,
                     log_level: log_level_enum,
                 },
             ),
@@ -1926,6 +1955,38 @@ where
                 let mut idle_hours_guard = self.idle_shutdown_hours.write().unwrap();
                 *idle_hours_guard = new_idle_hours;
             }
+        }
+
+        // Check if resource_sample_interval_ms is provided in the configuration
+        if let Some(interval_ms) = configuration.resource_sample_interval_ms {
+            // Validate the value (must be non-negative)
+            if interval_ms < 0 {
+                return Ok(kallichore_api::SetServerConfigurationResponse::Error(
+                    models::Error {
+                        code: "400".to_string(),
+                        message: "resource_sample_interval_ms must be non-negative".to_string(),
+                        details: None,
+                    },
+                ));
+            }
+
+            let new_interval_ms = interval_ms as u64;
+
+            // Update the stored value by sending a message to the resource monitor
+            if let Err(e) = self.resource_interval_update_tx.send(new_interval_ms).await {
+                log::error!("Failed to send resource interval update: {:?}", e);
+                return Ok(kallichore_api::SetServerConfigurationResponse::Error(
+                    models::Error {
+                        code: "500".to_string(),
+                        message: "Failed to update resource sample interval configuration"
+                            .to_string(),
+                        details: Some(e.to_string()),
+                    },
+                ));
+            }
+
+            // Note: The shared storage is updated by the resource monitor task itself
+            // when it receives the update message, so we don't need to update it here
         }
 
         // Return success

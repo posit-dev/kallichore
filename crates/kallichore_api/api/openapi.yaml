@@ -952,12 +952,17 @@ components:
       type: object
     serverConfiguration:
       example:
+        resource_sample_interval_ms: 6
         log_level: trace
         idle_shutdown_hours: 0
       properties:
         idle_shutdown_hours:
           description: The number of hours the server will wait before shutting down
             idle sessions (-1 if idle shutdown is disabled)
+          type: integer
+        resource_sample_interval_ms:
+          description: The interval in milliseconds at which resource usage is sampled.
+            A value of 0 disables resource usage sampling.
           type: integer
         log_level:
           $ref: "#/components/schemas/serverConfiguration_log_level"

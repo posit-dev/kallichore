@@ -20,6 +20,8 @@ use std::time::Duration;
 use kcshared::kernel_message::{KernelMessage, ResourceUpdate};
 use kcshared::websocket_message::WebsocketMessage;
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 
 use crate::kernel_session::KernelSession;
 
@@ -37,109 +39,158 @@ struct ProcessMetrics {
 /// - Refreshes the process table once per interval (not per kernel)
 /// - Only sends updates to sessions with connected clients
 /// - Reuses the System instance for accurate CPU measurements
+/// - Supports dynamic interval updates via a channel
 ///
 /// # Arguments
 ///
 /// * `kernel_sessions` - Shared access to all kernel sessions
-/// * `sample_interval_ms` - Sampling interval in milliseconds (0 disables monitoring)
+/// * `sample_interval_ms` - Initial sampling interval in milliseconds (0 disables monitoring)
+/// * `interval_update_rx` - Receiver for interval update requests
+/// * `current_interval` - Shared storage for the current interval value
 pub fn start_global_resource_monitor(
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     sample_interval_ms: u64,
+    mut interval_update_rx: mpsc::Receiver<u64>,
+    current_interval: Arc<RwLock<u64>>,
 ) {
     // Don't start if monitoring is disabled
     if sample_interval_ms == 0 {
         log::info!("Resource monitoring disabled (sample_interval_ms = 0)");
-        return;
+        // Still spawn the task to handle potential enable requests
+    } else {
+        log::info!(
+            "Starting global resource monitor with {}ms interval",
+            sample_interval_ms
+        );
     }
-
-    log::info!(
-        "Starting global resource monitor with {}ms interval",
-        sample_interval_ms
-    );
 
     tokio::spawn(async move {
         // Create a System instance and keep it alive for accurate CPU measurements
         let mut system = System::new();
 
-        // Create the interval timer
-        let mut interval = tokio::time::interval(Duration::from_millis(sample_interval_ms));
+        // Track current interval
+        let mut current_sample_interval_ms = sample_interval_ms;
+
+        // Create the interval timer (or use a very long interval if disabled)
+        let effective_interval = if current_sample_interval_ms == 0 {
+            Duration::from_secs(3600) // 1 hour when disabled
+        } else {
+            Duration::from_millis(current_sample_interval_ms)
+        };
+        let mut interval = tokio::time::interval(effective_interval);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        // Consume the first tick immediately
+        interval.tick().await;
 
         loop {
-            // Wait for the next interval tick
-            interval.tick().await;
-
-            // Refresh all process data once
-            system.refresh_processes(ProcessesToUpdate::All);
-
-            // Get the current timestamp
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-
-            // Clone session data we need while holding the lock briefly
-            // This avoids holding the std::sync::RwLock across await points
-            let session_data: Vec<_> = {
-                let sessions = match kernel_sessions.read() {
-                    Ok(guard) => guard,
-                    Err(e) => {
-                        log::error!("Failed to acquire read lock on kernel_sessions: {}", e);
+            tokio::select! {
+                _ = interval.tick() => {
+                    // Skip if monitoring is disabled
+                    if current_sample_interval_ms == 0 {
                         continue;
                     }
-                };
 
-                sessions
-                    .iter()
-                    .map(|s| {
-                        (
-                            s.connection.session_id.clone(),
-                            s.state.clone(),
-                            s.ws_json_tx.clone(),
-                        )
-                    })
-                    .collect()
-            };
-            // Lock is now released
+                    // Refresh all process data once
+                    system.refresh_processes(ProcessesToUpdate::All);
 
-            for (session_id, state, ws_json_tx) in session_data {
-                // Read the kernel state (tokio::sync::RwLock)
-                let state_guard = state.read().await;
+                    // Get the current timestamp
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
 
-                // Skip if no client is connected
-                if !state_guard.connected {
-                    continue;
+                    // Clone session data we need while holding the lock briefly
+                    // This avoids holding the std::sync::RwLock across await points
+                    let session_data: Vec<_> = {
+                        let sessions = match kernel_sessions.read() {
+                            Ok(guard) => guard,
+                            Err(e) => {
+                                log::error!("Failed to acquire read lock on kernel_sessions: {}", e);
+                                continue;
+                            }
+                        };
+
+                        sessions
+                            .iter()
+                            .map(|s| {
+                                (
+                                    s.connection.session_id.clone(),
+                                    s.state.clone(),
+                                    s.ws_json_tx.clone(),
+                                )
+                            })
+                            .collect()
+                    };
+                    // Lock is now released
+
+                    for (session_id, state, ws_json_tx) in session_data {
+                        // Read the kernel state (tokio::sync::RwLock)
+                        let state_guard = state.read().await;
+
+                        // Skip if no client is connected
+                        if !state_guard.connected {
+                            continue;
+                        }
+
+                        // Skip if no process is running
+                        let pid = match state_guard.process_id {
+                            Some(pid) => pid,
+                            None => continue,
+                        };
+
+                        // Release the state lock before collecting metrics
+                        drop(state_guard);
+
+                        // Collect metrics for this kernel's process tree
+                        let metrics = collect_tree_metrics(&system, pid);
+
+                        // Create the resource update message
+                        let update = ResourceUpdate {
+                            cpu_percent: metrics.cpu_percent,
+                            memory_bytes: metrics.memory_bytes,
+                            thread_count: metrics.thread_count,
+                            sampling_period_ms: current_sample_interval_ms,
+                            timestamp,
+                        };
+
+                        let msg = WebsocketMessage::Kernel(KernelMessage::ResourceUsage(update));
+
+                        // Send the update (non-blocking, ignore errors if channel is full)
+                        if let Err(e) = ws_json_tx.try_send(msg) {
+                            log::trace!(
+                                "[session {}] Failed to send resource update: {}",
+                                session_id,
+                                e
+                            );
+                        }
+                    }
                 }
-
-                // Skip if no process is running
-                let pid = match state_guard.process_id {
-                    Some(pid) => pid,
-                    None => continue,
-                };
-
-                // Release the state lock before collecting metrics
-                drop(state_guard);
-
-                // Collect metrics for this kernel's process tree
-                let metrics = collect_tree_metrics(&system, pid);
-
-                // Create the resource update message
-                let update = ResourceUpdate {
-                    cpu_percent: metrics.cpu_percent,
-                    memory_bytes: metrics.memory_bytes,
-                    thread_count: metrics.thread_count,
-                    sampling_period_ms: sample_interval_ms,
-                    timestamp,
-                };
-
-                let msg = WebsocketMessage::Kernel(KernelMessage::ResourceUsage(update));
-
-                // Send the update (non-blocking, ignore errors if channel is full)
-                if let Err(e) = ws_json_tx.try_send(msg) {
-                    log::trace!(
-                        "[session {}] Failed to send resource update: {}",
-                        session_id,
-                        e
+                Some(new_interval_ms) = interval_update_rx.recv() => {
+                    log::info!(
+                        "Updating resource sample interval from {}ms to {}ms",
+                        current_sample_interval_ms,
+                        new_interval_ms
                     );
+
+                    current_sample_interval_ms = new_interval_ms;
+
+                    // Update the shared storage
+                    if let Ok(mut guard) = current_interval.write() {
+                        *guard = new_interval_ms;
+                    }
+
+                    // Recreate the interval with the new duration
+                    let effective_interval = if new_interval_ms == 0 {
+                        Duration::from_secs(3600) // 1 hour when disabled
+                    } else {
+                        Duration::from_millis(new_interval_ms)
+                    };
+                    interval = tokio::time::interval(effective_interval);
+                    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+                    // Consume the first tick immediately
+                    interval.tick().await;
                 }
             }
         }

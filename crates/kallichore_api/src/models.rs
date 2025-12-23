@@ -2531,6 +2531,11 @@ pub struct ServerConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_shutdown_hours: Option<i32>,
 
+    /// The interval in milliseconds at which resource usage is sampled. A value of 0 disables resource usage sampling.
+    #[serde(rename = "resource_sample_interval_ms")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_sample_interval_ms: Option<i32>,
+
     #[serde(rename = "log_level")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_level: Option<models::ServerConfigurationLogLevel>,
@@ -2541,6 +2546,7 @@ impl ServerConfiguration {
     pub fn new() -> ServerConfiguration {
         ServerConfiguration {
             idle_shutdown_hours: None,
+            resource_sample_interval_ms: None,
             log_level: None,
         }
     }
@@ -2558,6 +2564,15 @@ impl std::fmt::Display for ServerConfiguration {
                     [
                         "idle_shutdown_hours".to_string(),
                         idle_shutdown_hours.to_string(),
+                    ]
+                    .join(",")
+                }),
+            self.resource_sample_interval_ms
+                .as_ref()
+                .map(|resource_sample_interval_ms| {
+                    [
+                        "resource_sample_interval_ms".to_string(),
+                        resource_sample_interval_ms.to_string(),
                     ]
                     .join(",")
                 }),
@@ -2584,6 +2599,7 @@ impl std::str::FromStr for ServerConfiguration {
         #[allow(dead_code)]
         struct IntermediateRep {
             pub idle_shutdown_hours: Vec<i32>,
+            pub resource_sample_interval_ms: Vec<i32>,
             pub log_level: Vec<models::ServerConfigurationLogLevel>,
         }
 
@@ -2611,6 +2627,12 @@ impl std::str::FromStr for ServerConfiguration {
                         <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
+                    "resource_sample_interval_ms" => {
+                        intermediate_rep.resource_sample_interval_ms.push(
+                            <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                        )
+                    }
+                    #[allow(clippy::redundant_clone)]
                     "log_level" => intermediate_rep.log_level.push(
                         <models::ServerConfigurationLogLevel as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
@@ -2630,6 +2652,10 @@ impl std::str::FromStr for ServerConfiguration {
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(ServerConfiguration {
             idle_shutdown_hours: intermediate_rep.idle_shutdown_hours.into_iter().next(),
+            resource_sample_interval_ms: intermediate_rep
+                .resource_sample_interval_ms
+                .into_iter()
+                .next(),
             log_level: intermediate_rep.log_level.into_iter().next(),
         })
     }
