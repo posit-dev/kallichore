@@ -136,7 +136,9 @@ pub fn start_global_resource_monitor(
                         // Skip if no process is running
                         let pid = match state_guard.process_id {
                             Some(pid) => pid,
-                            None => continue,
+                            None => {
+                                continue;
+                            }
                         };
 
                         // Release the state lock before collecting metrics
