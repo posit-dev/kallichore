@@ -1164,7 +1164,7 @@
           "thread_count": {
             "type": "integer",
             "format": "int64",
-            "description": "The total number of threads used by the kernel process and its child processes"
+            "description": "The total number of threads used by the kernel process and its child processes (Linux only)"
           },
           "sampling_period_ms": {
             "type": "integer",

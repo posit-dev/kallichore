@@ -2330,15 +2330,15 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct ResourceUsage {
-    /// The percentage of CPU used by the kernel process
+    /// The percentage of CPU used by the kernel process and its child processes
     #[serde(rename = "cpu_percent")]
     pub cpu_percent: i64,
 
-    /// The amount of memory used by the kernel process in bytes
+    /// The amount of memory used by the kernel process and all of its child processes in bytes
     #[serde(rename = "memory_bytes")]
     pub memory_bytes: i64,
 
-    /// The number of threads used by the kernel process
+    /// The total number of threads used by the kernel process and its child processes (Linux only)
     #[serde(rename = "thread_count")]
     pub thread_count: i64,
 
