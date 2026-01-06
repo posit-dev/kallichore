@@ -894,15 +894,15 @@ components:
         timestamp: 9
       properties:
         cpu_percent:
-          description: The percentage of CPU used by the kernel process
+          description: The percentage of CPU used by the kernel process and its child processes
           format: int64
           type: integer
         memory_bytes:
-          description: The amount of memory used by the kernel process in bytes
+          description: The amount of memory used by the kernel process and its child processes in bytes
           format: int64
           type: integer
         thread_count:
-          description: The number of threads used by the kernel process
+          description: The number of threads used by the kernel process and its child processes
           format: int64
           type: integer
         sampling_period_ms:

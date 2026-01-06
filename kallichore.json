@@ -1154,17 +1154,17 @@
           "cpu_percent": {
             "type": "integer",
             "format": "int64",
-            "description": "The percentage of CPU used by the kernel process"
+            "description": "The percentage of CPU used by the kernel process and its child processes"
           },
           "memory_bytes": {
             "type": "integer",
             "format": "int64",
-            "description": "The amount of memory used by the kernel process in bytes"
+            "description": "The amount of memory used by the kernel process and all of its child processes in bytes"
           },
           "thread_count": {
             "type": "integer",
             "format": "int64",
-            "description": "The number of threads used by the kernel process"
+            "description": "The total number of threads used by the kernel process and its child processes"
           },
           "sampling_period_ms": {
             "type": "integer",

@@ -264,7 +264,7 @@ fn collect_tree_metrics(system: &System, root_pid: u32) -> ProcessMetrics {
     }
 
     ProcessMetrics {
-        cpu_percent: total_cpu as u64,
+        cpu_percent: total_cpu.round() as u64,
         memory_bytes: total_memory,
         thread_count: total_threads,
     }
