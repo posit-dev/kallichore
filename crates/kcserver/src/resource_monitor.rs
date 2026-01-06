@@ -161,11 +161,11 @@ pub fn start_global_resource_monitor(
                             let mut state_guard = state.write().await;
                             state_guard.resource_usage =
                                 Some(kallichore_api::models::ResourceUsage {
-                                    cpu_percent: metrics.cpu_percent as i32,
-                                    memory_bytes: metrics.memory_bytes as i32,
-                                    thread_count: metrics.thread_count as i32,
-                                    sampling_period_ms: current_sample_interval_ms as i32,
-                                    timestamp: timestamp as i32,
+                                    cpu_percent: metrics.cpu_percent as i64,
+                                    memory_bytes: metrics.memory_bytes as i64,
+                                    thread_count: metrics.thread_count as i64,
+                                    sampling_period_ms: current_sample_interval_ms as i64,
+                                    timestamp: timestamp as i64,
                                 });
                         }
 

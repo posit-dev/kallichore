@@ -895,20 +895,25 @@ components:
       properties:
         cpu_percent:
           description: The percentage of CPU used by the kernel process
+          format: int64
           type: integer
         memory_bytes:
           description: The amount of memory used by the kernel process in bytes
+          format: int64
           type: integer
         thread_count:
           description: The number of threads used by the kernel process
+          format: int64
           type: integer
         sampling_period_ms:
           description: The sampling period in milliseconds over which the resource
             usage was measured
+          format: int64
           type: integer
         timestamp:
           description: A Unix timestamp in milliseconds indicating when the resource
             usage was sampled
+          format: int64
           type: integer
       required:
       - cpu_percent

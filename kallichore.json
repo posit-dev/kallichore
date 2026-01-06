@@ -1153,22 +1153,27 @@
         "properties": {
           "cpu_percent": {
             "type": "integer",
+            "format": "int64",
             "description": "The percentage of CPU used by the kernel process"
           },
           "memory_bytes": {
             "type": "integer",
+            "format": "int64",
             "description": "The amount of memory used by the kernel process in bytes"
           },
           "thread_count": {
             "type": "integer",
+            "format": "int64",
             "description": "The number of threads used by the kernel process"
           },
           "sampling_period_ms": {
             "type": "integer",
+            "format": "int64",
             "description": "The sampling period in milliseconds over which the resource usage was measured"
           },
           "timestamp": {
             "type": "integer",
+            "format": "int64",
             "description": "A Unix timestamp in milliseconds indicating when the resource usage was sampled"
           }
         },

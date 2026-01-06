@@ -2332,33 +2332,33 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
 pub struct ResourceUsage {
     /// The percentage of CPU used by the kernel process
     #[serde(rename = "cpu_percent")]
-    pub cpu_percent: i32,
+    pub cpu_percent: i64,
 
     /// The amount of memory used by the kernel process in bytes
     #[serde(rename = "memory_bytes")]
-    pub memory_bytes: i32,
+    pub memory_bytes: i64,
 
     /// The number of threads used by the kernel process
     #[serde(rename = "thread_count")]
-    pub thread_count: i32,
+    pub thread_count: i64,
 
     /// The sampling period in milliseconds over which the resource usage was measured
     #[serde(rename = "sampling_period_ms")]
-    pub sampling_period_ms: i32,
+    pub sampling_period_ms: i64,
 
     /// A Unix timestamp in milliseconds indicating when the resource usage was sampled
     #[serde(rename = "timestamp")]
-    pub timestamp: i32,
+    pub timestamp: i64,
 }
 
 impl ResourceUsage {
     #[allow(clippy::new_without_default)]
     pub fn new(
-        cpu_percent: i32,
-        memory_bytes: i32,
-        thread_count: i32,
-        sampling_period_ms: i32,
-        timestamp: i32,
+        cpu_percent: i64,
+        memory_bytes: i64,
+        thread_count: i64,
+        sampling_period_ms: i64,
+        timestamp: i64,
     ) -> ResourceUsage {
         ResourceUsage {
             cpu_percent,
@@ -2407,11 +2407,11 @@ impl std::str::FromStr for ResourceUsage {
         #[derive(Default)]
         #[allow(dead_code)]
         struct IntermediateRep {
-            pub cpu_percent: Vec<i32>,
-            pub memory_bytes: Vec<i32>,
-            pub thread_count: Vec<i32>,
-            pub sampling_period_ms: Vec<i32>,
-            pub timestamp: Vec<i32>,
+            pub cpu_percent: Vec<i64>,
+            pub memory_bytes: Vec<i64>,
+            pub thread_count: Vec<i64>,
+            pub sampling_period_ms: Vec<i64>,
+            pub timestamp: Vec<i64>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -2435,23 +2435,23 @@ impl std::str::FromStr for ResourceUsage {
                 match key {
                     #[allow(clippy::redundant_clone)]
                     "cpu_percent" => intermediate_rep.cpu_percent.push(
-                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
                     "memory_bytes" => intermediate_rep.memory_bytes.push(
-                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
                     "thread_count" => intermediate_rep.thread_count.push(
-                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
                     "sampling_period_ms" => intermediate_rep.sampling_period_ms.push(
-                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
                     "timestamp" => intermediate_rep.timestamp.push(
-                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     _ => {
                         return std::result::Result::Err(
