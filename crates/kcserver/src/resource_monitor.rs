@@ -156,6 +156,19 @@ pub fn start_global_resource_monitor(
                             timestamp,
                         };
 
+                        // Store the resource usage in the session state
+                        {
+                            let mut state_guard = state.write().await;
+                            state_guard.resource_usage =
+                                Some(kallichore_api::models::ResourceUsage {
+                                    cpu_percent: metrics.cpu_percent as i32,
+                                    memory_bytes: metrics.memory_bytes as i32,
+                                    thread_count: metrics.thread_count as i32,
+                                    sampling_period_ms: current_sample_interval_ms as i32,
+                                    timestamp: timestamp as i32,
+                                });
+                        }
+
                         let msg = WebsocketMessage::Kernel(KernelMessage::ResourceUsage(update));
 
                         // Send the update (non-blocking, ignore errors if channel is full)
