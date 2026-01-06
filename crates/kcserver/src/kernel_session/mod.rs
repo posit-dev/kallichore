@@ -540,6 +540,7 @@ impl KernelSession {
             argv: self.argv.clone(),
             process_id: state.process_id.map(|pid| pid as i32),
             input_prompt: state.input_prompt.clone(),
+            resource_usage: state.resource_usage.clone(),
             idle_seconds,
             busy_seconds,
             continuation_prompt: state.continuation_prompt.clone(),

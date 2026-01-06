@@ -81,6 +81,9 @@ pub struct KernelState {
 
     /// The kernel information, as returned by the kernel_info_request message.
     pub kernel_info: Option<serde_json::Value>,
+
+    /// The most recent resource usage measurement for the kernel.
+    pub resource_usage: Option<models::ResourceUsage>,
 }
 
 impl KernelState {
@@ -110,6 +113,7 @@ impl KernelState {
             connection_file: None,
             client_socket_path: None,
             kernel_info: None,
+            resource_usage: None,
         }
     }
 

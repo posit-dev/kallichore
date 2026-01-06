@@ -712,7 +712,7 @@ components:
         process_id: 6
         input_prompt: input_prompt
         continuation_prompt: continuation_prompt
-        busy_seconds: 5
+        busy_seconds: 2
         kernel_info: "{}"
         session_id: session_id
         language: language
@@ -732,12 +732,18 @@ components:
           active: "{}"
         interrupt_mode: signal
         connected: true
+        resource_usage:
+          sampling_period_ms: 7
+          thread_count: 2
+          memory_bytes: 5
+          cpu_percent: 5
+          timestamp: 9
         session_mode: console
         initial_env:
           key: initial_env
         username: username
         status: uninitialized
-        idle_seconds: 5
+        idle_seconds: 3
       properties:
         session_id:
           description: A unique identifier for the session
@@ -796,6 +802,8 @@ components:
           description: "The kernel information, as returned by the kernel_info_request\
             \ message"
           type: object
+        resource_usage:
+          $ref: "#/components/schemas/resourceUsage"
         idle_seconds:
           description: "The number of seconds the session has been idle, or 0 if the\
             \ session is busy"
@@ -877,6 +885,46 @@ components:
       - uptime_seconds
       - version
       type: object
+    resourceUsage:
+      example:
+        sampling_period_ms: 7
+        thread_count: 2
+        memory_bytes: 5
+        cpu_percent: 5
+        timestamp: 9
+      properties:
+        cpu_percent:
+          description: The percentage of CPU used by the kernel process and its child
+            processes
+          format: int64
+          type: integer
+        memory_bytes:
+          description: The amount of memory used by the kernel process and all of
+            its child processes in bytes
+          format: int64
+          type: integer
+        thread_count:
+          description: The total number of threads used by the kernel process and
+            its child processes (Linux only)
+          format: int64
+          type: integer
+        sampling_period_ms:
+          description: The sampling period in milliseconds over which the resource
+            usage was measured
+          format: int64
+          type: integer
+        timestamp:
+          description: A Unix timestamp in milliseconds indicating when the resource
+            usage was sampled
+          format: int64
+          type: integer
+      required:
+      - cpu_percent
+      - memory_bytes
+      - sampling_period_ms
+      - thread_count
+      - timestamp
+      type: object
     sessionList:
       example:
         total: 0
@@ -884,7 +932,7 @@ components:
         - process_id: 6
           input_prompt: input_prompt
           continuation_prompt: continuation_prompt
-          busy_seconds: 5
+          busy_seconds: 2
           kernel_info: "{}"
           session_id: session_id
           language: language
@@ -904,16 +952,22 @@ components:
             active: "{}"
           interrupt_mode: signal
           connected: true
+          resource_usage:
+            sampling_period_ms: 7
+            thread_count: 2
+            memory_bytes: 5
+            cpu_percent: 5
+            timestamp: 9
           session_mode: console
           initial_env:
             key: initial_env
           username: username
           status: uninitialized
-          idle_seconds: 5
+          idle_seconds: 3
         - process_id: 6
           input_prompt: input_prompt
           continuation_prompt: continuation_prompt
-          busy_seconds: 5
+          busy_seconds: 2
           kernel_info: "{}"
           session_id: session_id
           language: language
@@ -933,12 +987,18 @@ components:
             active: "{}"
           interrupt_mode: signal
           connected: true
+          resource_usage:
+            sampling_period_ms: 7
+            thread_count: 2
+            memory_bytes: 5
+            cpu_percent: 5
+            timestamp: 9
           session_mode: console
           initial_env:
             key: initial_env
           username: username
           status: uninitialized
-          idle_seconds: 5
+          idle_seconds: 3
       properties:
         total:
           type: integer
@@ -952,12 +1012,17 @@ components:
       type: object
     serverConfiguration:
       example:
+        resource_sample_interval_ms: 6
         log_level: trace
         idle_shutdown_hours: 0
       properties:
         idle_shutdown_hours:
           description: The number of hours the server will wait before shutting down
             idle sessions (-1 if idle shutdown is disabled)
+          type: integer
+        resource_sample_interval_ms:
+          description: The interval in milliseconds at which resource usage is sampled.
+            A value of 0 disables resource usage sampling.
           type: integer
         log_level:
           $ref: "#/components/schemas/serverConfiguration_log_level"

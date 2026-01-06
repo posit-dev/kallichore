@@ -80,6 +80,10 @@ pub struct ActiveSession {
     #[serde(rename = "kernel_info")]
     pub kernel_info: serde_json::Value,
 
+    #[serde(rename = "resource_usage")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_usage: Option<models::ResourceUsage>,
+
     /// The number of seconds the session has been idle, or 0 if the session is busy
     #[serde(rename = "idle_seconds")]
     pub idle_seconds: i32,
@@ -134,6 +138,7 @@ impl ActiveSession {
             execution_queue,
             status,
             kernel_info,
+            resource_usage: None,
             idle_seconds,
             busy_seconds,
             socket_path: None,
@@ -184,6 +189,7 @@ impl std::fmt::Display for ActiveSession {
             // Skipping non-primitive type execution_queue in query parameter serialization
             // Skipping non-primitive type status in query parameter serialization
             // Skipping non-primitive type kernel_info in query parameter serialization
+            // Skipping non-primitive type resource_usage in query parameter serialization
             Some("idle_seconds".to_string()),
             Some(self.idle_seconds.to_string()),
             Some("busy_seconds".to_string()),
@@ -230,6 +236,7 @@ impl std::str::FromStr for ActiveSession {
             pub execution_queue: Vec<models::ExecutionQueue>,
             pub status: Vec<models::Status>,
             pub kernel_info: Vec<serde_json::Value>,
+            pub resource_usage: Vec<models::ResourceUsage>,
             pub idle_seconds: Vec<i32>,
             pub busy_seconds: Vec<i32>,
             pub socket_path: Vec<String>,
@@ -337,6 +344,11 @@ impl std::str::FromStr for ActiveSession {
                             .map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
+                    "resource_usage" => intermediate_rep.resource_usage.push(
+                        <models::ResourceUsage as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
                     "idle_seconds" => intermediate_rep.idle_seconds.push(
                         <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
@@ -440,6 +452,7 @@ impl std::str::FromStr for ActiveSession {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "kernel_info missing in ActiveSession".to_string())?,
+            resource_usage: intermediate_rep.resource_usage.into_iter().next(),
             idle_seconds: intermediate_rep
                 .idle_seconds
                 .into_iter()
@@ -2316,6 +2329,272 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ResourceUsage {
+    /// The percentage of CPU used by the kernel process and its child processes
+    #[serde(rename = "cpu_percent")]
+    pub cpu_percent: i64,
+
+    /// The amount of memory used by the kernel process and all of its child processes in bytes
+    #[serde(rename = "memory_bytes")]
+    pub memory_bytes: i64,
+
+    /// The total number of threads used by the kernel process and its child processes (Linux only)
+    #[serde(rename = "thread_count")]
+    pub thread_count: i64,
+
+    /// The sampling period in milliseconds over which the resource usage was measured
+    #[serde(rename = "sampling_period_ms")]
+    pub sampling_period_ms: i64,
+
+    /// A Unix timestamp in milliseconds indicating when the resource usage was sampled
+    #[serde(rename = "timestamp")]
+    pub timestamp: i64,
+}
+
+impl ResourceUsage {
+    #[allow(clippy::new_without_default)]
+    pub fn new(
+        cpu_percent: i64,
+        memory_bytes: i64,
+        thread_count: i64,
+        sampling_period_ms: i64,
+        timestamp: i64,
+    ) -> ResourceUsage {
+        ResourceUsage {
+            cpu_percent,
+            memory_bytes,
+            thread_count,
+            sampling_period_ms,
+            timestamp,
+        }
+    }
+}
+
+/// Converts the ResourceUsage value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for ResourceUsage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("cpu_percent".to_string()),
+            Some(self.cpu_percent.to_string()),
+            Some("memory_bytes".to_string()),
+            Some(self.memory_bytes.to_string()),
+            Some("thread_count".to_string()),
+            Some(self.thread_count.to_string()),
+            Some("sampling_period_ms".to_string()),
+            Some(self.sampling_period_ms.to_string()),
+            Some("timestamp".to_string()),
+            Some(self.timestamp.to_string()),
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ResourceUsage value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ResourceUsage {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub cpu_percent: Vec<i64>,
+            pub memory_bytes: Vec<i64>,
+            pub thread_count: Vec<i64>,
+            pub sampling_period_ms: Vec<i64>,
+            pub timestamp: Vec<i64>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ResourceUsage".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "cpu_percent" => intermediate_rep.cpu_percent.push(
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "memory_bytes" => intermediate_rep.memory_bytes.push(
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "thread_count" => intermediate_rep.thread_count.push(
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "sampling_period_ms" => intermediate_rep.sampling_period_ms.push(
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "timestamp" => intermediate_rep.timestamp.push(
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ResourceUsage".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ResourceUsage {
+            cpu_percent: intermediate_rep
+                .cpu_percent
+                .into_iter()
+                .next()
+                .ok_or_else(|| "cpu_percent missing in ResourceUsage".to_string())?,
+            memory_bytes: intermediate_rep
+                .memory_bytes
+                .into_iter()
+                .next()
+                .ok_or_else(|| "memory_bytes missing in ResourceUsage".to_string())?,
+            thread_count: intermediate_rep
+                .thread_count
+                .into_iter()
+                .next()
+                .ok_or_else(|| "thread_count missing in ResourceUsage".to_string())?,
+            sampling_period_ms: intermediate_rep
+                .sampling_period_ms
+                .into_iter()
+                .next()
+                .ok_or_else(|| "sampling_period_ms missing in ResourceUsage".to_string())?,
+            timestamp: intermediate_rep
+                .timestamp
+                .into_iter()
+                .next()
+                .ok_or_else(|| "timestamp missing in ResourceUsage".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ResourceUsage> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ResourceUsage>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ResourceUsage>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for ResourceUsage - value: {hdr_value} is invalid {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<ResourceUsage> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <ResourceUsage as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{value}' into ResourceUsage - {err}"
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {hdr_value:?} to string: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ResourceUsage>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ResourceUsage>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ResourceUsage>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<ResourceUsage> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <ResourceUsage as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into ResourceUsage - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct RestartSession {
     /// The desired working directory for the session after restart, if different from the session's working directory at startup
     #[serde(rename = "working_directory")]
@@ -2531,6 +2810,11 @@ pub struct ServerConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_shutdown_hours: Option<i32>,
 
+    /// The interval in milliseconds at which resource usage is sampled. A value of 0 disables resource usage sampling.
+    #[serde(rename = "resource_sample_interval_ms")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_sample_interval_ms: Option<i32>,
+
     #[serde(rename = "log_level")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_level: Option<models::ServerConfigurationLogLevel>,
@@ -2541,6 +2825,7 @@ impl ServerConfiguration {
     pub fn new() -> ServerConfiguration {
         ServerConfiguration {
             idle_shutdown_hours: None,
+            resource_sample_interval_ms: None,
             log_level: None,
         }
     }
@@ -2558,6 +2843,15 @@ impl std::fmt::Display for ServerConfiguration {
                     [
                         "idle_shutdown_hours".to_string(),
                         idle_shutdown_hours.to_string(),
+                    ]
+                    .join(",")
+                }),
+            self.resource_sample_interval_ms
+                .as_ref()
+                .map(|resource_sample_interval_ms| {
+                    [
+                        "resource_sample_interval_ms".to_string(),
+                        resource_sample_interval_ms.to_string(),
                     ]
                     .join(",")
                 }),
@@ -2584,6 +2878,7 @@ impl std::str::FromStr for ServerConfiguration {
         #[allow(dead_code)]
         struct IntermediateRep {
             pub idle_shutdown_hours: Vec<i32>,
+            pub resource_sample_interval_ms: Vec<i32>,
             pub log_level: Vec<models::ServerConfigurationLogLevel>,
         }
 
@@ -2611,6 +2906,12 @@ impl std::str::FromStr for ServerConfiguration {
                         <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
+                    "resource_sample_interval_ms" => {
+                        intermediate_rep.resource_sample_interval_ms.push(
+                            <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                        )
+                    }
+                    #[allow(clippy::redundant_clone)]
                     "log_level" => intermediate_rep.log_level.push(
                         <models::ServerConfigurationLogLevel as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
@@ -2630,6 +2931,10 @@ impl std::str::FromStr for ServerConfiguration {
         // Use the intermediate representation to return the struct
         std::result::Result::Ok(ServerConfiguration {
             idle_shutdown_hours: intermediate_rep.idle_shutdown_hours.into_iter().next(),
+            resource_sample_interval_ms: intermediate_rep
+                .resource_sample_interval_ms
+                .into_iter()
+                .next(),
             log_level: intermediate_rep.log_level.into_iter().next(),
         })
     }
