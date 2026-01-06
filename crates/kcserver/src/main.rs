@@ -12,7 +12,7 @@
 
 use std::fs::File;
 
-use clap::{command, Parser};
+use clap::Parser;
 
 mod client_session;
 use log::LevelFilter;
