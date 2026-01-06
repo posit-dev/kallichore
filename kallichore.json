@@ -1062,6 +1062,9 @@
             "type": "object",
             "description": "The kernel information, as returned by the kernel_info_request message"
           },
+          "resource_usage": {
+            "$ref": "#/components/schemas/resourceUsage"
+          },
           "idle_seconds": {
             "type": "integer",
             "description": "The number of seconds the session has been idle, or 0 if the session is busy"
@@ -1143,6 +1146,38 @@
           "started",
           "uptime_seconds",
           "version"
+        ]
+      },
+      "resourceUsage": {
+        "type": "object",
+        "properties": {
+          "cpu_percent": {
+            "type": "integer",
+            "description": "The percentage of CPU used by the kernel process"
+          },
+          "memory_bytes": {
+            "type": "integer",
+            "description": "The amount of memory used by the kernel process in bytes"
+          },
+          "thread_count": {
+            "type": "integer",
+            "description": "The number of threads used by the kernel process"
+          },
+          "sampling_period_ms": {
+            "type": "integer",
+            "description": "The sampling period in milliseconds over which the resource usage was measured"
+          },
+          "timestamp": {
+            "type": "integer",
+            "description": "A Unix timestamp in milliseconds indicating when the resource usage was sampled"
+          }
+        },
+        "required": [
+          "cpu_percent",
+          "memory_bytes",
+          "thread_count",
+          "sampling_period_ms",
+          "timestamp"
         ]
       },
       "sessionList": {

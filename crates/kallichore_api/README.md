@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2025-12-22T16:43:57.418560-08:00[America/Los_Angeles]
+- Build date: 2026-01-06T08:08:18.341875-08:00[America/Los_Angeles]
 - Generator version: 7.17.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -162,6 +162,7 @@ Method | HTTP request | Description
  - [InterruptMode](docs/InterruptMode.md)
  - [NewSession](docs/NewSession.md)
  - [NewSession200Response](docs/NewSession200Response.md)
+ - [ResourceUsage](docs/ResourceUsage.md)
  - [RestartSession](docs/RestartSession.md)
  - [ServerConfiguration](docs/ServerConfiguration.md)
  - [ServerConfigurationLogLevel](docs/ServerConfigurationLogLevel.md)
