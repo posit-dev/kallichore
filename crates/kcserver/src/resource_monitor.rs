@@ -7,11 +7,6 @@
 //
 
 //! Global resource usage monitor for all kernel sessions.
-//!
-//! This module provides efficient resource monitoring by:
-//! - Running a single global task that refreshes process data once per interval
-//! - Iterating over all connected kernel sessions to collect and send metrics
-//! - Avoiding redundant process table scans (one refresh serves all kernels)
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -35,11 +30,7 @@ struct ProcessMetrics {
 /// Start the global resource monitor.
 ///
 /// This function spawns a background task that periodically samples resource
-/// usage for all connected kernel sessions. It is efficient because it:
-/// - Refreshes the process table once per interval (not per kernel)
-/// - Only sends updates to sessions with connected clients
-/// - Reuses the System instance for accurate CPU measurements
-/// - Supports dynamic interval updates via a channel
+/// usage for all connected kernel sessions.
 ///
 /// # Arguments
 ///
@@ -255,7 +246,7 @@ fn collect_tree_metrics(system: &System, root_pid: u32) -> ProcessMetrics {
             total_cpu += proc.cpu_usage();
             total_memory += proc.memory();
             // Thread count: use tasks() if available, otherwise assume 1 thread
-            #[cfg(any(target_os = "linux", target_os = "android"))]
+            #[cfg(any(target_os = "linux"))]
             {
                 if let Some(tasks) = proc.tasks() {
                     total_threads += tasks.len() as u64;
@@ -263,7 +254,7 @@ fn collect_tree_metrics(system: &System, root_pid: u32) -> ProcessMetrics {
                     total_threads += 1;
                 }
             }
-            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            #[cfg(not(any(target_os = "linux")))]
             {
                 // On macOS and Windows, tasks() is not available
                 // Assume 1 thread per process as a baseline
