@@ -1970,7 +1970,14 @@ where
                 ));
             }
 
-            let new_interval_ms = interval_ms as u64;
+            // Enforce a minimum interval of 100 ms so we don't try to sample
+            // too frequently
+            let new_interval_ms = if interval_ms > 0 && interval_ms < 100 {
+                log::warn!("Requested resource_sample_interval_ms is too low: {}. Setting to minimum of 100 ms.", interval_ms);
+                100
+            } else {
+                interval_ms as u64
+            };
 
             // Update the stored value by sending a message to the resource monitor
             if let Err(e) = self.resource_interval_update_tx.send(new_interval_ms).await {
