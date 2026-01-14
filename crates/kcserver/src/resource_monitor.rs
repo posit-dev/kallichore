@@ -8,7 +8,6 @@
 
 //! Global resource usage monitor for all kernel sessions.
 
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -19,6 +18,7 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::kernel_session::KernelSession;
+use crate::process_tree;
 
 /// Metrics collected for a process tree
 struct ProcessMetrics {
@@ -82,9 +82,6 @@ pub fn start_global_resource_monitor(
                         continue;
                     }
 
-                    // Refresh all process data once
-                    system.refresh_processes(ProcessesToUpdate::All);
-
                     // Get the current timestamp
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -135,8 +132,19 @@ pub fn start_global_resource_monitor(
                         // Release the state lock before collecting metrics
                         drop(state_guard);
 
+                        // Get the process tree using OS-specific efficient enumeration
+                        let tree_pids = process_tree::get_process_tree(pid);
+
+                        // Refresh only the processes we need
+                        let pids_to_refresh: Vec<Pid> =
+                            tree_pids.iter().map(|&p| Pid::from_u32(p)).collect();
+                        system.refresh_processes(ProcessesToUpdate::Some(&pids_to_refresh));
+
+                        // Update the process cache tick counter (Windows only)
+                        process_tree::tick_process_cache(pid);
+
                         // Collect metrics for this kernel's process tree
-                        let metrics = collect_tree_metrics(&system, pid);
+                        let metrics = collect_tree_metrics(&system, &tree_pids);
 
                         // Create the resource update message
                         let update = ResourceUpdate {
@@ -203,50 +211,32 @@ pub fn start_global_resource_monitor(
     });
 }
 
-/// Collect metrics for a process and all its descendants.
+/// Collect metrics for a set of processes.
 ///
-/// This function walks the process tree starting from the given root PID,
-/// summing CPU usage, memory, and thread counts for the entire tree.
+/// This function sums CPU usage, memory, and thread counts for all processes
+/// in the provided set of PIDs.
 ///
 /// # Arguments
 ///
-/// * `system` - The sysinfo System instance (must have been refreshed)
-/// * `root_pid` - The root process ID to start from
+/// * `system` - The sysinfo System instance (must have been refreshed for the given PIDs)
+/// * `pids` - Set of process IDs to collect metrics for
 ///
 /// # Returns
 ///
-/// Aggregated metrics for the process tree
-fn collect_tree_metrics(system: &System, root_pid: u32) -> ProcessMetrics {
-    let pid = Pid::from_u32(root_pid);
-
+/// Aggregated metrics for the processes
+fn collect_tree_metrics(system: &System, pids: &std::collections::HashSet<u32>) -> ProcessMetrics {
     let mut total_cpu = 0.0f32;
     let mut total_memory = 0u64;
     let mut total_threads = 0u64;
 
-    // Collect all PIDs in process tree using BFS
-    let mut pids_to_check = vec![pid];
-    let mut visited = HashSet::new();
-
-    while let Some(check_pid) = pids_to_check.pop() {
-        if !visited.insert(check_pid) {
-            continue; // Already visited
-        }
-
-        // Find children by checking parent_pid
-        for (child_pid, proc) in system.processes() {
-            if proc.parent() == Some(check_pid) && !visited.contains(child_pid) {
-                pids_to_check.push(*child_pid);
-            }
-        }
-    }
-
     // Sum metrics for all processes in tree (using cached data)
-    for pid in &visited {
-        if let Some(proc) = system.process(*pid) {
+    for &pid in pids {
+        let sysinfo_pid = Pid::from_u32(pid);
+        if let Some(proc) = system.process(sysinfo_pid) {
             total_cpu += proc.cpu_usage();
             total_memory += proc.memory();
             // Thread count: use tasks() if available, otherwise assume 1 thread
-            #[cfg(any(target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             {
                 if let Some(tasks) = proc.tasks() {
                     total_threads += tasks.len() as u64;
@@ -254,7 +244,7 @@ fn collect_tree_metrics(system: &System, root_pid: u32) -> ProcessMetrics {
                     total_threads += 1;
                 }
             }
-            #[cfg(not(any(target_os = "linux")))]
+            #[cfg(not(target_os = "linux"))]
             {
                 // On macOS and Windows, tasks() is not available
                 // Assume 1 thread per process as a baseline

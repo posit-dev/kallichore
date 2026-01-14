@@ -26,6 +26,7 @@ mod jupyter_messages;
 mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
+mod process_tree;
 mod registration_file;
 mod registration_socket;
 mod resource_monitor;
