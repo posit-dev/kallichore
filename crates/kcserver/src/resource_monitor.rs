@@ -82,12 +82,6 @@ pub fn start_global_resource_monitor(
                         continue;
                     }
 
-                    // Get the current timestamp
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-
                     // Clone session data we need while holding the lock briefly
                     // This avoids holding the std::sync::RwLock across await points
                     let session_data: Vec<_> = {
@@ -111,6 +105,27 @@ pub fn start_global_resource_monitor(
                             .collect()
                     };
                     // Lock is now released
+
+                    // Check if any clients are connected before doing any work
+                    let mut has_connected_clients = false;
+                    for (_, state, _) in &session_data {
+                        let state_guard = state.read().await;
+                        if state_guard.connected {
+                            has_connected_clients = true;
+                            break;
+                        }
+                    }
+
+                    // Skip all work if no clients are connected
+                    if !has_connected_clients {
+                        continue;
+                    }
+
+                    // Get the current timestamp
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
 
                     for (session_id, state, ws_json_tx) in session_data {
                         // Read the kernel state (tokio::sync::RwLock)
