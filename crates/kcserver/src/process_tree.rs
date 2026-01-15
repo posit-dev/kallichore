@@ -39,10 +39,15 @@ pub fn get_process_tree(root_pid: u32) -> HashSet<u32> {
     }
 }
 
-/// Notify the process tree cache that a tick has occurred (Windows only).
-/// On other platforms, this is a no-op.
+/// Notify the process tree cache that a tick has occurred.
+/// This triggers periodic cache refresh on platforms that use caching.
 #[allow(unused_variables)]
 pub fn tick_process_cache(root_pid: u32) {
+    #[cfg(target_os = "linux")]
+    {
+        linux::tick_process_cache(root_pid);
+    }
+
     #[cfg(target_os = "windows")]
     {
         windows::tick_process_cache(root_pid);
@@ -53,6 +58,11 @@ pub fn tick_process_cache(root_pid: u32) {
 /// Called when a kernel session is terminated.
 #[allow(unused_variables, dead_code)]
 pub fn clear_process_cache(root_pid: u32) {
+    #[cfg(target_os = "linux")]
+    {
+        linux::clear_process_cache(root_pid);
+    }
+
     #[cfg(target_os = "windows")]
     {
         windows::clear_process_cache(root_pid);
@@ -70,15 +80,17 @@ mod macos {
     // FFI bindings for libproc
     #[link(name = "proc", kind = "dylib")]
     extern "C" {
-        fn proc_listchildpids(ppid: libc::c_int, buffer: *mut libc::c_int, buffersize: libc::c_int)
-            -> libc::c_int;
+        fn proc_listchildpids(
+            ppid: libc::c_int,
+            buffer: *mut libc::c_int,
+            buffersize: libc::c_int,
+        ) -> libc::c_int;
     }
 
     /// Get child PIDs of a process using proc_listchildpids()
     fn get_child_pids(pid: u32) -> Vec<u32> {
         // First call with null buffer to get the count
-        let count =
-            unsafe { proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0) };
+        let count = unsafe { proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0) };
 
         if count <= 0 {
             return Vec::new();
@@ -133,22 +145,48 @@ mod macos {
 }
 
 // =============================================================================
-// Linux implementation using PGID filtering
+// Linux implementation using PGID filtering with caching
 // =============================================================================
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
+    use std::sync::Mutex;
 
-    /// Get the PGID of a process by reading /proc/[pid]/stat
-    fn get_pgid(pid: u32) -> Option<u32> {
+    use once_cell::sync::Lazy;
+
+    /// How often to refresh the cache (in ticks)
+    const CACHE_REFRESH_INTERVAL: u32 = 5;
+
+    /// Global cache shared across all kernels
+    struct GlobalCache {
+        /// Parent map from the last /proc scan (pid -> ppid)
+        parent_map: HashMap<u32, u32>,
+        /// PGID map from the last /proc scan (pid -> pgid)
+        pgid_map: HashMap<u32, u32>,
+        /// Per-kernel cached process trees
+        kernel_caches: HashMap<u32, HashSet<u32>>,
+        /// Global tick counter (all kernels share the same clock)
+        tick_count: u32,
+    }
+
+    static GLOBAL_CACHE: Lazy<Mutex<GlobalCache>> = Lazy::new(|| {
+        Mutex::new(GlobalCache {
+            parent_map: HashMap::new(),
+            pgid_map: HashMap::new(),
+            kernel_caches: HashMap::new(),
+            tick_count: 0,
+        })
+    });
+
+    /// Parse /proc/[pid]/stat to extract (ppid, pgid)
+    fn parse_stat(pid: u32) -> Option<(u32, u32)> {
         let stat_path = format!("/proc/{}/stat", pid);
         let stat_content = fs::read_to_string(stat_path).ok()?;
 
         // The stat file format is: pid (comm) state ppid pgrp ...
-        // We need the 5th field (pgrp/pgid), but comm can contain spaces and parens
-        // So we find the last ')' and parse from there
+        // comm can contain spaces and parens, so find the last ')'
         let last_paren = stat_content.rfind(')')?;
         let fields_after_comm = &stat_content[last_paren + 2..]; // Skip ") "
         let fields: Vec<&str> = fields_after_comm.split_whitespace().collect();
@@ -158,70 +196,62 @@ mod linux {
             return None;
         }
 
-        fields[2].parse().ok()
+        let ppid = fields[1].parse().ok()?;
+        let pgid = fields[2].parse().ok()?;
+        Some((ppid, pgid))
     }
 
-    /// Get the PPID (parent PID) of a process
-    fn get_ppid(pid: u32) -> Option<u32> {
-        let stat_path = format!("/proc/{}/stat", pid);
-        let stat_content = fs::read_to_string(stat_path).ok()?;
+    /// Scan /proc once and build parent_map and pgid_map for all processes
+    fn scan_proc() -> (HashMap<u32, u32>, HashMap<u32, u32>) {
+        let mut parent_map = HashMap::new();
+        let mut pgid_map = HashMap::new();
 
-        let last_paren = stat_content.rfind(')')?;
-        let fields_after_comm = &stat_content[last_paren + 2..];
-        let fields: Vec<&str> = fields_after_comm.split_whitespace().collect();
-
-        // fields[0] = state, fields[1] = ppid
-        if fields.len() < 2 {
-            return None;
-        }
-
-        fields[1].parse().ok()
-    }
-
-    pub fn get_process_tree(root_pid: u32) -> HashSet<u32> {
-        let mut tree = HashSet::new();
-        tree.insert(root_pid);
-
-        // Get the PGID of the root process
-        let root_pgid = match get_pgid(root_pid) {
-            Some(pgid) => pgid,
-            None => return tree, // Process doesn't exist, return just the root
-        };
-
-        // Read /proc to find all processes
         let proc_dir = match fs::read_dir("/proc") {
             Ok(dir) => dir,
-            Err(_) => return tree,
+            Err(_) => return (parent_map, pgid_map),
         };
 
-        // Collect all PIDs that have the same PGID
-        let mut same_pgid_pids = Vec::new();
         for entry in proc_dir.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 
             // Only look at numeric directories (PIDs)
             if let Ok(pid) = name_str.parse::<u32>() {
-                if let Some(pgid) = get_pgid(pid) {
-                    if pgid == root_pgid {
-                        same_pgid_pids.push(pid);
-                    }
+                if let Some((ppid, pgid)) = parse_stat(pid) {
+                    parent_map.insert(pid, ppid);
+                    pgid_map.insert(pid, pgid);
                 }
             }
         }
 
-        // Now filter to only include descendants of root_pid
-        // Build a parent map for these processes
-        let mut parent_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-        for &pid in &same_pgid_pids {
-            if let Some(ppid) = get_ppid(pid) {
-                parent_map.insert(pid, ppid);
-            }
-        }
+        (parent_map, pgid_map)
+    }
+
+    /// Build a process tree for a root PID using the cached parent/pgid maps
+    fn build_tree_from_cache(
+        root_pid: u32,
+        parent_map: &HashMap<u32, u32>,
+        pgid_map: &HashMap<u32, u32>,
+    ) -> HashSet<u32> {
+        let mut tree = HashSet::new();
+        tree.insert(root_pid);
+
+        // Get the PGID of the root process
+        let root_pgid = match pgid_map.get(&root_pid) {
+            Some(&pgid) => pgid,
+            None => return tree, // Process doesn't exist
+        };
+
+        // Collect PIDs with the same PGID
+        let same_pgid_pids: Vec<u32> = pgid_map
+            .iter()
+            .filter(|(_, &pgid)| pgid == root_pgid)
+            .map(|(&pid, _)| pid)
+            .collect();
 
         // Check if each process is a descendant of root_pid
-        for &pid in &same_pgid_pids {
-            if is_descendant_of(pid, root_pid, &parent_map) {
+        for pid in same_pgid_pids {
+            if is_descendant_of(pid, root_pid, parent_map) {
                 tree.insert(pid);
             }
         }
@@ -230,11 +260,7 @@ mod linux {
     }
 
     /// Check if `pid` is a descendant of `ancestor` using the parent map
-    fn is_descendant_of(
-        pid: u32,
-        ancestor: u32,
-        parent_map: &std::collections::HashMap<u32, u32>,
-    ) -> bool {
+    fn is_descendant_of(pid: u32, ancestor: u32, parent_map: &HashMap<u32, u32>) -> bool {
         if pid == ancestor {
             return true;
         }
@@ -254,6 +280,54 @@ mod linux {
         }
 
         false
+    }
+
+    pub fn get_process_tree(root_pid: u32) -> HashSet<u32> {
+        let mut cache = GLOBAL_CACHE.lock().unwrap();
+
+        // Check if we have a cached result
+        if let Some(pids) = cache.kernel_caches.get(&root_pid) {
+            return pids.clone();
+        }
+
+        // No cache entry - need to build one
+        // If we have no /proc data yet, do an initial scan
+        if cache.parent_map.is_empty() {
+            let (parent_map, pgid_map) = scan_proc();
+            cache.parent_map = parent_map;
+            cache.pgid_map = pgid_map;
+        }
+
+        let pids = build_tree_from_cache(root_pid, &cache.parent_map, &cache.pgid_map);
+        cache.kernel_caches.insert(root_pid, pids.clone());
+        pids
+    }
+
+    pub fn tick_process_cache(_root_pid: u32) {
+        let mut cache = GLOBAL_CACHE.lock().unwrap();
+
+        cache.tick_count += 1;
+
+        if cache.tick_count >= CACHE_REFRESH_INTERVAL {
+            // Do ONE /proc scan for all kernels
+            let (parent_map, pgid_map) = scan_proc();
+            cache.parent_map = parent_map;
+            cache.pgid_map = pgid_map;
+
+            // Rebuild all kernel caches
+            let root_pids: Vec<u32> = cache.kernel_caches.keys().cloned().collect();
+            for root in root_pids {
+                let pids = build_tree_from_cache(root, &cache.parent_map, &cache.pgid_map);
+                cache.kernel_caches.insert(root, pids);
+            }
+
+            cache.tick_count = 0;
+        }
+    }
+
+    pub fn clear_process_cache(root_pid: u32) {
+        let mut cache = GLOBAL_CACHE.lock().unwrap();
+        cache.kernel_caches.remove(&root_pid);
     }
 }
 
