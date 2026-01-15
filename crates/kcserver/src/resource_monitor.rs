@@ -8,6 +8,7 @@
 
 //! Global resource usage monitor for all kernel sessions.
 
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -21,12 +22,10 @@ use tokio::time::MissedTickBehavior;
 use crate::kernel_session::KernelSession;
 use crate::process_tree;
 
-/// Metrics collected for a process tree (used on non-Linux platforms)
+/// CPU usage collected for a process tree (used on non-Linux platforms)
 #[cfg(not(target_os = "linux"))]
 struct ProcessMetrics {
     cpu_percent: u64,
-    memory_bytes: u64,
-    thread_count: u64,
 }
 
 /// Tracks CPU times for computing CPU usage percentage on Linux.
@@ -457,10 +456,10 @@ fn collect_memory_and_threads(
     (total_memory, total_threads)
 }
 
-/// Collect metrics for a set of processes.
+/// Collect CPU metrics for a set of processes.
 ///
-/// This function sums CPU usage, memory, and thread counts for all processes
-/// in the provided set of PIDs.
+/// This function sums CPU usage for all processes in the provided set of PIDs.
+/// Memory and thread counts are collected separately by `collect_memory_and_threads`.
 ///
 /// # Arguments
 ///
@@ -469,28 +468,20 @@ fn collect_memory_and_threads(
 ///
 /// # Returns
 ///
-/// Aggregated metrics for the processes
+/// Aggregated CPU metrics for the processes
 #[cfg(not(target_os = "linux"))]
 fn collect_tree_metrics(system: &System, pids: &std::collections::HashSet<u32>) -> ProcessMetrics {
     let mut total_cpu = 0.0f32;
-    let mut total_memory = 0u64;
-    let mut total_threads = 0u64;
 
-    // Sum metrics for all processes in tree (using cached data)
+    // Sum CPU for all processes in tree (using cached data)
     for &pid in pids {
         let sysinfo_pid = Pid::from_u32(pid);
         if let Some(proc) = system.process(sysinfo_pid) {
             total_cpu += proc.cpu_usage();
-            total_memory += proc.memory();
-            // On macOS and Windows, tasks() is not available
-            // Assume 1 thread per process as a baseline
-            total_threads += 1;
         }
     }
 
     ProcessMetrics {
         cpu_percent: total_cpu.round() as u64,
-        memory_bytes: total_memory,
-        thread_count: total_threads,
     }
 }
