@@ -322,6 +322,7 @@ mod linux {
 #[cfg(target_os = "windows")]
 mod windows {
     use std::collections::{HashMap, HashSet};
+    use std::mem::size_of;
     use std::sync::Mutex;
 
     use once_cell::sync::Lazy;
@@ -361,7 +362,7 @@ mod windows {
         let mut parent_map: HashMap<u32, u32> = HashMap::new();
 
         let mut entry = PROCESSENTRY32 {
-            dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
+            dwSize: size_of::<PROCESSENTRY32>() as u32,
             ..Default::default()
         };
 
