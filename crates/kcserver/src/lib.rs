@@ -18,6 +18,8 @@ pub mod jupyter_messages;
 pub mod kernel_connection;
 pub mod kernel_session;
 pub mod kernel_state;
+#[cfg(target_os = "linux")]
+pub mod proc_stat;
 pub mod process_tree;
 pub mod registration_file;
 pub mod registration_socket;

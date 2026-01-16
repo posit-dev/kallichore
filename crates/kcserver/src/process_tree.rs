@@ -10,9 +10,6 @@
 //! This module provides efficient ways to enumerate child processes of a given PID
 //! without scanning the entire process table on the system.
 
-// Allow unsafe code for FFI calls on macOS
-#![allow(unsafe_code)]
-
 use std::collections::HashSet;
 
 /// Get all descendant PIDs of the given root PID.
@@ -56,7 +53,7 @@ pub fn tick_process_cache(root_pid: u32) {
 
 /// Clear the process tree cache for a given root PID.
 /// Called when a kernel session is terminated.
-#[allow(unused_variables, dead_code)]
+#[allow(unused_variables)]
 pub fn clear_process_cache(root_pid: u32) {
     #[cfg(target_os = "linux")]
     {
@@ -74,6 +71,7 @@ pub fn clear_process_cache(root_pid: u32) {
 // =============================================================================
 
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
 mod macos {
     use std::collections::HashSet;
 
@@ -90,7 +88,10 @@ mod macos {
     /// Get child PIDs of a process using proc_listchildpids()
     fn get_child_pids(pid: u32) -> Vec<u32> {
         // First call with null buffer to get the count
-        let count = unsafe { proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0) };
+        // SAFETY: proc_listchildpids is a well-documented macOS API that safely handles
+        // null buffer pointers by returning the required buffer size.
+        let count =
+            unsafe { proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0) };
 
         if count <= 0 {
             return Vec::new();
@@ -100,6 +101,8 @@ mod macos {
         let buffer_size = count as usize;
         let mut buffer: Vec<libc::c_int> = vec![0; buffer_size];
 
+        // SAFETY: We've allocated a buffer of sufficient size (as returned by the first call).
+        // proc_listchildpids writes at most buffersize bytes to the buffer.
         let result = unsafe {
             proc_listchildpids(
                 pid as libc::c_int,
@@ -156,6 +159,8 @@ mod linux {
 
     use once_cell::sync::Lazy;
 
+    use crate::proc_stat;
+
     /// How often to refresh the cache (in ticks)
     const CACHE_REFRESH_INTERVAL: u32 = 5;
 
@@ -180,27 +185,6 @@ mod linux {
         })
     });
 
-    /// Parse /proc/[pid]/stat to extract (ppid, pgid)
-    fn parse_stat(pid: u32) -> Option<(u32, u32)> {
-        let stat_path = format!("/proc/{}/stat", pid);
-        let stat_content = fs::read_to_string(stat_path).ok()?;
-
-        // The stat file format is: pid (comm) state ppid pgrp ...
-        // comm can contain spaces and parens, so find the last ')'
-        let last_paren = stat_content.rfind(')')?;
-        let fields_after_comm = &stat_content[last_paren + 2..]; // Skip ") "
-        let fields: Vec<&str> = fields_after_comm.split_whitespace().collect();
-
-        // fields[0] = state, fields[1] = ppid, fields[2] = pgrp
-        if fields.len() < 3 {
-            return None;
-        }
-
-        let ppid = fields[1].parse().ok()?;
-        let pgid = fields[2].parse().ok()?;
-        Some((ppid, pgid))
-    }
-
     /// Scan /proc once and build parent_map and pgid_map for all processes
     fn scan_proc() -> (HashMap<u32, u32>, HashMap<u32, u32>) {
         let mut parent_map = HashMap::new();
@@ -217,9 +201,9 @@ mod linux {
 
             // Only look at numeric directories (PIDs)
             if let Ok(pid) = name_str.parse::<u32>() {
-                if let Some((ppid, pgid)) = parse_stat(pid) {
-                    parent_map.insert(pid, ppid);
-                    pgid_map.insert(pid, pgid);
+                if let Some(stat) = proc_stat::parse_proc_stat(pid) {
+                    parent_map.insert(pid, stat.ppid);
+                    pgid_map.insert(pid, stat.pgid);
                 }
             }
         }
@@ -365,6 +349,8 @@ mod windows {
         tree.insert(root_pid);
 
         // Create a snapshot of all processes
+        // SAFETY: CreateToolhelp32Snapshot is a well-documented Windows API.
+        // TH32CS_SNAPPROCESS with 0 requests a snapshot of all processes.
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         let snapshot = match snapshot {
             Ok(handle) => handle,
@@ -379,6 +365,9 @@ mod windows {
             ..Default::default()
         };
 
+        // SAFETY: We have a valid snapshot handle and properly initialized PROCESSENTRY32
+        // with dwSize set. Process32First/Next read process info into the entry struct.
+        // CloseHandle releases the snapshot handle when done.
         unsafe {
             if Process32First(snapshot, &mut entry).is_ok() {
                 loop {

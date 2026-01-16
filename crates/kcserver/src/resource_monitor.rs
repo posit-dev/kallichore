@@ -49,52 +49,6 @@ impl CpuTracker {
         }
     }
 
-    /// Read total CPU time from /proc/stat (sum of all jiffies across all CPUs)
-    fn read_total_cpu_time() -> u64 {
-        let Ok(content) = std::fs::read_to_string("/proc/stat") else {
-            return 0;
-        };
-
-        // First line is "cpu  user nice system idle iowait irq softirq steal guest guest_nice"
-        let Some(cpu_line) = content.lines().next() else {
-            return 0;
-        };
-
-        if !cpu_line.starts_with("cpu ") {
-            return 0;
-        }
-
-        // Sum all the values (skip "cpu" label)
-        cpu_line
-            .split_whitespace()
-            .skip(1)
-            .filter_map(|s| s.parse::<u64>().ok())
-            .sum()
-    }
-
-    /// Read CPU time (utime + stime) for a process from /proc/[pid]/stat
-    fn read_process_cpu_time(pid: u32) -> Option<u64> {
-        let stat_path = format!("/proc/{}/stat", pid);
-        let content = std::fs::read_to_string(stat_path).ok()?;
-
-        // Format: pid (comm) state ppid pgrp session tty_nr tpgid flags
-        //         minflt cminflt majflt cmajflt utime stime cutime cstime ...
-        // Fields 14 and 15 (1-indexed) are utime and stime
-        // comm can contain spaces and parens, so find the last ')'
-        let last_paren = content.rfind(')')?;
-        let fields_after_comm = &content[last_paren + 2..]; // Skip ") "
-        let fields: Vec<&str> = fields_after_comm.split_whitespace().collect();
-
-        // fields[0] = state, fields[1] = ppid, ..., fields[11] = utime, fields[12] = stime
-        if fields.len() < 13 {
-            return None;
-        }
-
-        let utime: u64 = fields[11].parse().ok()?;
-        let stime: u64 = fields[12].parse().ok()?;
-        Some(utime + stime)
-    }
-
     /// Compute CPU usage percentage for a set of processes.
     /// Returns the total CPU percentage across all PIDs in the set.
     ///
@@ -102,14 +56,16 @@ impl CpuTracker {
     /// * `pids` - The set of process IDs to compute CPU usage for
     /// * `current_total_cpu` - The current total system CPU time (should be read once per monitoring tick)
     fn compute_cpu_usage(&mut self, pids: &std::collections::HashSet<u32>, current_total_cpu: u64) -> f32 {
+        use crate::proc_stat;
+
         let total_cpu_delta = current_total_cpu.saturating_sub(self.prev_total_cpu);
 
         // If no time has passed (or first call), we can't compute usage
         if total_cpu_delta == 0 || self.prev_total_cpu == 0 {
             // Still update the tracking for next time
             for &pid in pids {
-                if let Some(cpu_time) = Self::read_process_cpu_time(pid) {
-                    self.prev_times.insert(pid, cpu_time);
+                if let Some(stat) = proc_stat::parse_proc_stat(pid) {
+                    self.prev_times.insert(pid, stat.cpu_time());
                 }
             }
             return 0.0;
@@ -119,7 +75,8 @@ impl CpuTracker {
         let mut new_times = HashMap::new();
 
         for &pid in pids {
-            if let Some(current_time) = Self::read_process_cpu_time(pid) {
+            if let Some(stat) = proc_stat::parse_proc_stat(pid) {
+                let current_time = stat.cpu_time();
                 new_times.insert(pid, current_time);
 
                 if let Some(&prev_time) = self.prev_times.get(&pid) {
@@ -137,7 +94,7 @@ impl CpuTracker {
 
         // Compute percentage: (process_delta / total_delta) * 100 * num_cpus
         // The result is scaled to 100% per CPU core (like sysinfo does)
-        let num_cpus = Self::count_cpus() as f32;
+        let num_cpus = proc_stat::count_cpus() as f32;
         (total_process_cpu_delta as f32 / total_cpu_delta as f32) * 100.0 * num_cpus
     }
 
@@ -147,25 +104,10 @@ impl CpuTracker {
         self.prev_total_cpu = current_total_cpu;
     }
 
-    /// Count the number of CPUs by reading /proc/stat
-    fn count_cpus() -> usize {
-        let Ok(content) = std::fs::read_to_string("/proc/stat") else {
-            return 1;
-        };
-
-        // Count lines starting with "cpu" followed by a digit (cpu0, cpu1, etc.)
-        content
-            .lines()
-            .filter(|line| {
-                line.starts_with("cpu")
-                    && line
-                        .chars()
-                        .nth(3)
-                        .map(|c| c.is_ascii_digit())
-                        .unwrap_or(false)
-            })
-            .count()
-            .max(1)
+    /// Remove stale entries from prev_times that are no longer tracked.
+    /// Call this periodically with the set of all currently tracked PIDs across all sessions.
+    fn cleanup_stale_entries(&mut self, active_pids: &std::collections::HashSet<u32>) {
+        self.prev_times.retain(|pid, _| active_pids.contains(pid));
     }
 }
 
@@ -279,7 +221,11 @@ pub fn start_global_resource_monitor(
                     // On Linux, read the system CPU time ONCE for all sessions in this tick
                     // This prevents artificial spikes in later sessions due to near-zero time deltas
                     #[cfg(target_os = "linux")]
-                    let current_total_cpu = CpuTracker::read_total_cpu_time();
+                    let current_total_cpu = crate::proc_stat::read_total_cpu_time();
+
+                    // Track all PIDs across all sessions for cleanup (Linux only)
+                    #[cfg(target_os = "linux")]
+                    let mut all_tracked_pids = std::collections::HashSet::new();
 
                     for (session_id, state, ws_json_tx) in session_data {
                         // Read the kernel state (tokio::sync::RwLock)
@@ -303,6 +249,10 @@ pub fn start_global_resource_monitor(
 
                         // Get the process tree using OS-specific efficient enumeration
                         let tree_pids = process_tree::get_process_tree(pid);
+
+                        // Track all PIDs for cleanup (Linux only)
+                        #[cfg(target_os = "linux")]
+                        all_tracked_pids.extend(&tree_pids);
 
                         // Log trace info about the process tree, including a list of the
                         // PIDs being monitored
@@ -341,10 +291,6 @@ pub fn start_global_resource_monitor(
                         #[cfg(target_os = "linux")]
                         let cpu_percent = {
                             let cpu = cpu_tracker.compute_cpu_usage(&tree_pids, current_total_cpu);
-                            // Note: We don't call clear_stale_entries here because this loop
-                            // processes multiple sessions, and clearing based on one session's
-                            // PIDs would remove tracking for other sessions. Stale entries
-                            // (for dead processes) are harmless and will be ignored.
                             cpu.round() as u64
                         };
 
@@ -393,7 +339,11 @@ pub fn start_global_resource_monitor(
                     // On Linux, update the tracker's previous total CPU time after processing all sessions
                     // This ensures all sessions in this tick use the same time delta
                     #[cfg(target_os = "linux")]
-                    cpu_tracker.update_prev_total_cpu(current_total_cpu);
+                    {
+                        cpu_tracker.update_prev_total_cpu(current_total_cpu);
+                        // Clean up stale entries from dead processes to prevent memory leak
+                        cpu_tracker.cleanup_stale_entries(&all_tracked_pids);
+                    }
                 }
                 Some(new_interval_ms) = interval_update_rx.recv() => {
                     log::info!(
