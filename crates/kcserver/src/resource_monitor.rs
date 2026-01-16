@@ -55,7 +55,11 @@ impl CpuTracker {
     /// # Arguments
     /// * `pids` - The set of process IDs to compute CPU usage for
     /// * `current_total_cpu` - The current total system CPU time (should be read once per monitoring tick)
-    fn compute_cpu_usage(&mut self, pids: &std::collections::HashSet<u32>, current_total_cpu: u64) -> f32 {
+    fn compute_cpu_usage(
+        &mut self,
+        pids: &std::collections::HashSet<u32>,
+        current_total_cpu: u64,
+    ) -> f32 {
         use crate::proc_stat;
 
         let total_cpu_delta = current_total_cpu.saturating_sub(self.prev_total_cpu);
@@ -265,17 +269,21 @@ pub fn start_global_resource_monitor(
                         );
 
                         // Refresh only the processes we need for memory info
-                        // On non-Linux platforms, also request CPU since sysinfo computes it correctly
                         let pids_to_refresh: Vec<Pid> =
                             tree_pids.iter().map(|&p| Pid::from_u32(p)).collect();
 
-                        #[cfg(target_os = "linux")]
-                        let refresh_kind = ProcessRefreshKind::new()
-                            .with_memory();
-
+                        // For non-Linux platforms, refresh CPU and memory
                         #[cfg(not(target_os = "linux"))]
                         let refresh_kind = ProcessRefreshKind::new()
                             .with_cpu()
+                            .with_memory();
+
+                        // We don't refresh CPU on Linux here, because there's a bug in the
+                        // sysinfo crate that causes CPU usage to be reported as 0.0
+                        // when using ProcessesToUpdate::Some(). Instead, we compute CPU
+                        // usage ourselves using /proc data.
+                        #[cfg(target_os = "linux")]
+                        let refresh_kind = ProcessRefreshKind::new()
                             .with_memory();
 
                         system.refresh_processes_specifics(

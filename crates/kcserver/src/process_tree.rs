@@ -12,6 +12,12 @@
 
 use std::collections::HashSet;
 
+/// How often to refresh the cache (in ticks)
+/// This is used on platforms that cache process trees (Linux, Windows)
+/// to limit the frequency of full process table scans.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+const CACHE_REFRESH_INTERVAL: u32 = 5;
+
 /// Get all descendant PIDs of the given root PID.
 ///
 /// This function returns a set containing the root PID and all its descendants.
@@ -90,8 +96,7 @@ mod macos {
         // First call with null buffer to get the count
         // SAFETY: proc_listchildpids is a well-documented macOS API that safely handles
         // null buffer pointers by returning the required buffer size.
-        let count =
-            unsafe { proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0) };
+        let count = unsafe { proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0) };
 
         if count <= 0 {
             return Vec::new();
@@ -160,9 +165,6 @@ mod linux {
     use once_cell::sync::Lazy;
 
     use crate::proc_stat;
-
-    /// How often to refresh the cache (in ticks)
-    const CACHE_REFRESH_INTERVAL: u32 = 5;
 
     /// Global cache shared across all kernels
     struct GlobalCache {
@@ -340,9 +342,6 @@ mod windows {
     /// Global cache for process trees, keyed by root PID
     static PROCESS_CACHE: Lazy<Mutex<HashMap<u32, CacheEntry>>> =
         Lazy::new(|| Mutex::new(HashMap::new()));
-
-    /// How often to refresh the cache (in ticks)
-    const CACHE_REFRESH_INTERVAL: u32 = 10;
 
     /// Build the complete process tree by scanning all processes
     fn scan_process_tree(root_pid: u32) -> HashSet<u32> {
