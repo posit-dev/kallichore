@@ -97,15 +97,16 @@ impl CpuTracker {
 
     /// Compute CPU usage percentage for a set of processes.
     /// Returns the total CPU percentage across all PIDs in the set.
-    fn compute_cpu_usage(&mut self, pids: &std::collections::HashSet<u32>) -> f32 {
-        // Read current total CPU time
-        let current_total_cpu = Self::read_total_cpu_time();
+    ///
+    /// # Arguments
+    /// * `pids` - The set of process IDs to compute CPU usage for
+    /// * `current_total_cpu` - The current total system CPU time (should be read once per monitoring tick)
+    fn compute_cpu_usage(&mut self, pids: &std::collections::HashSet<u32>, current_total_cpu: u64) -> f32 {
         let total_cpu_delta = current_total_cpu.saturating_sub(self.prev_total_cpu);
 
         // If no time has passed (or first call), we can't compute usage
         if total_cpu_delta == 0 || self.prev_total_cpu == 0 {
             // Still update the tracking for next time
-            self.prev_total_cpu = current_total_cpu;
             for &pid in pids {
                 if let Some(cpu_time) = Self::read_process_cpu_time(pid) {
                     self.prev_times.insert(pid, cpu_time);
@@ -128,8 +129,6 @@ impl CpuTracker {
             }
         }
 
-        // Update state for next call
-        self.prev_total_cpu = current_total_cpu;
         // Update prev_times with new values (don't replace entirely, as there may be
         // entries for other sessions that we need to preserve)
         for (pid, time) in new_times {
@@ -140,6 +139,12 @@ impl CpuTracker {
         // The result is scaled to 100% per CPU core (like sysinfo does)
         let num_cpus = Self::count_cpus() as f32;
         (total_process_cpu_delta as f32 / total_cpu_delta as f32) * 100.0 * num_cpus
+    }
+
+    /// Update the previous total CPU time after all sessions have been processed.
+    /// This should be called once per monitoring tick, after all calls to compute_cpu_usage.
+    fn update_prev_total_cpu(&mut self, current_total_cpu: u64) {
+        self.prev_total_cpu = current_total_cpu;
     }
 
     /// Count the number of CPUs by reading /proc/stat
@@ -271,6 +276,11 @@ pub fn start_global_resource_monitor(
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
 
+                    // On Linux, read the system CPU time ONCE for all sessions in this tick
+                    // This prevents artificial spikes in later sessions due to near-zero time deltas
+                    #[cfg(target_os = "linux")]
+                    let current_total_cpu = CpuTracker::read_total_cpu_time();
+
                     for (session_id, state, ws_json_tx) in session_data {
                         // Read the kernel state (tokio::sync::RwLock)
                         let state_guard = state.read().await;
@@ -330,7 +340,7 @@ pub fn start_global_resource_monitor(
                         // On Linux, compute CPU ourselves; on other platforms use sysinfo
                         #[cfg(target_os = "linux")]
                         let cpu_percent = {
-                            let cpu = cpu_tracker.compute_cpu_usage(&tree_pids);
+                            let cpu = cpu_tracker.compute_cpu_usage(&tree_pids, current_total_cpu);
                             // Note: We don't call clear_stale_entries here because this loop
                             // processes multiple sessions, and clearing based on one session's
                             // PIDs would remove tracking for other sessions. Stale entries
@@ -379,6 +389,11 @@ pub fn start_global_resource_monitor(
                             );
                         }
                     }
+
+                    // On Linux, update the tracker's previous total CPU time after processing all sessions
+                    // This ensures all sessions in this tick use the same time delta
+                    #[cfg(target_os = "linux")]
+                    cpu_tracker.update_prev_total_cpu(current_total_cpu);
                 }
                 Some(new_interval_ms) = interval_update_rx.recv() => {
                     log::info!(
