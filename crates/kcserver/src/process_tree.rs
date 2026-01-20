@@ -164,6 +164,7 @@ mod linux {
 
     use once_cell::sync::Lazy;
 
+    use super::CACHE_REFRESH_INTERVAL;
     use crate::proc_stat;
 
     /// Global cache shared across all kernels
@@ -329,6 +330,8 @@ mod windows {
 
     use once_cell::sync::Lazy;
     use windows::Win32::Foundation::CloseHandle;
+
+    use super::CACHE_REFRESH_INTERVAL;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
     };
