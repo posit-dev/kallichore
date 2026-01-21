@@ -347,6 +347,7 @@ mod windows {
         Lazy::new(|| Mutex::new(HashMap::new()));
 
     /// Build the complete process tree by scanning all processes
+    #[allow(unsafe_code)]
     fn scan_process_tree(root_pid: u32) -> HashSet<u32> {
         let mut tree = HashSet::new();
         tree.insert(root_pid);
