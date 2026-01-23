@@ -8,23 +8,111 @@
 
 //! Global resource usage monitor for all kernel sessions.
 
-use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use kcshared::kernel_message::{KernelMessage, ResourceUpdate};
 use kcshared::websocket_message::WebsocketMessage;
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
 use crate::kernel_session::KernelSession;
+use crate::process_tree;
 
-/// Metrics collected for a process tree
+/// CPU usage collected for a process tree (used on non-Linux platforms)
+#[cfg(not(target_os = "linux"))]
 struct ProcessMetrics {
     cpu_percent: u64,
-    memory_bytes: u64,
-    thread_count: u64,
+}
+
+/// Tracks CPU times for computing CPU usage percentage on Linux.
+///
+/// sysinfo doesn't compute CPU usage when using ProcessesToUpdate::Some(),
+/// so we track CPU times ourselves and compute the percentage manually.
+#[cfg(target_os = "linux")]
+struct CpuTracker {
+    /// Previous CPU times per process: pid -> (utime + stime)
+    prev_times: HashMap<u32, u64>,
+    /// Previous total system CPU time (sum of all CPU jiffies)
+    prev_total_cpu: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl CpuTracker {
+    fn new() -> Self {
+        Self {
+            prev_times: HashMap::new(),
+            prev_total_cpu: 0,
+        }
+    }
+
+    /// Compute CPU usage percentage for a set of processes.
+    /// Returns the total CPU percentage across all PIDs in the set.
+    ///
+    /// # Arguments
+    /// * `pids` - The set of process IDs to compute CPU usage for
+    /// * `current_total_cpu` - The current total system CPU time (should be read once per monitoring tick)
+    fn compute_cpu_usage(
+        &mut self,
+        pids: &std::collections::HashSet<u32>,
+        current_total_cpu: u64,
+    ) -> f32 {
+        use crate::proc_stat;
+
+        let total_cpu_delta = current_total_cpu.saturating_sub(self.prev_total_cpu);
+
+        // If no time has passed (or first call), we can't compute usage
+        if total_cpu_delta == 0 || self.prev_total_cpu == 0 {
+            // Still update the tracking for next time
+            for &pid in pids {
+                if let Some(stat) = proc_stat::parse_proc_stat(pid) {
+                    self.prev_times.insert(pid, stat.cpu_time());
+                }
+            }
+            return 0.0;
+        }
+
+        let mut total_process_cpu_delta: u64 = 0;
+        let mut new_times = HashMap::new();
+
+        for &pid in pids {
+            if let Some(stat) = proc_stat::parse_proc_stat(pid) {
+                let current_time = stat.cpu_time();
+                new_times.insert(pid, current_time);
+
+                if let Some(&prev_time) = self.prev_times.get(&pid) {
+                    total_process_cpu_delta += current_time.saturating_sub(prev_time);
+                }
+                // If no previous time, this is a new process - contributes 0 to delta
+            }
+        }
+
+        // Update prev_times with new values (don't replace entirely, as there may be
+        // entries for other sessions that we need to preserve)
+        for (pid, time) in new_times {
+            self.prev_times.insert(pid, time);
+        }
+
+        // Compute percentage: (process_delta / total_delta) * 100 * num_cpus
+        // The result is scaled to 100% per CPU core (like sysinfo does)
+        let num_cpus = proc_stat::count_cpus() as f32;
+        (total_process_cpu_delta as f32 / total_cpu_delta as f32) * 100.0 * num_cpus
+    }
+
+    /// Update the previous total CPU time after all sessions have been processed.
+    /// This should be called once per monitoring tick, after all calls to compute_cpu_usage.
+    fn update_prev_total_cpu(&mut self, current_total_cpu: u64) {
+        self.prev_total_cpu = current_total_cpu;
+    }
+
+    /// Remove stale entries from prev_times that are no longer tracked.
+    /// Call this periodically with the set of all currently tracked PIDs across all sessions.
+    fn cleanup_stale_entries(&mut self, active_pids: &std::collections::HashSet<u32>) {
+        self.prev_times.retain(|pid, _| active_pids.contains(pid));
+    }
 }
 
 /// Start the global resource monitor.
@@ -59,6 +147,11 @@ pub fn start_global_resource_monitor(
         // Create a System instance and keep it alive for accurate CPU measurements
         let mut system = System::new();
 
+        // On Linux, use our own CPU tracker since sysinfo doesn't compute CPU
+        // usage when using ProcessesToUpdate::Some()
+        #[cfg(target_os = "linux")]
+        let mut cpu_tracker = CpuTracker::new();
+
         // Track current interval
         let mut current_sample_interval_ms = sample_interval_ms;
 
@@ -71,6 +164,8 @@ pub fn start_global_resource_monitor(
         let mut interval = tokio::time::interval(effective_interval);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+        // Prime CPU usage statistics (sysinfo needs an initial refresh)
+        system.refresh_cpu_usage();
         // Consume the first tick immediately
         interval.tick().await;
 
@@ -81,15 +176,6 @@ pub fn start_global_resource_monitor(
                     if current_sample_interval_ms == 0 {
                         continue;
                     }
-
-                    // Refresh all process data once
-                    system.refresh_processes(ProcessesToUpdate::All);
-
-                    // Get the current timestamp
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
 
                     // Clone session data we need while holding the lock briefly
                     // This avoids holding the std::sync::RwLock across await points
@@ -115,6 +201,36 @@ pub fn start_global_resource_monitor(
                     };
                     // Lock is now released
 
+                    // Check if any clients are connected before doing any work
+                    let mut has_connected_clients = false;
+                    for (_, state, _) in &session_data {
+                        let state_guard = state.read().await;
+                        if state_guard.connected {
+                            has_connected_clients = true;
+                            break;
+                        }
+                    }
+
+                    // Skip all work if no clients are connected
+                    if !has_connected_clients {
+                        continue;
+                    }
+
+                    // Get the current timestamp
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+
+                    // On Linux, read the system CPU time ONCE for all sessions in this tick
+                    // This prevents artificial spikes in later sessions due to near-zero time deltas
+                    #[cfg(target_os = "linux")]
+                    let current_total_cpu = crate::proc_stat::read_total_cpu_time();
+
+                    // Track all PIDs across all sessions for cleanup (Linux only)
+                    #[cfg(target_os = "linux")]
+                    let mut all_tracked_pids = std::collections::HashSet::new();
+
                     for (session_id, state, ws_json_tx) in session_data {
                         // Read the kernel state (tokio::sync::RwLock)
                         let state_guard = state.read().await;
@@ -135,14 +251,70 @@ pub fn start_global_resource_monitor(
                         // Release the state lock before collecting metrics
                         drop(state_guard);
 
+                        // Get the process tree using OS-specific efficient enumeration
+                        let tree_pids = process_tree::get_process_tree(pid);
+
+                        // Track all PIDs for cleanup (Linux only)
+                        #[cfg(target_os = "linux")]
+                        all_tracked_pids.extend(&tree_pids);
+
+                        // Log trace info about the process tree, including a list of the
+                        // PIDs being monitored
+                        log::trace!(
+                            "[session {}] Monitoring resource usage for process tree with root PID {}: {} processes; {:?}",
+                            session_id,
+                            pid,
+                            tree_pids.len(),
+                            tree_pids
+                        );
+
+                        // Refresh only the processes we need for memory info
+                        let pids_to_refresh: Vec<Pid> =
+                            tree_pids.iter().map(|&p| Pid::from_u32(p)).collect();
+
+                        // For non-Linux platforms, refresh CPU and memory
+                        #[cfg(not(target_os = "linux"))]
+                        let refresh_kind = ProcessRefreshKind::new()
+                            .with_cpu()
+                            .with_memory();
+
+                        // We don't refresh CPU on Linux here, because there's a bug in the
+                        // sysinfo crate that causes CPU usage to be reported as 0.0
+                        // when using ProcessesToUpdate::Some(). Instead, we compute CPU
+                        // usage ourselves using /proc data.
+                        #[cfg(target_os = "linux")]
+                        let refresh_kind = ProcessRefreshKind::new()
+                            .with_memory();
+
+                        system.refresh_processes_specifics(
+                            ProcessesToUpdate::Some(&pids_to_refresh),
+                            refresh_kind,
+                        );
+
+                        // Update the process cache tick counter (Windows only)
+                        process_tree::tick_process_cache(pid);
+
                         // Collect metrics for this kernel's process tree
-                        let metrics = collect_tree_metrics(&system, pid);
+                        // On Linux, compute CPU ourselves; on other platforms use sysinfo
+                        #[cfg(target_os = "linux")]
+                        let cpu_percent = {
+                            let cpu = cpu_tracker.compute_cpu_usage(&tree_pids, current_total_cpu);
+                            cpu.round() as u64
+                        };
+
+                        #[cfg(not(target_os = "linux"))]
+                        let cpu_percent = {
+                            let metrics = collect_tree_metrics(&system, &tree_pids);
+                            metrics.cpu_percent
+                        };
+
+                        let (memory_bytes, thread_count) = collect_memory_and_threads(&system, &tree_pids);
 
                         // Create the resource update message
                         let update = ResourceUpdate {
-                            cpu_percent: metrics.cpu_percent,
-                            memory_bytes: metrics.memory_bytes,
-                            thread_count: metrics.thread_count,
+                            cpu_percent,
+                            memory_bytes,
+                            thread_count,
                             sampling_period_ms: current_sample_interval_ms,
                             timestamp,
                         };
@@ -152,9 +324,9 @@ pub fn start_global_resource_monitor(
                             let mut state_guard = state.write().await;
                             state_guard.resource_usage =
                                 Some(kallichore_api::models::ResourceUsage {
-                                    cpu_percent: metrics.cpu_percent as i64,
-                                    memory_bytes: metrics.memory_bytes as i64,
-                                    thread_count: metrics.thread_count as i64,
+                                    cpu_percent: cpu_percent as i64,
+                                    memory_bytes: memory_bytes as i64,
+                                    thread_count: thread_count as i64,
                                     sampling_period_ms: current_sample_interval_ms as i64,
                                     timestamp: timestamp as i64,
                                 });
@@ -170,6 +342,15 @@ pub fn start_global_resource_monitor(
                                 e
                             );
                         }
+                    }
+
+                    // On Linux, update the tracker's previous total CPU time after processing all sessions
+                    // This ensures all sessions in this tick use the same time delta
+                    #[cfg(target_os = "linux")]
+                    {
+                        cpu_tracker.update_prev_total_cpu(current_total_cpu);
+                        // Clean up stale entries from dead processes to prevent memory leak
+                        cpu_tracker.cleanup_stale_entries(&all_tracked_pids);
                     }
                 }
                 Some(new_interval_ms) = interval_update_rx.recv() => {
@@ -203,50 +384,32 @@ pub fn start_global_resource_monitor(
     });
 }
 
-/// Collect metrics for a process and all its descendants.
+/// Collect memory and thread count for a set of processes.
 ///
-/// This function walks the process tree starting from the given root PID,
-/// summing CPU usage, memory, and thread counts for the entire tree.
+/// This function sums memory and thread counts for all processes in the provided set of PIDs.
+/// CPU usage is handled separately on Linux due to sysinfo limitations.
 ///
 /// # Arguments
 ///
-/// * `system` - The sysinfo System instance (must have been refreshed)
-/// * `root_pid` - The root process ID to start from
+/// * `system` - The sysinfo System instance (must have been refreshed for the given PIDs)
+/// * `pids` - Set of process IDs to collect metrics for
 ///
 /// # Returns
 ///
-/// Aggregated metrics for the process tree
-fn collect_tree_metrics(system: &System, root_pid: u32) -> ProcessMetrics {
-    let pid = Pid::from_u32(root_pid);
-
-    let mut total_cpu = 0.0f32;
+/// Tuple of (memory_bytes, thread_count)
+fn collect_memory_and_threads(
+    system: &System,
+    pids: &std::collections::HashSet<u32>,
+) -> (u64, u64) {
     let mut total_memory = 0u64;
     let mut total_threads = 0u64;
 
-    // Collect all PIDs in process tree using BFS
-    let mut pids_to_check = vec![pid];
-    let mut visited = HashSet::new();
-
-    while let Some(check_pid) = pids_to_check.pop() {
-        if !visited.insert(check_pid) {
-            continue; // Already visited
-        }
-
-        // Find children by checking parent_pid
-        for (child_pid, proc) in system.processes() {
-            if proc.parent() == Some(check_pid) && !visited.contains(child_pid) {
-                pids_to_check.push(*child_pid);
-            }
-        }
-    }
-
-    // Sum metrics for all processes in tree (using cached data)
-    for pid in &visited {
-        if let Some(proc) = system.process(*pid) {
-            total_cpu += proc.cpu_usage();
+    for &pid in pids {
+        let sysinfo_pid = Pid::from_u32(pid);
+        if let Some(proc) = system.process(sysinfo_pid) {
             total_memory += proc.memory();
             // Thread count: use tasks() if available, otherwise assume 1 thread
-            #[cfg(any(target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             {
                 if let Some(tasks) = proc.tasks() {
                     total_threads += tasks.len() as u64;
@@ -254,7 +417,7 @@ fn collect_tree_metrics(system: &System, root_pid: u32) -> ProcessMetrics {
                     total_threads += 1;
                 }
             }
-            #[cfg(not(any(target_os = "linux")))]
+            #[cfg(not(target_os = "linux"))]
             {
                 // On macOS and Windows, tasks() is not available
                 // Assume 1 thread per process as a baseline
@@ -263,9 +426,35 @@ fn collect_tree_metrics(system: &System, root_pid: u32) -> ProcessMetrics {
         }
     }
 
+    (total_memory, total_threads)
+}
+
+/// Collect CPU metrics for a set of processes.
+///
+/// This function sums CPU usage for all processes in the provided set of PIDs.
+/// Memory and thread counts are collected separately by `collect_memory_and_threads`.
+///
+/// # Arguments
+///
+/// * `system` - The sysinfo System instance (must have been refreshed for the given PIDs)
+/// * `pids` - Set of process IDs to collect metrics for
+///
+/// # Returns
+///
+/// Aggregated CPU metrics for the processes
+#[cfg(not(target_os = "linux"))]
+fn collect_tree_metrics(system: &System, pids: &std::collections::HashSet<u32>) -> ProcessMetrics {
+    let mut total_cpu = 0.0f32;
+
+    // Sum CPU for all processes in tree (using cached data)
+    for &pid in pids {
+        let sysinfo_pid = Pid::from_u32(pid);
+        if let Some(proc) = system.process(sysinfo_pid) {
+            total_cpu += proc.cpu_usage();
+        }
+    }
+
     ProcessMetrics {
         cpu_percent: total_cpu.round() as u64,
-        memory_bytes: total_memory,
-        thread_count: total_threads,
     }
 }

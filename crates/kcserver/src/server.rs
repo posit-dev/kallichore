@@ -10,6 +10,7 @@
 
 #![allow(unused_imports)]
 
+use crate::process_tree;
 use crate::resource_monitor;
 use crate::websocket_service::ApiWebsocketExt;
 use anyhow::anyhow;
@@ -1362,10 +1363,10 @@ where
             }
         };
 
-        // Ensure the session is not running
-        let status = {
+        // Ensure the session is not running and get the process ID for cache cleanup
+        let (status, process_id) = {
             let state = kernel_session.state.read().await;
-            state.status.clone()
+            (state.status.clone(), state.process_id)
         };
         if status != models::Status::Exited {
             let error = KSError::SessionRunning(session_id.clone());
@@ -1373,6 +1374,11 @@ where
             return Ok(DeleteSessionResponse::FailedToDeleteSession(
                 error.to_json(None),
             ));
+        }
+
+        // Clear process tree cache for this session's kernel PID
+        if let Some(pid) = process_id {
+            process_tree::clear_process_cache(pid);
         }
 
         // Ensure we get a write lock on the kernel sessions for the duration of

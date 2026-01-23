@@ -26,6 +26,9 @@ mod jupyter_messages;
 mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
+#[cfg(target_os = "linux")]
+mod proc_stat;
+mod process_tree;
 mod registration_file;
 mod registration_socket;
 mod resource_monitor;
@@ -378,7 +381,7 @@ async fn main() {
   | \   /  |  |/  |/  |  /    |/ \   /  \_/  |  |/
   |  \_/\_/|_/|__/|__/|_/\___/|   |_/\__/    |_/|__/
   A Jupyter Kernel supervisor. Version {}.
-  Copyright (c) 2025, Posit Software PBC. All rights reserved.
+  Copyright (c) 2026, Posit Software PBC. All rights reserved.
 "#,
         env!("CARGO_PKG_VERSION")
     );
