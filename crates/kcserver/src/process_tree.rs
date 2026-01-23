@@ -93,28 +93,24 @@ mod macos {
 
     /// Get child PIDs of a process using proc_listchildpids()
     fn get_child_pids(pid: u32) -> Vec<u32> {
-        // First call with null buffer to get the count
+        // First call with null buffer to get the required buffer size in bytes
         // SAFETY: proc_listchildpids is a well-documented macOS API that safely handles
-        // null buffer pointers by returning the required buffer size.
-        let count = unsafe { proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0) };
+        // null buffer pointers by returning the required buffer size in bytes.
+        let bytes_needed =
+            unsafe { proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0) };
 
-        if count <= 0 {
+        if bytes_needed <= 0 {
             return Vec::new();
         }
 
-        // Allocate buffer for PIDs
-        let buffer_size = count as usize;
-        let mut buffer: Vec<libc::c_int> = vec![0; buffer_size];
+        // Allocate buffer for PIDs (convert bytes to element count)
+        let count = bytes_needed as usize / size_of::<libc::c_int>();
+        let mut buffer: Vec<libc::c_int> = vec![0; count];
 
         // SAFETY: We've allocated a buffer of sufficient size (as returned by the first call).
         // proc_listchildpids writes at most buffersize bytes to the buffer.
-        let result = unsafe {
-            proc_listchildpids(
-                pid as libc::c_int,
-                buffer.as_mut_ptr(),
-                (buffer_size * size_of::<libc::c_int>()) as libc::c_int,
-            )
-        };
+        let result =
+            unsafe { proc_listchildpids(pid as libc::c_int, buffer.as_mut_ptr(), bytes_needed) };
 
         if result <= 0 {
             return Vec::new();
