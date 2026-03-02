@@ -58,6 +58,7 @@ mod macos_memory {
 
     const RUSAGE_INFO_V2: libc::c_int = 2;
 
+    #[link(name = "proc", kind = "dylib")]
     extern "C" {
         fn proc_pid_rusage(
             pid: libc::c_int,
@@ -336,7 +337,7 @@ pub fn start_global_resource_monitor(
                             tree_pids
                         );
 
-                        // Refresh only the processes we need for memory info
+                        // Processes needing to be refreshed
                         let pids_to_refresh: Vec<Pid> =
                             tree_pids.iter().map(|&p| Pid::from_u32(p)).collect();
 
@@ -486,8 +487,10 @@ fn collect_memory_and_threads(
         // undercount by 10x or more on idle processes.
         #[cfg(target_os = "macos")]
         {
-            total_memory += macos_memory::get_phys_footprint(pid).unwrap_or(0);
-            total_threads += 1;
+            if let Some(footprint) = macos_memory::get_phys_footprint(pid) {
+                total_memory += footprint;
+                total_threads += 1;
+            }
         }
 
         #[cfg(not(target_os = "macos"))]
