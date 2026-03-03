@@ -22,6 +22,75 @@ use tokio::time::MissedTickBehavior;
 use crate::kernel_session::KernelSession;
 use crate::process_tree;
 
+// =============================================================================
+// macOS: use proc_pid_rusage to get phys_footprint (matches Activity Monitor)
+// =============================================================================
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod macos_memory {
+    /// rusage_info_v2 layout from Apple's <sys/resource.h>.
+    /// We need this struct to read the `ri_phys_footprint` field, which
+    /// represents the "real memory" cost of a process — the same metric
+    /// that Activity Monitor displays in its Memory column.
+    #[repr(C)]
+    struct RusageInfoV2 {
+        ri_uuid: [u8; 16],
+        ri_user_time: u64,
+        ri_system_time: u64,
+        ri_pkg_idle_wkups: u64,
+        ri_interrupt_wkups: u64,
+        ri_pageins: u64,
+        ri_wired_size: u64,
+        ri_resident_size: u64,
+        ri_phys_footprint: u64,
+        ri_proc_start_abstime: u64,
+        ri_proc_exit_abstime: u64,
+        ri_child_user_time: u64,
+        ri_child_system_time: u64,
+        ri_child_pkg_idle_wkups: u64,
+        ri_child_interrupt_wkups: u64,
+        ri_child_pageins: u64,
+        ri_child_elapsed_abstime: u64,
+        ri_diskio_bytesread: u64,
+        ri_diskio_byteswritten: u64,
+    }
+
+    const RUSAGE_INFO_V2: libc::c_int = 2;
+
+    #[link(name = "proc", kind = "dylib")]
+    extern "C" {
+        fn proc_pid_rusage(
+            pid: libc::c_int,
+            flavor: libc::c_int,
+            buffer: *mut RusageInfoV2,
+        ) -> libc::c_int;
+    }
+
+    /// Get the physical footprint of a process.
+    ///
+    /// This uses `proc_pid_rusage` with `RUSAGE_INFO_V2` to read
+    /// `ri_phys_footprint`, which includes resident, compressed, and
+    /// purgeable-but-dirty memory — matching what Activity Monitor reports.
+    ///
+    /// The default `sysinfo` crate uses `pti_resident_size` (RSS), which
+    /// excludes compressed memory and dramatically undercounts on macOS.
+    pub fn get_phys_footprint(pid: u32) -> Option<u64> {
+        // SAFETY: proc_pid_rusage is a stable macOS API. We pass a properly
+        // sized and zeroed buffer. The function returns 0 on success.
+        let mut rusage: RusageInfoV2 = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            proc_pid_rusage(pid as libc::c_int, RUSAGE_INFO_V2, &mut rusage)
+        };
+
+        if result == 0 {
+            Some(rusage.ri_phys_footprint)
+        } else {
+            None
+        }
+    }
+}
+
 /// CPU usage collected for a process tree (used on non-Linux platforms)
 #[cfg(not(target_os = "linux"))]
 struct ProcessMetrics {
@@ -268,12 +337,18 @@ pub fn start_global_resource_monitor(
                             tree_pids
                         );
 
-                        // Refresh only the processes we need for memory info
+                        // Processes needing to be refreshed
                         let pids_to_refresh: Vec<Pid> =
                             tree_pids.iter().map(|&p| Pid::from_u32(p)).collect();
 
-                        // For non-Linux platforms, refresh CPU and memory
-                        #[cfg(not(target_os = "linux"))]
+                        // On macOS, only refresh CPU — memory is collected
+                        // via proc_pid_rusage (phys_footprint) instead of sysinfo
+                        #[cfg(target_os = "macos")]
+                        let refresh_kind = ProcessRefreshKind::new()
+                            .with_cpu();
+
+                        // On Windows, refresh both CPU and memory
+                        #[cfg(target_os = "windows")]
                         let refresh_kind = ProcessRefreshKind::new()
                             .with_cpu()
                             .with_memory();
@@ -398,30 +473,46 @@ pub fn start_global_resource_monitor(
 ///
 /// Tuple of (memory_bytes, thread_count)
 fn collect_memory_and_threads(
-    system: &System,
+    #[cfg(not(target_os = "macos"))] system: &System,
+    #[cfg(target_os = "macos")] _system: &System,
     pids: &std::collections::HashSet<u32>,
 ) -> (u64, u64) {
     let mut total_memory = 0u64;
     let mut total_threads = 0u64;
 
     for &pid in pids {
-        let sysinfo_pid = Pid::from_u32(pid);
-        if let Some(proc) = system.process(sysinfo_pid) {
-            total_memory += proc.memory();
-            // Thread count: use tasks() if available, otherwise assume 1 thread
-            #[cfg(target_os = "linux")]
-            {
-                if let Some(tasks) = proc.tasks() {
-                    total_threads += tasks.len() as u64;
-                } else {
+        // On macOS, use proc_pid_rusage to get phys_footprint instead of
+        // sysinfo's resident_size. Activity Monitor reports phys_footprint,
+        // which includes compressed memory — resident_size does not, and can
+        // undercount by 10x or more on idle processes.
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(footprint) = macos_memory::get_phys_footprint(pid) {
+                total_memory += footprint;
+                total_threads += 1;
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let sysinfo_pid = Pid::from_u32(pid);
+            if let Some(proc) = system.process(sysinfo_pid) {
+                total_memory += proc.memory();
+                // Thread count: use tasks() if available, otherwise assume 1 thread
+                #[cfg(target_os = "linux")]
+                {
+                    if let Some(tasks) = proc.tasks() {
+                        total_threads += tasks.len() as u64;
+                    } else {
+                        total_threads += 1;
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // On Windows, tasks() is not available
+                    // Assume 1 thread per process as a baseline
                     total_threads += 1;
                 }
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                // On macOS and Windows, tasks() is not available
-                // Assume 1 thread per process as a baseline
-                total_threads += 1;
             }
         }
     }
