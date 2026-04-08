@@ -655,6 +655,23 @@ impl ZmqWsProxy {
             }
         }
 
+        // (2.5) If there's an RPC listener registered for this message's parent
+        // msg_id, forward a clone to it. This allows the execute_code RPC to
+        // collect output without interfering with the WebSocket stream.
+        if let Some(ref parent_header) = message.parent_header {
+            let state = self.state.read().await;
+            if let Some(rpc_tx) = state.rpc_listeners.get(&parent_header.msg_id) {
+                if let Err(e) = rpc_tx.send(message.clone()) {
+                    log::warn!(
+                        "[session {}] Failed to forward message to RPC listener for {}: {}",
+                        self.session_id,
+                        parent_header.msg_id,
+                        e
+                    );
+                }
+            }
+        }
+
         // (3) wrap the Jupyter message in a `WebsocketMessage::Jupyter` and send it
         // to the WebSocket.
         let message = WebsocketMessage::Jupyter(message);

@@ -28,10 +28,11 @@ type ServiceFuture =
 
 use crate::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
-    ConnectionInfoResponse, DeleteSessionResponse, GetServerConfigurationResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
-    SetServerConfigurationResponse, ShutdownServerResponse, StartSessionResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, ExecuteCodeResponse,
+    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
+    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
+    StartSessionResponse,
 };
 
 mod server_auth;
@@ -48,6 +49,7 @@ mod paths {
             r"^/sessions/(?P<session_id>[^/?#]*)/adopt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/channels$",
             r"^/sessions/(?P<session_id>[^/?#]*)/connection_info$",
+            r"^/sessions/(?P<session_id>[^/?#]*)/execute$",
             r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/kill$",
             r"^/sessions/(?P<session_id>[^/?#]*)/restart$",
@@ -88,36 +90,43 @@ mod paths {
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/connection_info$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CONNECTION_INFO");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 7;
+    pub(crate) static ID_SESSIONS_SESSION_ID_EXECUTE: usize = 7;
+    lazy_static! {
+        pub static ref REGEX_SESSIONS_SESSION_ID_EXECUTE: regex::Regex =
+            #[allow(clippy::invalid_regex)]
+            regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/execute$")
+                .expect("Unable to create regex for SESSIONS_SESSION_ID_EXECUTE");
+    }
+    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 8;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_INTERRUPT: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_INTERRUPT");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 8;
+    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 9;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_KILL: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/kill$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_KILL");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 9;
+    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 10;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_RESTART: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/restart$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_RESTART");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 10;
+    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 11;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_START: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/start$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_START");
     }
-    pub(crate) static ID_SHUTDOWN: usize = 11;
-    pub(crate) static ID_STATUS: usize = 12;
+    pub(crate) static ID_SHUTDOWN: usize = 12;
+    pub(crate) static ID_STATUS: usize = 13;
 }
 
 pub struct MakeService<T, C>
@@ -1197,6 +1206,164 @@ where
                     Ok(response)
                 }
 
+                // ExecuteCode - POST /sessions/{session_id}/execute
+                hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_EXECUTE) => {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_SESSIONS_SESSION_ID_EXECUTE
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE SESSIONS_SESSION_ID_EXECUTE in set but failed match against \"{}\"", path, paths::REGEX_SESSIONS_SESSION_ID_EXECUTE.as_str())
+                    );
+
+                    let param_session_id = match percent_encoding::percent_decode(path_params["session_id"].as_bytes()).decode_utf8() {
+                    Ok(param_session_id) => match param_session_id.parse::<String>() {
+                        Ok(param_session_id) => param_session_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
+                    // Handle body parameters (note that non-required body parameters will ignore garbage
+                    // values, rather than causing a 400 response). Produce warning header and logs for
+                    // any unused fields.
+                    let result = http_body_util::BodyExt::collect(body)
+                        .await
+                        .map(|f| f.to_bytes().to_vec());
+                    match result {
+                        Ok(body) => {
+                            let mut unused_elements: Vec<String> = vec![];
+                            let param_execute_request: Option<models::ExecuteRequest> = if !body
+                                .is_empty()
+                            {
+                                let deserializer = &mut serde_json::Deserializer::from_slice(&body);
+                                match serde_ignored::deserialize(deserializer, |path| {
+                                            warn!("Ignoring unknown field in body: {path}");
+                                            unused_elements.push(path.to_string());
+                                    }) {
+                                        Ok(param_execute_request) => param_execute_request,
+                                        Err(e) => return Ok(Response::builder()
+                                                        .status(StatusCode::BAD_REQUEST)
+                                                        .body(BoxBody::new(format!("Couldn't parse body parameter ExecuteRequest - doesn't match schema: {e}")))
+                                                        .expect("Unable to create Bad Request response for invalid body parameter ExecuteRequest due to schema")),
+                                    }
+                            } else {
+                                None
+                            };
+                            let param_execute_request = match param_execute_request {
+                                    Some(param_execute_request) => param_execute_request,
+                                    None => return Ok(Response::builder()
+                                                        .status(StatusCode::BAD_REQUEST)
+                                                        .body(BoxBody::new("Missing required body parameter ExecuteRequest".to_string()))
+                                                        .expect("Unable to create Bad Request response for missing body parameter ExecuteRequest")),
+                                };
+
+                            let result = api_impl
+                                .execute_code(param_session_id, param_execute_request, &context)
+                                .await;
+                            let mut response =
+                                Response::new(BoxBody::new(http_body_util::Empty::new()));
+                            response.headers_mut().insert(
+                                HeaderName::from_static("x-span-id"),
+                                HeaderValue::from_str(
+                                    (&context as &dyn Has<XSpanIdString>)
+                                        .get()
+                                        .0
+                                        .clone()
+                                        .as_str(),
+                                )
+                                .expect("Unable to create X-Span-ID header value"),
+                            );
+
+                            if !unused_elements.is_empty() {
+                                response.headers_mut().insert(
+                                    HeaderName::from_static("warning"),
+                                    HeaderValue::from_str(
+                                        format!(
+                                            "Ignoring unknown fields in body: {unused_elements:?}"
+                                        )
+                                        .as_str(),
+                                    )
+                                    .expect("Unable to create Warning header value"),
+                                );
+                            }
+                            match result {
+                                Ok(rsp) => match rsp {
+                                    ExecuteCodeResponse::ExecutionCompleted(body) => {
+                                        *response.status_mut() = StatusCode::from_u16(200)
+                                            .expect("Unable to turn 200 into a StatusCode");
+                                        response.headers_mut().insert(
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
+                                        // JSON Body
+                                        let body = serde_json::to_string(&body)
+                                            .expect("impossible to fail to serialize");
+                                        *response.body_mut() = body_from_string(body);
+                                    }
+                                    ExecuteCodeResponse::InvalidRequest(body) => {
+                                        *response.status_mut() = StatusCode::from_u16(400)
+                                            .expect("Unable to turn 400 into a StatusCode");
+                                        response.headers_mut().insert(
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
+                                        // JSON Body
+                                        let body = serde_json::to_string(&body)
+                                            .expect("impossible to fail to serialize");
+                                        *response.body_mut() = body_from_string(body);
+                                    }
+                                    ExecuteCodeResponse::Unauthorized => {
+                                        *response.status_mut() = StatusCode::from_u16(401)
+                                            .expect("Unable to turn 401 into a StatusCode");
+                                    }
+                                    ExecuteCodeResponse::SessionNotFound => {
+                                        *response.status_mut() = StatusCode::from_u16(404)
+                                            .expect("Unable to turn 404 into a StatusCode");
+                                    }
+                                    ExecuteCodeResponse::ExecutionTimedOut(body) => {
+                                        *response.status_mut() = StatusCode::from_u16(408)
+                                            .expect("Unable to turn 408 into a StatusCode");
+                                        response.headers_mut().insert(
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
+                                        // JSON Body
+                                        let body = serde_json::to_string(&body)
+                                            .expect("impossible to fail to serialize");
+                                        *response.body_mut() = body_from_string(body);
+                                    }
+                                },
+                                Err(_) => {
+                                    // Application code returned an error. This should not happen, as the implementation should
+                                    // return a valid response.
+                                    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                                    *response.body_mut() =
+                                        body_from_str("An internal error occurred");
+                                }
+                            }
+
+                            Ok(response)
+                        }
+                        Err(e) => Ok(Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(body_from_string(format!(
+                                "Unable to read body: {}",
+                                e.into()
+                            )))
+                            .expect(
+                                "Unable to create Bad Request response due to unable to read body",
+                            )),
+                    }
+                }
+
                 // GetSession - GET /sessions/{session_id}
                 hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID) => {
                     // Path parameters
@@ -1676,6 +1843,7 @@ where
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_CONNECTION_INFO) => {
                     method_not_allowed()
                 }
+                _ if path.matched(paths::ID_SESSIONS_SESSION_ID_EXECUTE) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => method_not_allowed(),
@@ -1733,6 +1901,10 @@ impl<T> RequestParser<T> for ApiRequestParser {
             // DeleteSession - DELETE /sessions/{session_id}
             hyper::Method::DELETE if path.matched(paths::ID_SESSIONS_SESSION_ID) => {
                 Some("DeleteSession")
+            }
+            // ExecuteCode - POST /sessions/{session_id}/execute
+            hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_EXECUTE) => {
+                Some("ExecuteCode")
             }
             // GetSession - GET /sessions/{session_id}
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID) => Some("GetSession"),

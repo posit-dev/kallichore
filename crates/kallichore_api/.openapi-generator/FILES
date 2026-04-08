@@ -8,6 +8,11 @@ docs/ActiveSession.md
 docs/ClientHeartbeat.md
 docs/ConnectionInfo.md
 docs/Error.md
+docs/ExecuteOutput.md
+docs/ExecuteOutputType.md
+docs/ExecuteReply.md
+docs/ExecuteReplyStatus.md
+docs/ExecuteRequest.md
 docs/ExecutionQueue.md
 docs/InterruptMode.md
 docs/NewSession.md
