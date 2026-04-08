@@ -317,40 +317,83 @@ def fix_server_example(filepath):
         content,
         flags=re.DOTALL
     )
-    
-    # Remove the entire `if https {` block
-    # This regex matches: `if https {` ... `}` (with proper brace matching)
+
+    # Fix the doc comment
+    content = content.replace(
+        '/// Builds an SSL implementation for Simple HTTPS from some hard-coded file names',
+        '/// Creates an HTTP server (HTTPS/TLS support removed)'
+    )
+
+    # Add #[allow(unused_variables)] to the https parameter
+    content = re.sub(
+        r'pub async fn create\(addr: &str, https: bool\)',
+        'pub async fn create(addr: &str, #[allow(unused_variables)] https: bool)',
+        content
+    )
+
+    # Remove the `if https { ... }` block while keeping the `else { ... }` body.
+    # The generator produces `if https { /* HTTPS */ } else { /* HTTP */ }`.
+    # We want to strip the HTTPS branch and the if/else wrapper, keeping the
+    # HTTP code from the else branch.
     lines = content.split('\n')
     output = []
     i = 0
     skip_https_block = False
+    in_else_block = False
     brace_depth = 0
-    
+
     while i < len(lines):
         line = lines[i]
-        
+
         # Start of https block
-        if re.match(r'^\s+if https \{', line):
+        if not skip_https_block and not in_else_block and re.match(r'^\s+if https \{', line):
             skip_https_block = True
             brace_depth = 1
             i += 1
             continue
-        
+
         if skip_https_block:
+            # Check for `} else {` transition before counting braces
+            if re.match(r'^\s*\}\s*else\s*\{', line.strip()) or re.match(r'^\s+\}\s*else\s*\{', line):
+                # Switch to keeping the else body
+                skip_https_block = False
+                in_else_block = True
+                brace_depth = 1
+                i += 1
+                continue
+
             # Count braces
             brace_depth += line.count('{')
             brace_depth -= line.count('}')
-            
+
             # If we've closed all braces, we're done skipping
             if brace_depth == 0:
                 skip_https_block = False
-            
+
             i += 1
             continue
-        
+
+        if in_else_block:
+            brace_depth += line.count('{')
+            brace_depth -= line.count('}')
+
+            if brace_depth == 0:
+                # This is the closing } of the else block; skip it
+                in_else_block = False
+                i += 1
+                continue
+
+            # Keep the line (dedent by 4 spaces if possible)
+            if line.startswith('            '):
+                output.append(line[4:])
+            else:
+                output.append(line)
+            i += 1
+            continue
+
         output.append(line)
         i += 1
-    
+
     with open(filepath, 'w') as f:
         f.write('\n'.join(output))
 

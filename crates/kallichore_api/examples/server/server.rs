@@ -20,8 +20,8 @@ use tokio::net::TcpListener;
 
 use kallichore_api::models;
 
-/// Builds an SSL implementation for Simple HTTPS from some hard-coded file names
-pub async fn create(addr: &str, https: bool) {
+/// Creates an HTTP server (HTTPS/TLS support removed)
+pub async fn create(addr: &str, #[allow(unused_variables)] https: bool) {
     let addr: SocketAddr = addr.parse().expect("Failed to parse bind address");
     let listener = TcpListener::bind(&addr).await.unwrap();
 
@@ -33,6 +33,38 @@ pub async fn create(addr: &str, https: bool) {
     #[allow(unused_mut)]
     let mut service =
         kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
+
+    info!("Starting a server (over http, so no TLS)");
+    println!("Listening on http://{}", addr);
+
+    loop {
+        // When an incoming TCP connection is received grab a TCP stream for
+        // client<->server communication.
+        //
+        // Note, this is a .await point, this loop will loop forever but is not a busy loop. The
+        // .await point allows the Tokio runtime to pull the task off of the thread until the task
+        // has work to do. In this case, a connection arrives on the port we are listening on and
+        // the task is woken up, at which point the task is then put back on a thread, and is
+        // driven forward by the runtime, eventually yielding a TCP stream.
+        let (tcp_stream, addr) = listener
+            .accept()
+            .await
+            .expect("Failed to accept connection");
+
+        let service = service.call(addr).await.unwrap();
+        let io = TokioIo::new(tcp_stream);
+        // Spin up a new task in Tokio so we can continue to listen for new TCP connection on the
+        // current task without waiting for the processing of the HTTP1 connection we just received
+        // to finish
+        tokio::task::spawn(async move {
+            // Handle the connection from the client using HTTP1 and pass any
+            // HTTP requests received on that connection to the `hello` function
+            let result = http1::Builder::new().serve_connection(io, service).await;
+            if let Err(err) = result {
+                println!("Error serving connection: {err:?}");
+            }
+        });
+    }
 }
 
 #[derive(Copy)]
