@@ -1125,9 +1125,13 @@ impl<C> Server<C> {
         let mut error_message: Option<String> = None;
         let mut error_traceback: Option<Vec<String>> = None;
 
+        // Use an absolute deadline so the timeout covers total execution time,
+        // not each individual message receive.
+        let deadline = timeout_duration.map(|d| tokio::time::Instant::now() + d);
+
         loop {
-            let msg = if let Some(duration) = timeout_duration {
-                match tokio::time::timeout(duration, rpc_rx.recv()).await {
+            let msg = if let Some(deadline) = deadline {
+                match tokio::time::timeout_at(deadline, rpc_rx.recv()).await {
                     Ok(Some(msg)) => msg,
                     Ok(None) => return Err(ExecuteCodeError::ChannelClosed),
                     Err(_) => return Err(ExecuteCodeError::Timeout),
@@ -1167,7 +1171,11 @@ impl<C> Server<C> {
                     entry.data = msg.content.get("data").and_then(|v| {
                         v.as_object().map(|obj| {
                             obj.iter()
-                                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                                .map(|(k, v)| {
+                                    let s = v.as_str().map(String::from)
+                                        .unwrap_or_else(|| v.to_string());
+                                    (k.clone(), s)
+                                })
                                 .collect()
                         })
                     });
@@ -1197,7 +1205,11 @@ impl<C> Server<C> {
                     data = msg.content.get("data").and_then(|v| {
                         v.as_object().map(|obj| {
                             obj.iter()
-                                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                                .map(|(k, v)| {
+                                    let s = v.as_str().map(String::from)
+                                        .unwrap_or_else(|| v.to_string());
+                                    (k.clone(), s)
+                                })
                                 .collect()
                         })
                     });
@@ -1893,6 +1905,13 @@ where
         match result {
             Ok(reply) => Ok(ExecuteCodeResponse::ExecutionCompleted(reply)),
             Err(ExecuteCodeError::Timeout) => {
+                // Interrupt the kernel so timed-out code stops consuming resources
+                if let Err(e) = kernel_session.interrupt().await {
+                    log::warn!(
+                        "Failed to interrupt kernel after execution timeout: {}",
+                        e
+                    );
+                }
                 Ok(ExecuteCodeResponse::ExecutionTimedOut(models::Error {
                     code: "timeout".to_string(),
                     message: format!(
