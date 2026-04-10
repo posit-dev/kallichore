@@ -1910,6 +1910,7 @@ where
         // Collect output messages until we receive the execute_reply
         let timeout_duration = execute_request
             .timeout_seconds
+            .filter(|&s| s > 0)
             .map(|s| std::time::Duration::from_secs(s as u64));
 
         let result = Self::collect_execution_output(&mut rpc_rx, &msg_id, timeout_duration).await;
