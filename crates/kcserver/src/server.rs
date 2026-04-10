@@ -1125,6 +1125,12 @@ impl<C> Server<C> {
         let mut error_message: Option<String> = None;
         let mut error_traceback: Option<Vec<String>> = None;
 
+        // We need both execute_reply (shell) and status:idle (IOPub) before
+        // returning, because ZMQ delivers them over different sockets and the
+        // execute_result on IOPub may arrive after execute_reply on shell.
+        let mut got_execute_reply = false;
+        let mut got_idle = false;
+
         // Use an absolute deadline so the timeout covers total execution time,
         // not each individual message receive.
         let deadline = timeout_duration.map(|d| tokio::time::Instant::now() + d);
@@ -1220,7 +1226,7 @@ impl<C> Server<C> {
                         .unwrap_or(0) as i32;
                 }
                 "execute_reply" => {
-                    // This is the shell reply that signals execution is complete
+                    // This is the shell reply that signals execution is complete.
                     let reply_status = msg
                         .content
                         .get("status")
@@ -1260,11 +1266,23 @@ impl<C> Server<C> {
                             });
                     }
 
-                    // Done — execution is complete
-                    break;
+                    got_execute_reply = true;
+                    if got_idle {
+                        break;
+                    }
                 }
                 "status" => {
-                    // Ignore status messages (busy/idle)
+                    let is_idle = msg
+                        .content
+                        .get("execution_state")
+                        .and_then(|v| v.as_str())
+                        == Some("idle");
+                    if is_idle {
+                        got_idle = true;
+                        if got_execute_reply {
+                            break;
+                        }
+                    }
                 }
                 other => {
                     log::debug!(

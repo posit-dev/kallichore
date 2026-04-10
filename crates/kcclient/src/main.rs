@@ -20,8 +20,8 @@ use futures::{future, stream, SinkExt, Stream};
 use kallichore_api::{models, Api, ApiNoContext, Client, ContextWrapperExt, ListSessionsResponse};
 use kallichore_api::{
     models::{RestartSession, ServerConfiguration},
-    DeleteSessionResponse, GetServerConfigurationResponse, InterruptSessionResponse,
-    NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
+    DeleteSessionResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
+    InterruptSessionResponse, NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
     SetServerConfigurationResponse,
 };
 
@@ -137,6 +137,22 @@ enum Commands {
         /// running session will be used
         #[arg(short, long)]
         session_id: Option<String>,
+    },
+
+    /// Execute code via the HTTP RPC (no WebSocket)
+    Run {
+        /// The session to execute code in. Optional; if not provided, the first
+        /// running session will be used
+        #[arg(short, long)]
+        session_id: Option<String>,
+
+        /// The code to execute
+        #[arg(short, long)]
+        code: String,
+
+        /// Maximum seconds to wait for execution (omit for no timeout)
+        #[arg(short, long)]
+        timeout: Option<i32>,
     },
 
     /// Delete an exited session
@@ -565,6 +581,127 @@ fn main() {
                 .unwrap();
             rt.block_on(execute_request(ws_stream, code, wait));
         }
+        Some(Commands::Run {
+            session_id,
+            code,
+            timeout,
+        }) => {
+            let session_id = match session_id {
+                Some(session_id) => session_id,
+                None => {
+                    let result = rt.block_on(client.list_sessions());
+                    if let Ok(ListSessionsResponse::ListOfActiveSessions(sessions)) = result {
+                        if let Some(session) = sessions.sessions.first() {
+                            session.session_id.clone()
+                        } else {
+                            eprintln!("No sessions available to execute code");
+                            return;
+                        }
+                    } else {
+                        eprintln!("Failed to list sessions");
+                        return;
+                    }
+                }
+            };
+            let mut request = models::ExecuteRequest::new(code);
+            request.timeout_seconds = timeout;
+            log::info!("Executing code in session '{}' via RPC", session_id);
+            match rt.block_on(client.execute_code(session_id.clone(), request)) {
+                Ok(resp) => match resp {
+                    ExecuteCodeResponse::ExecutionCompleted(reply) => {
+                        // Print all output messages in order
+                        for output in &reply.output {
+                            match output.r#type {
+                                models::ExecuteOutputType::Stream => {
+                                    let name = output
+                                        .stream_name
+                                        .as_deref()
+                                        .unwrap_or("stdout");
+                                    let text = output.text.as_deref().unwrap_or("");
+                                    if name == "stderr" {
+                                        eprint!("{}", text);
+                                    } else {
+                                        print!("{}", text);
+                                    }
+                                }
+                                models::ExecuteOutputType::DisplayData => {
+                                    if let Some(data) = &output.data {
+                                        for (mime, content) in data {
+                                            println!("--- display_data ({}) ---", mime);
+                                            println!("{}", content);
+                                        }
+                                    }
+                                }
+                                models::ExecuteOutputType::Error => {
+                                    if let Some(name) = &output.error_name {
+                                        eprint!("{}", name);
+                                        if let Some(msg) = &output.error_message {
+                                            eprint!(": {}", msg);
+                                        }
+                                        eprintln!();
+                                    }
+                                    if let Some(tb) = &output.error_traceback {
+                                        for line in tb {
+                                            eprintln!("{}", line);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Print the execution result if present
+                        if let Some(data) = &reply.data {
+                            for (mime, content) in data {
+                                println!("--- result ({}) ---", mime);
+                                println!("{}", content);
+                            }
+                        }
+
+                        // Print error info if the execution failed
+                        if reply.status == models::ExecuteReplyStatus::Error {
+                            if let Some(name) = &reply.error_name {
+                                eprint!("Error: {}", name);
+                                if let Some(msg) = &reply.error_message {
+                                    eprint!(": {}", msg);
+                                }
+                                eprintln!();
+                            }
+                            if let Some(tb) = &reply.error_traceback {
+                                for line in tb {
+                                    eprintln!("{}", line);
+                                }
+                            }
+                        }
+
+                        println!(
+                            "[execution_count: {}, status: {:?}]",
+                            reply.execution_count, reply.status
+                        );
+                    }
+                    ExecuteCodeResponse::InvalidRequest(error) => {
+                        eprintln!(
+                            "Invalid request: {}",
+                            serde_json::to_string_pretty(&error).unwrap()
+                        );
+                    }
+                    ExecuteCodeResponse::Unauthorized => {
+                        eprintln!("Access token is missing or invalid");
+                    }
+                    ExecuteCodeResponse::SessionNotFound => {
+                        eprintln!("Session '{}' not found", session_id);
+                    }
+                    ExecuteCodeResponse::ExecutionTimedOut(error) => {
+                        eprintln!(
+                            "Execution timed out: {}",
+                            serde_json::to_string_pretty(&error).unwrap()
+                        );
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Failed to execute code: {:?}", e);
+                }
+            }
+        }
         Some(Commands::Kill { session_id }) => {
             let session_id = match session_id {
                 Some(session_id) => session_id,
@@ -732,6 +869,7 @@ fn main() {
             // Create the server configuration with the new idle timeout hours
             let config = ServerConfiguration {
                 idle_shutdown_hours: Some(hours),
+                resource_sample_interval_ms: None,
                 log_level: None,
             };
 
