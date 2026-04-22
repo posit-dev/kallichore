@@ -11,9 +11,11 @@ use std::collections::HashMap;
 use async_channel::Sender;
 use kallichore_api::models;
 use kcshared::{
+    jupyter_message::JupyterMessage,
     kernel_message::{KernelMessage, StatusUpdate},
     websocket_message::WebsocketMessage,
 };
+use tokio::sync::mpsc;
 
 use crate::connection_file::ConnectionFile;
 use crate::execution_queue::ExecutionQueue;
@@ -68,7 +70,7 @@ pub struct KernelState {
     pub busy_since: Option<std::time::Instant>,
 
     /// A channel on which to send idle nudges
-    pub idle_nudge_tx: tokio::sync::mpsc::Sender<Option<u32>>,
+    pub idle_nudge_tx: mpsc::Sender<Option<u32>>,
 
     /// A channel to publish status updates to the websocket
     ws_json_tx: Sender<WebsocketMessage>,
@@ -84,6 +86,12 @@ pub struct KernelState {
 
     /// The most recent resource usage measurement for the kernel.
     pub resource_usage: Option<models::ResourceUsage>,
+
+    /// RPC listeners: maps a parent msg_id to a channel that receives
+    /// Jupyter messages matching that parent. Used by the execute_code RPC
+    /// to collect iopub output and the shell reply without going through
+    /// the WebSocket.
+    pub rpc_listeners: HashMap<String, mpsc::UnboundedSender<JupyterMessage>>,
 }
 
 impl KernelState {
@@ -91,7 +99,7 @@ impl KernelState {
     pub fn new(
         session: models::NewSession,
         working_directory: String,
-        idle_nudge_tx: tokio::sync::mpsc::Sender<Option<u32>>,
+        idle_nudge_tx: mpsc::Sender<Option<u32>>,
         ws_json_tx: Sender<WebsocketMessage>,
     ) -> Self {
         KernelState {
@@ -114,6 +122,7 @@ impl KernelState {
             client_socket_path: None,
             kernel_info: None,
             resource_usage: None,
+            rpc_listeners: HashMap::new(),
         }
     }
 

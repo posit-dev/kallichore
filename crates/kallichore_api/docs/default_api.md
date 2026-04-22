@@ -15,6 +15,7 @@ Method | HTTP request | Description
 **channels-upgrade**](default_api.md#channels-upgrade) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket or domain socket for channel communication
 **connection-info**](default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 **delete-session**](default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
+**execute-code**](default_api.md#execute-code) | **POST** /sessions/{session_id}/execute | Execute code and return results
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
 **interrupt-session**](default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
 **kill-session**](default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
@@ -282,6 +283,32 @@ No authorization required
 ### HTTP request headers
 
  - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **execute-code**
+> models::ExecuteReply execute-code(session_id, execute_request)
+Execute code and return results
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **session_id** | **String**|  | 
+  **execute_request** | [**ExecuteRequest**](ExecuteRequest.md)|  | 
+
+### Return type
+
+[**models::ExecuteReply**](executeReply.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: application/json
  - **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)

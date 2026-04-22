@@ -18,7 +18,6 @@ use swagger::EmptyContext;
 use swagger::{Has, XSpanIdString};
 use tokio::net::TcpListener;
 
-
 use kallichore_api::models;
 
 /// Creates an HTTP server (HTTPS/TLS support removed)
@@ -35,7 +34,7 @@ pub async fn create(addr: &str, #[allow(unused_variables)] https: bool) {
     let mut service =
         kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
 
-    info!("Starting a server (over http, no TLS support)");
+    info!("Starting a server (over http, so no TLS)");
     println!("Listening on http://{}", addr);
 
     loop {
@@ -100,10 +99,11 @@ use swagger::auth::Authorization;
 use kallichore_api::server::MakeService;
 use kallichore_api::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
-    ConnectionInfoResponse, DeleteSessionResponse, GetServerConfigurationResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    NewSessionResponse, RestartSessionResponse, ServerStatusResponse,
-    SetServerConfigurationResponse, ShutdownServerResponse, StartSessionResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, ExecuteCodeResponse,
+    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
+    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
+    StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -241,6 +241,22 @@ where
         info!(
             "delete_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Execute code and return results
+    async fn execute_code(
+        &self,
+        session_id: String,
+        execute_request: models::ExecuteRequest,
+        context: &C,
+    ) -> Result<ExecuteCodeResponse, ApiError> {
+        info!(
+            "execute_code(\"{}\", {:?}) - X-Span-ID: {:?}",
+            session_id,
+            execute_request,
             context.get().0.clone()
         );
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))

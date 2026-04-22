@@ -74,14 +74,18 @@ use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsUpgradeResponse, ConnectionInfoResponse,
-    DeleteSessionResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
-    NewSessionResponse, RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
+    DeleteSessionResponse, ExecuteCodeResponse, GetSessionResponse, InterruptSessionResponse,
+    KillSessionResponse, NewSessionResponse, RestartSessionResponse, ShutdownServerResponse,
+    StartSessionResponse,
 };
 use kcshared::{
     handshake_protocol::{HandshakeStatus, HandshakeVersion},
+    jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader},
     kernel_message::KernelMessage,
     websocket_message::WebsocketMessage,
 };
+
+use crate::kernel_session::make_message_id;
 use tokio::sync::broadcast;
 
 // Enum to handle different listener types in server
@@ -1103,6 +1107,207 @@ impl<C> Server<C> {
         // If we got here, the token is valid or not required
         return true;
     }
+
+    /// Collect execution output from the RPC listener channel until the
+    /// execute_reply arrives on the shell channel.
+    async fn collect_execution_output(
+        rpc_rx: &mut mpsc::UnboundedReceiver<JupyterMessage>,
+        msg_id: &str,
+        timeout_duration: Option<std::time::Duration>,
+    ) -> Result<models::ExecuteReply, ExecuteCodeError> {
+        let mut output: Vec<models::ExecuteOutput> = Vec::new();
+        let mut data: Option<std::collections::HashMap<String, String>> = None;
+        #[allow(unused_assignments)]
+        let mut status = models::ExecuteReplyStatus::Ok;
+        #[allow(unused_assignments)]
+        let mut execution_count: i32 = 0;
+        let mut error_name: Option<String> = None;
+        let mut error_message: Option<String> = None;
+        let mut error_traceback: Option<Vec<String>> = None;
+
+        // We need both execute_reply (shell) and status:idle (IOPub) before
+        // returning, because ZMQ delivers them over different sockets and the
+        // execute_result on IOPub may arrive after execute_reply on shell.
+        let mut got_execute_reply = false;
+        let mut got_idle = false;
+
+        // Use an absolute deadline so the timeout covers total execution time,
+        // not each individual message receive.
+        let deadline = timeout_duration.map(|d| tokio::time::Instant::now() + d);
+
+        loop {
+            let msg = if let Some(deadline) = deadline {
+                match tokio::time::timeout_at(deadline, rpc_rx.recv()).await {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => return Err(ExecuteCodeError::ChannelClosed),
+                    Err(_) => return Err(ExecuteCodeError::Timeout),
+                }
+            } else {
+                match rpc_rx.recv().await {
+                    Some(msg) => msg,
+                    None => return Err(ExecuteCodeError::ChannelClosed),
+                }
+            };
+
+            let msg_type = msg.header.msg_type.as_str();
+            log::trace!(
+                "execute_code RPC received message type '{}' for msg_id '{}'",
+                msg_type,
+                msg_id,
+            );
+
+            match msg_type {
+                "stream" => {
+                    let mut entry = models::ExecuteOutput::new(models::ExecuteOutputType::Stream);
+                    entry.stream_name = msg
+                        .content
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    entry.text = msg
+                        .content
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    output.push(entry);
+                }
+                "display_data" => {
+                    let mut entry =
+                        models::ExecuteOutput::new(models::ExecuteOutputType::DisplayData);
+                    entry.data = msg.content.get("data").and_then(|v| {
+                        v.as_object().map(|obj| {
+                            obj.iter()
+                                .map(|(k, v)| {
+                                    let s = v.as_str().map(String::from)
+                                        .unwrap_or_else(|| v.to_string());
+                                    (k.clone(), s)
+                                })
+                                .collect()
+                        })
+                    });
+                    entry.metadata = msg.content.get("metadata").cloned();
+                    output.push(entry);
+                }
+                "error" => {
+                    let mut entry = models::ExecuteOutput::new(models::ExecuteOutputType::Error);
+                    entry.error_name = msg
+                        .content
+                        .get("ename")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    entry.error_message = msg
+                        .content
+                        .get("evalue")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    entry.error_traceback = msg.content.get("traceback").and_then(|v| {
+                        v.as_array()
+                            .map(|arr| arr.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    });
+                    output.push(entry);
+                }
+                "execute_result" => {
+                    // Hoist into the top-level `data` field of ExecuteReply
+                    data = msg.content.get("data").and_then(|v| {
+                        v.as_object().map(|obj| {
+                            obj.iter()
+                                .map(|(k, v)| {
+                                    let s = v.as_str().map(String::from)
+                                        .unwrap_or_else(|| v.to_string());
+                                    (k.clone(), s)
+                                })
+                                .collect()
+                        })
+                    });
+                    execution_count = msg
+                        .content
+                        .get("execution_count")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0) as i32;
+                }
+                "execute_reply" => {
+                    // This is the shell reply that signals execution is complete.
+                    let reply_status = msg
+                        .content
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("ok");
+                    status = if reply_status == "error" {
+                        models::ExecuteReplyStatus::Error
+                    } else {
+                        models::ExecuteReplyStatus::Ok
+                    };
+                    execution_count = msg
+                        .content
+                        .get("execution_count")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(execution_count as i64)
+                        as i32;
+
+                    // Extract error info from the reply itself if present
+                    if reply_status == "error" {
+                        error_name = msg
+                            .content
+                            .get("ename")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        error_message = msg
+                            .content
+                            .get("evalue")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        error_traceback =
+                            msg.content.get("traceback").and_then(|v| {
+                                v.as_array().map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|s| s.as_str().map(String::from))
+                                        .collect()
+                                })
+                            });
+                    }
+
+                    got_execute_reply = true;
+                    if got_idle {
+                        break;
+                    }
+                }
+                "status" => {
+                    let is_idle = msg
+                        .content
+                        .get("execution_state")
+                        .and_then(|v| v.as_str())
+                        == Some("idle");
+                    if is_idle {
+                        got_idle = true;
+                        if got_execute_reply {
+                            break;
+                        }
+                    }
+                }
+                other => {
+                    log::debug!(
+                        "execute_code RPC ignoring unexpected message type '{}' for msg_id '{}'",
+                        other,
+                        msg_id,
+                    );
+                }
+            }
+        }
+
+        let mut reply = models::ExecuteReply::new(status, execution_count, output);
+        reply.data = data;
+        reply.error_name = error_name;
+        reply.error_message = error_message;
+        reply.error_traceback = error_traceback;
+
+        Ok(reply)
+    }
+}
+
+/// Errors that can occur during execute_code collection
+enum ExecuteCodeError {
+    Timeout,
+    ChannelClosed,
 }
 
 #[async_trait]
@@ -1617,6 +1822,134 @@ where
             Err(e) => Ok(StartSessionResponse::StartFailed(e)),
         }
     }
+
+    async fn execute_code(
+        &self,
+        session_id: String,
+        execute_request: models::ExecuteRequest,
+        context: &C,
+    ) -> Result<ExecuteCodeResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "execute_code(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        // Token validation
+        if !self.validate_token(context) {
+            return Ok(ExecuteCodeResponse::Unauthorized);
+        }
+
+        let kernel_session = match self.find_session(session_id.clone()) {
+            Some(kernel_session) => kernel_session,
+            None => {
+                return Ok(ExecuteCodeResponse::SessionNotFound);
+            }
+        };
+
+        // Verify the session is in a runnable state
+        {
+            let state = kernel_session.state.read().await;
+            match state.status {
+                models::Status::Idle | models::Status::Busy => {}
+                _ => {
+                    return Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
+                        code: "session_not_ready".to_string(),
+                        message: format!(
+                            "Session is in '{}' state; must be idle or busy to execute code",
+                            state.status
+                        ),
+                        details: None,
+                    }));
+                }
+            }
+        }
+
+        // Create the execute_request Jupyter message
+        let msg_id = make_message_id();
+        let jupyter_msg = JupyterMessage {
+            header: JupyterMessageHeader {
+                msg_id: msg_id.clone(),
+                msg_type: "execute_request".to_string(),
+            },
+            parent_header: None,
+            channel: JupyterChannel::Shell,
+            content: serde_json::json!({
+                "code": execute_request.code,
+                "silent": execute_request.silent.unwrap_or(false),
+                "store_history": execute_request.store_history.unwrap_or(true),
+                "user_expressions": {},
+                "allow_stdin": false,
+                "stop_on_error": execute_request.stop_on_error.unwrap_or(true),
+            }),
+            metadata: serde_json::json!({}),
+            buffers: vec![],
+        };
+
+        // Register an RPC listener for this msg_id
+        let (rpc_tx, mut rpc_rx) = mpsc::unbounded_channel::<JupyterMessage>();
+        {
+            let mut state = kernel_session.state.write().await;
+            state.rpc_listeners.insert(msg_id.clone(), rpc_tx);
+        }
+
+        // Send the message through the same path as WebSocket executions,
+        // which routes through the execution queue in the ZMQ proxy
+        if let Err(e) = kernel_session.ws_zmq_tx.send(jupyter_msg).await {
+            // Clean up the listener
+            let mut state = kernel_session.state.write().await;
+            state.rpc_listeners.remove(&msg_id);
+            return Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
+                code: "send_failed".to_string(),
+                message: format!("Failed to send execute request to kernel: {}", e),
+                details: None,
+            }));
+        }
+
+        // Collect output messages until we receive the execute_reply
+        let timeout_duration = execute_request
+            .timeout_seconds
+            .filter(|&s| s > 0)
+            .map(|s| std::time::Duration::from_secs(s as u64));
+
+        let result = Self::collect_execution_output(&mut rpc_rx, &msg_id, timeout_duration).await;
+
+        // Unregister the RPC listener
+        {
+            let mut state = kernel_session.state.write().await;
+            state.rpc_listeners.remove(&msg_id);
+        }
+
+        match result {
+            Ok(reply) => Ok(ExecuteCodeResponse::ExecutionCompleted(reply)),
+            Err(ExecuteCodeError::Timeout) => {
+                // Interrupt the kernel so timed-out code stops consuming resources
+                if let Err(e) = kernel_session.interrupt().await {
+                    log::warn!(
+                        "Failed to interrupt kernel after execution timeout: {}",
+                        e
+                    );
+                }
+                Ok(ExecuteCodeResponse::ExecutionTimedOut(models::Error {
+                    code: "timeout".to_string(),
+                    message: format!(
+                        "Execution timed out after {} seconds",
+                        execute_request.timeout_seconds.unwrap_or(0)
+                    ),
+                    details: None,
+                }))
+            }
+            Err(ExecuteCodeError::ChannelClosed) => {
+                Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
+                    code: "channel_closed".to_string(),
+                    message: "Kernel message channel closed unexpectedly".to_string(),
+                    details: None,
+                }))
+            }
+        }
+    }
+
 
     async fn interrupt_session(
         &self,

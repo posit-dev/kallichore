@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2026-01-06T09:23:26.564876-08:00[America/Los_Angeles]
+- Build date: 2026-04-08T15:56:17.963495-07:00[America/Los_Angeles]
 - Generator version: 7.17.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -145,6 +145,7 @@ Method | HTTP request | Description
 [**channels-upgrade**](docs/default_api.md#channels-upgrade) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket or domain socket for channel communication
 [**connection-info**](docs/default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 [**delete-session**](docs/default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
+[**execute-code**](docs/default_api.md#execute-code) | **POST** /sessions/{session_id}/execute | Execute code and return results
 [**get-session**](docs/default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
 [**interrupt-session**](docs/default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
 [**kill-session**](docs/default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
@@ -158,6 +159,11 @@ Method | HTTP request | Description
  - [ClientHeartbeat](docs/ClientHeartbeat.md)
  - [ConnectionInfo](docs/ConnectionInfo.md)
  - [Error](docs/Error.md)
+ - [ExecuteOutput](docs/ExecuteOutput.md)
+ - [ExecuteOutputType](docs/ExecuteOutputType.md)
+ - [ExecuteReply](docs/ExecuteReply.md)
+ - [ExecuteReplyStatus](docs/ExecuteReplyStatus.md)
+ - [ExecuteRequest](docs/ExecuteRequest.md)
  - [ExecutionQueue](docs/ExecutionQueue.md)
  - [InterruptMode](docs/InterruptMode.md)
  - [NewSession](docs/NewSession.md)

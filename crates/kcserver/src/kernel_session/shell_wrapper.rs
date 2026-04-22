@@ -72,7 +72,7 @@ impl ShellCommandBuilder {
     pub fn build_command(
         &self,
         argv: &[String],
-        resolved_env: &HashMap<String, String>,
+        #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] resolved_env: &HashMap<String, String>,
     ) -> Result<Option<ShellCommandInfo>, StartupError> {
         match self.startup_env {
             models::StartupEnvironment::None => Ok(None),

@@ -7,10 +7,10 @@ use futures::{future, stream, Stream};
 use kallichore_api::{
     models, AdoptSessionResponse, Api, ApiNoContext, ChannelsUpgradeResponse, Claims, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
+    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
+    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 
 // NOTE: Set environment variable RUST_LOG to the name of the executable (or "cargo run") to activate console logging for all loglevels.
@@ -54,6 +54,7 @@ fn main() {
                     "ChannelsUpgrade",
                     "ConnectionInfo",
                     "DeleteSession",
+                    "ExecuteCode",
                     "GetSession",
                     "InterruptSession",
                     "KillSession",
@@ -227,6 +228,15 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
+        /* Disabled because there's no example.
+        Some("ExecuteCode") => {
+            let result = rt.block_on(client.execute_code(
+                  "session_id_example".to_string(),
+                  ???
+            ));
+            info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
+        },
+        */
         Some("GetSession") => {
             let result = rt.block_on(client.get_session("session_id_example".to_string()));
             info!(

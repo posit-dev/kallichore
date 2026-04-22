@@ -8,10 +8,10 @@ use log::{debug, info};
 use kallichore_api::{
     models, AdoptSessionResponse, ApiNoContext, ChannelsUpgradeResponse, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
+    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
+    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 use simple_logger::SimpleLogger;
 use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
@@ -106,6 +106,12 @@ enum Operation {
     ConnectionInfo { session_id: String },
     /// Delete session
     DeleteSession { session_id: String },
+    /// Execute code and return results
+    ExecuteCode {
+        session_id: String,
+        #[clap(value_parser = parse_json::<models::ExecuteRequest>)]
+        execute_request: models::ExecuteRequest,
+    },
     /// Get session details
     GetSession { session_id: String },
     /// Interrupt session
@@ -375,6 +381,29 @@ async fn main() -> Result<()> {
                 }
                 DeleteSessionResponse::Unauthorized => "Unauthorized\n".to_string(),
                 DeleteSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
+            }
+        }
+        Operation::ExecuteCode {
+            session_id,
+            execute_request,
+        } => {
+            info!("Performing a ExecuteCode request on {:?}", (&session_id));
+
+            let result = client.execute_code(session_id, execute_request).await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                ExecuteCodeResponse::ExecutionCompleted(body) => {
+                    "ExecutionCompleted\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                ExecuteCodeResponse::InvalidRequest(body) => {
+                    "InvalidRequest\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                ExecuteCodeResponse::Unauthorized => "Unauthorized\n".to_string(),
+                ExecuteCodeResponse::SessionNotFound => "SessionNotFound\n".to_string(),
+                ExecuteCodeResponse::ExecutionTimedOut(body) => {
+                    "ExecutionTimedOut\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
             }
         }
         Operation::GetSession { session_id } => {

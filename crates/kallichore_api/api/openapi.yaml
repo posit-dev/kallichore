@@ -347,6 +347,51 @@ paths:
           description: Session not found
       security: []
       summary: Upgrade to a WebSocket or domain socket for channel communication
+  /sessions/{session_id}/execute:
+    post:
+      operationId: execute-code
+      parameters:
+      - explode: false
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/executeRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/executeReply"
+          description: Execution completed
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/error"
+          description: Invalid request
+        "401":
+          content: {}
+          description: Unauthorized
+        "404":
+          content:
+            application/json: {}
+          description: Session not found
+        "408":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/error"
+          description: Execution timed out
+      security: []
+      summary: Execute code and return results
   /shutdown:
     post:
       operationId: shutdown-server
@@ -707,6 +752,150 @@ components:
       - length
       - pending
       type: object
+    executeRequest:
+      description: A request to execute code in a session
+      properties:
+        code:
+          description: The code to execute
+          type: string
+        silent:
+          default: false
+          description: "If true, signals the kernel to execute quietly: no broadcast\
+            \ on iopub, no execute_result, and the execution_count is not incremented.\
+            \ Defaults to false."
+          type: boolean
+        store_history:
+          default: true
+          description: "If true (default), the code is stored in the kernel's history.\
+            \ Set to false for throwaway executions."
+          type: boolean
+        stop_on_error:
+          default: true
+          description: "If true (default), abort the execution queue on error. If\
+            \ false, queued execute requests will still be processed even if this\
+            \ one fails."
+          type: boolean
+        timeout_seconds:
+          description: "Maximum number of seconds to wait for execution to complete.\
+            \ If not specified, the request will block indefinitely until execution\
+            \ finishes."
+          type: integer
+      required:
+      - code
+      type: object
+    executeReply:
+      description: The result of executing code in a session
+      example:
+        output:
+        - error_message: error_message
+          error_name: error_name
+          metadata: "{}"
+          stream_name: stream_name
+          data:
+            key: data
+          text: text
+          error_traceback:
+          - error_traceback
+          - error_traceback
+          type: stream
+        - error_message: error_message
+          error_name: error_name
+          metadata: "{}"
+          stream_name: stream_name
+          data:
+            key: data
+          text: text
+          error_traceback:
+          - error_traceback
+          - error_traceback
+          type: stream
+        error_message: error_message
+        error_name: error_name
+        data:
+          key: data
+        execution_count: 0
+        error_traceback:
+        - error_traceback
+        - error_traceback
+        status: ok
+      properties:
+        status:
+          $ref: "#/components/schemas/executeReply_status"
+        execution_count:
+          description: The kernel's execution counter
+          type: integer
+        output:
+          description: "All output messages produced during execution, in order"
+          items:
+            $ref: "#/components/schemas/executeOutput"
+          type: array
+        data:
+          additionalProperties:
+            type: string
+          description: "The execution result as a MIME-keyed dictionary (from execute_result),\
+            \ if the execution produced a result"
+          type: object
+        error_name:
+          description: "The error name, if the execution failed"
+          type: string
+        error_message:
+          description: "The error message, if the execution failed"
+          type: string
+        error_traceback:
+          description: "The error traceback, if the execution failed"
+          items:
+            type: string
+          type: array
+      required:
+      - execution_count
+      - output
+      - status
+      type: object
+    executeOutput:
+      description: A single output message produced during code execution
+      example:
+        error_message: error_message
+        error_name: error_name
+        metadata: "{}"
+        stream_name: stream_name
+        data:
+          key: data
+        text: text
+        error_traceback:
+        - error_traceback
+        - error_traceback
+        type: stream
+      properties:
+        type:
+          $ref: "#/components/schemas/executeOutput_type"
+        stream_name:
+          description: "The stream name (stdout or stderr), for stream output"
+          type: string
+        text:
+          description: "The text content, for stream output"
+          type: string
+        data:
+          additionalProperties:
+            type: string
+          description: "MIME-keyed data, for display_data output"
+          type: object
+        metadata:
+          description: "Metadata dictionary, for display_data output"
+          type: object
+        error_name:
+          description: "The error name, for error output"
+          type: string
+        error_message:
+          description: "The error message, for error output"
+          type: string
+        error_traceback:
+          description: "The error traceback lines, for error output"
+          items:
+            type: string
+          type: array
+      required:
+      - type
+      type: object
     activeSession:
       example:
         process_id: 6
@@ -1037,6 +1226,19 @@ components:
       required:
       - session_id
       type: object
+    executeReply_status:
+      description: Whether the execution succeeded or errored
+      enum:
+      - ok
+      - error
+      type: string
+    executeOutput_type:
+      description: The output message type
+      enum:
+      - stream
+      - display_data
+      - error
+      type: string
     serverConfiguration_log_level:
       description: The current log level
       enum:

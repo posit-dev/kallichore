@@ -531,6 +531,76 @@
         }
       }
     },
+    "/sessions/{session_id}/execute": {
+      "post": {
+        "operationId": "execute-code",
+        "summary": "Execute code and return results",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/executeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Execution completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/executeReply"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "408": {
+            "description": "Execution timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/shutdown": {
       "post": {
         "operationId": "shutdown-server",
@@ -982,6 +1052,142 @@
         "required": [
           "length",
           "pending"
+        ]
+      },
+      "executeRequest": {
+        "type": "object",
+        "description": "A request to execute code in a session",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The code to execute"
+          },
+          "silent": {
+            "type": "boolean",
+            "description": "If true, signals the kernel to execute quietly: no broadcast on iopub, no execute_result, and the execution_count is not incremented. Defaults to false.",
+            "default": false
+          },
+          "store_history": {
+            "type": "boolean",
+            "description": "If true (default), the code is stored in the kernel's history. Set to false for throwaway executions.",
+            "default": true
+          },
+          "stop_on_error": {
+            "type": "boolean",
+            "description": "If true (default), abort the execution queue on error. If false, queued execute requests will still be processed even if this one fails.",
+            "default": true
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "Maximum number of seconds to wait for execution to complete. If not specified, the request will block indefinitely until execution finishes."
+          }
+        },
+        "required": [
+          "code"
+        ]
+      },
+      "executeReply": {
+        "type": "object",
+        "description": "The result of executing code in a session",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Whether the execution succeeded or errored",
+            "enum": [
+              "ok",
+              "error"
+            ]
+          },
+          "execution_count": {
+            "type": "integer",
+            "description": "The kernel's execution counter"
+          },
+          "output": {
+            "type": "array",
+            "description": "All output messages produced during execution, in order",
+            "items": {
+              "$ref": "#/components/schemas/executeOutput"
+            }
+          },
+          "data": {
+            "type": "object",
+            "description": "The execution result as a MIME-keyed dictionary (from execute_result), if the execution produced a result",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "error_name": {
+            "type": "string",
+            "description": "The error name, if the execution failed"
+          },
+          "error_message": {
+            "type": "string",
+            "description": "The error message, if the execution failed"
+          },
+          "error_traceback": {
+            "type": "array",
+            "description": "The error traceback, if the execution failed",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "execution_count",
+          "output"
+        ]
+      },
+      "executeOutput": {
+        "type": "object",
+        "description": "A single output message produced during code execution",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "The output message type",
+            "enum": [
+              "stream",
+              "display_data",
+              "error"
+            ]
+          },
+          "stream_name": {
+            "type": "string",
+            "description": "The stream name (stdout or stderr), for stream output"
+          },
+          "text": {
+            "type": "string",
+            "description": "The text content, for stream output"
+          },
+          "data": {
+            "type": "object",
+            "description": "MIME-keyed data, for display_data output",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Metadata dictionary, for display_data output"
+          },
+          "error_name": {
+            "type": "string",
+            "description": "The error name, for error output"
+          },
+          "error_message": {
+            "type": "string",
+            "description": "The error message, for error output"
+          },
+          "error_traceback": {
+            "type": "array",
+            "description": "The error traceback lines, for error output",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "type"
         ]
       },
       "activeSession": {

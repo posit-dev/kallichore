@@ -142,6 +142,21 @@ pub enum DeleteSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum ExecuteCodeResponse {
+    /// Execution completed
+    ExecutionCompleted(models::ExecuteReply),
+    /// Invalid request
+    InvalidRequest(models::Error),
+    /// Unauthorized
+    Unauthorized,
+    /// Session not found
+    SessionNotFound,
+    /// Execution timed out
+    ExecutionTimedOut(models::Error),
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum GetSessionResponse {
     /// Session details
     SessionDetails(models::ActiveSession),
@@ -272,6 +287,14 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<DeleteSessionResponse, ApiError>;
 
+    /// Execute code and return results
+    async fn execute_code(
+        &self,
+        session_id: String,
+        execute_request: models::ExecuteRequest,
+        context: &C,
+    ) -> Result<ExecuteCodeResponse, ApiError>;
+
     /// Get session details
     async fn get_session(
         &self,
@@ -364,6 +387,13 @@ pub trait ApiNoContext<C: Send + Sync> {
 
     /// Delete session
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
+
+    /// Execute code and return results
+    async fn execute_code(
+        &self,
+        session_id: String,
+        execute_request: models::ExecuteRequest,
+    ) -> Result<ExecuteCodeResponse, ApiError>;
 
     /// Get session details
     async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError>;
@@ -498,6 +528,18 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError> {
         let context = self.context().clone();
         self.api().delete_session(session_id, &context).await
+    }
+
+    /// Execute code and return results
+    async fn execute_code(
+        &self,
+        session_id: String,
+        execute_request: models::ExecuteRequest,
+    ) -> Result<ExecuteCodeResponse, ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .execute_code(session_id, execute_request, &context)
+            .await
     }
 
     /// Get session details
