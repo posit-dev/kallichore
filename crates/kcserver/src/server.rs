@@ -1848,20 +1848,50 @@ where
             }
         };
 
-        // Verify the session is in a runnable state
+        // Verify the session is in a runnable state. If the kernel is still
+        // coming up (uninitialized/starting/ready), wait for it to become
+        // ready rather than rejecting outright: callers commonly issue an
+        // execute_request immediately after start_session, before the kernel
+        // has published its first idle status on iopub.
         {
-            let state = kernel_session.state.read().await;
-            match state.status {
-                models::Status::Idle | models::Status::Busy => {}
-                _ => {
-                    return Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
-                        code: "session_not_ready".to_string(),
-                        message: format!(
-                            "Session is in '{}' state; must be idle or busy to execute code",
-                            state.status
-                        ),
-                        details: None,
-                    }));
+            // How long to wait for a starting kernel to become ready before
+            // giving up.
+            const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+            const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+            let deadline = std::time::Instant::now() + READY_TIMEOUT;
+            loop {
+                let status = { kernel_session.state.read().await.status };
+                match status {
+                    // Runnable: proceed.
+                    models::Status::Idle | models::Status::Busy => break,
+                    // Still coming up: wait, unless we've run out of time.
+                    models::Status::Uninitialized
+                    | models::Status::Starting
+                    | models::Status::Ready => {
+                        if std::time::Instant::now() >= deadline {
+                            return Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
+                                code: "session_not_ready".to_string(),
+                                message: format!(
+                                    "Session did not become ready within {:?} (last status: '{}')",
+                                    READY_TIMEOUT, status
+                                ),
+                                details: None,
+                            }));
+                        }
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                    }
+                    // Not runnable and won't become runnable.
+                    models::Status::Offline | models::Status::Exited => {
+                        return Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
+                            code: "session_not_ready".to_string(),
+                            message: format!(
+                                "Session is in '{}' state; must be idle or busy to execute code",
+                                status
+                            ),
+                            details: None,
+                        }));
+                    }
                 }
             }
         }
