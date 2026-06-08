@@ -270,6 +270,13 @@ impl StartupCoordinator {
             }
         };
 
+        // Place the kernel in the supervisor's kill-on-close job object so it is
+        // terminated if the supervisor exits. On Windows, spawning with
+        // CREATE_NO_WINDOW (above) gives the kernel its own console and so
+        // detaches it from the supervisor's console lifetime; without the job
+        // object the kernel would be left orphaned when the supervisor exits.
+        super::job_object::assign_to_supervisor_job(&child);
+
         // Capture output streams
         process_monitor.capture_output_streams(&mut child);
 

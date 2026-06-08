@@ -11,6 +11,7 @@
 mod connection;
 mod environment;
 mod handshake;
+mod job_object;
 mod lifecycle;
 mod process;
 mod shell_wrapper;
