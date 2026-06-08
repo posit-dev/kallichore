@@ -44,8 +44,8 @@ mod windows_impl {
     use once_cell::sync::OnceCell;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
@@ -103,7 +103,7 @@ mod windows_impl {
                 job,
                 JobObjectExtendedLimitInformation,
                 info_ptr.cast(),
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             ) {
                 log::warn!(
                     "Failed to configure kill-on-close job object; kernels may outlive \
