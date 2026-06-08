@@ -1022,10 +1022,29 @@ async fn test_kernel_session_shutdown() {
     // Close the websocket connection
     comm.close().await.ok();
 
-    // Wait a bit more for the kernel process to fully exit
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Wait for the kernel to actually exit before deleting. delete_session
+    // refuses unless the session has reached the 'Exited' state, and process
+    // teardown can take a variable amount of time (notably slower on Windows
+    // CI), so poll rather than sleeping a fixed interval.
+    let exit_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let details = client
+            .get_session(session_id.clone())
+            .await
+            .expect("Failed to get session while waiting for exit");
+        if let kallichore_api::GetSessionResponse::SessionDetails(d) = details {
+            if d.status == kallichore_api::models::Status::Exited {
+                break;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < exit_deadline,
+            "Kernel did not reach 'Exited' state within 15s after shutdown_request"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
-    // Now we can delete the session since the kernel should have exited
+    // Now we can delete the session since the kernel has exited
     println!("Deleting kernel session...");
     let delete_response = client
         .delete_session(session_id.clone())
