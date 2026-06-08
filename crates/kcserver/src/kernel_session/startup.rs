@@ -275,6 +275,28 @@ impl StartupCoordinator {
         {
             let mut state = self.state.write().await;
             state.set_kernel_info(kernel_info.clone());
+
+            // A successful kernel_info_reply means the kernel is alive and has
+            // finished handling a shell request, i.e. it's idle and ready to
+            // execute. Promote the status to Idle now rather than waiting for
+            // the kernel's startup `status: idle` message on iopub, which can
+            // be missed if the iopub SUB socket subscribes after the kernel
+            // emits it (a slow-joiner race that otherwise leaves the session
+            // stuck in 'starting'). Only promote from a startup state so we
+            // don't clobber a status the iopub stream may have already set.
+            if matches!(
+                state.status,
+                models::Status::Uninitialized
+                    | models::Status::Starting
+                    | models::Status::Ready
+            ) {
+                state
+                    .set_status(
+                        models::Status::Idle,
+                        Some(String::from("kernel_info_reply received")),
+                    )
+                    .await;
+            }
         }
 
         // Try to parse the kernel info to extract prompts
