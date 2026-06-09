@@ -111,7 +111,7 @@ impl ShellCommandBuilder {
             "[session {}] Running kernel in {} shell: {}",
             self.session_id,
             if is_interactive {
-                "interactive"
+                "login interactive"
             } else {
                 "login"
             },
@@ -153,12 +153,14 @@ impl ShellCommandBuilder {
             _ => kernel_command, // Shell mode - no prefix
         };
 
-        // Determine shell flag based on shell type and mode
-        let shell_flag = self.get_shell_flag(&shell, is_interactive);
+        // Determine shell flags based on shell type and mode
+        let shell_flags = self.get_shell_flags(&shell, is_interactive);
 
         // Create the shell command
         let mut cmd = tokio::process::Command::new(&shell);
-        cmd.args(&[shell_flag, "-c", &kernel_command]);
+        cmd.args(&shell_flags);
+        cmd.arg("-c");
+        cmd.arg(&kernel_command);
 
         Ok(Some(ShellCommandInfo {
             command: cmd,
@@ -313,30 +315,111 @@ impl ShellCommandBuilder {
         ))
     }
 
-    /// Get the shell flag for a specific shell and mode.
+    /// Get the shell flags for a specific shell and mode.
+    ///
+    /// In non-interactive mode we run a plain login shell, which sources the
+    /// system profile scripts (e.g. `/etc/profile`, `/etc/profile.d/*`) and the
+    /// user's profile (`~/.bash_profile`, `~/.zprofile`, etc.).
+    ///
+    /// In interactive mode (a startup command or script is present) we want the
+    /// kernel to inherit the user's *full* environment, so we run a shell that
+    /// is both a login shell and an interactive shell. This matters because the
+    /// two startup-file sets are otherwise mutually exclusive:
+    ///
+    /// - Login shells source system/user profile scripts. Environment-module
+    ///   setup (`module`) commonly lives in `/etc/profile.d/*` and is only
+    ///   defined for login shells.
+    /// - Interactive shells source rc files (`~/.bashrc`, `~/.zshrc`), where
+    ///   users commonly put PATH tweaks and tool initialization.
+    ///
+    /// Running a login interactive shell picks up both sets, though the exact
+    /// guarantee is shell-dependent:
+    ///
+    /// - zsh sources `.zprofile` (login) and `.zshrc` (interactive)
+    ///   unconditionally, so both always run.
+    /// - bash, when invoked as an interactive login shell, sources the profile
+    ///   files but does *not* read `~/.bashrc` directly. It only reaches
+    ///   `~/.bashrc` when a profile file sources it -- which is the standard
+    ///   `~/.profile`/`~/.bash_profile` -> `~/.bashrc` chain shipped by default
+    ///   on the major distributions. A bash user whose profile does not chain
+    ///   to `~/.bashrc` will not pick up `~/.bashrc`-only setup here. The `-i`
+    ///   flag is still important: it satisfies the common `case $- in *i*)`
+    ///   interactivity guard at the top of `~/.bashrc` (e.g. conda's init
+    ///   block), which a non-interactive login shell would skip.
     #[cfg(not(target_os = "windows"))]
-    fn get_shell_flag(&self, shell: &str, is_interactive: bool) -> &'static str {
-        if is_interactive {
-            "-i"
-        } else {
-            match shell.split('/').last() {
-                None => "-l", // Unknown shell, presume bash-alike
-                Some(shell_name) => match shell_name {
-                    // csh-like shells don't support -c for login shells.
-                    // Instead, we emulate a login shell by asking it to load
-                    // the directory stack (-d)
-                    "csh" | "tcsh" => "-d",
+    fn get_shell_flags(&self, shell: &str, is_interactive: bool) -> Vec<&'static str> {
+        let shell_name = shell.split('/').last();
 
-                    // Bash and zsh support the long-form --login option
-                    "bash" | "zsh" => "--login",
+        // The flag that makes this shell a login shell.
+        let login_flag = match shell_name {
+            // csh-like shells don't support -c for login shells.
+            // Instead, we emulate a login shell by asking it to load
+            // the directory stack (-d)
+            Some("csh") | Some("tcsh") => "-d",
 
-                    // Sh and dash only support -l
-                    "dash" | "sh" => "-l",
+            // Bash and zsh support the long-form --login option
+            Some("bash") | Some("zsh") => "--login",
 
-                    // For all other shells, presume -l
-                    _ => "-l",
-                },
-            }
+            // Sh and dash only support -l
+            Some("dash") | Some("sh") => "-l",
+
+            // For all other (and unknown) shells, presume -l
+            _ => "-l",
+        };
+
+        if !is_interactive {
+            return vec![login_flag];
         }
+
+        // Interactive mode: run a login *and* interactive shell so we pick up
+        // both profile scripts and interactive rc files.
+        match shell_name {
+            // csh/tcsh can't combine login emulation (-d) with -c reliably, so
+            // fall back to interactive-only (sources ~/.cshrc).
+            Some("csh") | Some("tcsh") => vec!["-i"],
+
+            _ => vec![login_flag, "-i"],
+        }
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::*;
+
+    fn builder() -> ShellCommandBuilder {
+        ShellCommandBuilder::new(
+            "test".to_string(),
+            models::StartupEnvironment::Command,
+            Some("module load R".to_string()),
+            "/tmp".to_string(),
+        )
+    }
+
+    #[test]
+    fn non_interactive_uses_login_flag_only() {
+        let b = builder();
+        assert_eq!(b.get_shell_flags("/bin/bash", false), vec!["--login"]);
+        assert_eq!(b.get_shell_flags("/bin/zsh", false), vec!["--login"]);
+        assert_eq!(b.get_shell_flags("/bin/dash", false), vec!["-l"]);
+        assert_eq!(b.get_shell_flags("/bin/sh", false), vec!["-l"]);
+        assert_eq!(b.get_shell_flags("/bin/tcsh", false), vec!["-d"]);
+        assert_eq!(b.get_shell_flags("/usr/bin/fish", false), vec!["-l"]);
+    }
+
+    #[test]
+    fn interactive_combines_login_and_interactive() {
+        let b = builder();
+        assert_eq!(b.get_shell_flags("/bin/bash", true), vec!["--login", "-i"]);
+        assert_eq!(b.get_shell_flags("/bin/zsh", true), vec!["--login", "-i"]);
+        assert_eq!(b.get_shell_flags("/bin/dash", true), vec!["-l", "-i"]);
+        assert_eq!(b.get_shell_flags("/usr/bin/fish", true), vec!["-l", "-i"]);
+    }
+
+    #[test]
+    fn interactive_csh_falls_back_to_interactive_only() {
+        let b = builder();
+        assert_eq!(b.get_shell_flags("/bin/csh", true), vec!["-i"]);
+        assert_eq!(b.get_shell_flags("/bin/tcsh", true), vec!["-i"]);
     }
 }
