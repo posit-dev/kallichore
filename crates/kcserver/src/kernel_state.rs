@@ -207,6 +207,23 @@ impl KernelState {
             return;
         }
 
+        // Once the kernel has exited, don't let a late/buffered iopub status
+        // message (e.g. the trailing 'idle' a kernel emits while handling a
+        // shutdown_request) resurrect it into a running state. Coming back to
+        // life only happens via an explicit restart, which moves the status
+        // through 'starting' first.
+        if self.status == models::Status::Exited
+            && matches!(status, models::Status::Idle | models::Status::Busy)
+        {
+            log::debug!(
+                "[session {}] Ignoring status '{}' => '{}'; kernel has already exited",
+                self.session_id,
+                self.status,
+                status
+            );
+            return;
+        }
+
         self.status = status;
 
         // When exiting ...

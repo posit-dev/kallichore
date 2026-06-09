@@ -50,19 +50,32 @@ async fn setup_kernel_session(
         other => panic!("Unexpected start response: {:?}", other),
     }
 
-    // Wait for the kernel to become idle (ready to execute)
-    for _ in 0..60 {
+    // Wait for the kernel to become ready (idle or busy) before returning.
+    // CI runners can be slow to spin up a kernel, so give this a generous
+    // budget and fail loudly if it never becomes ready; otherwise the
+    // caller executes code against a 'starting' session and can get a
+    // confusing `session_not_ready` error further down.
+    let mut last_status = None;
+    let mut ready = false;
+    for _ in 0..200 {
         let session_response = client
             .get_session(session_id.clone())
             .await
             .expect("Failed to get session");
         if let GetSessionResponse::SessionDetails(details) = session_response {
-            if details.status == Status::Idle {
+            last_status = Some(details.status);
+            if details.status == Status::Idle || details.status == Status::Busy {
+                ready = true;
                 break;
             }
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    assert!(
+        ready,
+        "Kernel for session {} never became ready; last status: {:?}",
+        session_id, last_status
+    );
 
     (client, session_id)
 }
