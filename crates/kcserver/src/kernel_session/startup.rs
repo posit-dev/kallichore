@@ -225,6 +225,28 @@ impl StartupCoordinator {
         resolved_env: &HashMap<String, String>,
         process_monitor: &ProcessMonitor,
     ) -> Result<tokio::process::Child, StartupError> {
+        // On Windows, give the kernel its own (hidden) console rather than
+        // letting it inherit the supervisor's console handle.
+        //
+        // The supervisor is often launched inside a terminal whose
+        // pseudoconsole (conpty) is destroyed when the launching client (e.g.
+        // Positron) exits. If the supervisor is left running as an orphan
+        // (e.g. it survives the client's exit), it is then holding a dangling
+        // console. A kernel spawned afterwards would inherit that dead console
+        // and fail during process/DLL initialization with
+        // STATUS_DLL_INIT_FAILED (exit code 0xC0000142), before producing any
+        // output. CREATE_NO_WINDOW runs the kernel as a console application
+        // with its own console and no window, isolating it from the
+        // supervisor's console lifetime so kernels can still be started after
+        // a client disconnects and reconnects.
+        #[cfg(target_os = "windows")]
+        {
+            // CREATE_NO_WINDOW; see
+            // https://learn.microsoft.com/windows/win32/procthread/process-creation-flags
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         // Spawn the process
         let mut child = match cmd
             .envs(resolved_env)
@@ -253,6 +275,13 @@ impl StartupCoordinator {
                 });
             }
         };
+
+        // Place the kernel in the supervisor's kill-on-close job object so it is
+        // terminated if the supervisor exits. On Windows, spawning with
+        // CREATE_NO_WINDOW (above) gives the kernel its own console and so
+        // detaches it from the supervisor's console lifetime; without the job
+        // object the kernel would be left orphaned when the supervisor exits.
+        super::job_object::assign_to_supervisor_job(&child);
 
         // Capture output streams
         process_monitor.capture_output_streams(&mut child);
