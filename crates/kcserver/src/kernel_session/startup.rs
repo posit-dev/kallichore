@@ -63,8 +63,14 @@ impl StartupCoordinator {
             });
         }
 
-        // Validate startup_environment_arg usage
-        if self.model.startup_environment_arg.is_some() {
+        // Validate startup_environment_arg usage. Treat an empty string the
+        // same as None, so it doesn't generate a spurious warning.
+        if self
+            .model
+            .startup_environment_arg
+            .as_deref()
+            .is_some_and(|arg| !arg.is_empty())
+        {
             match self.model.startup_environment {
                 models::StartupEnvironment::Command | models::StartupEnvironment::Script => {
                     // Valid - these modes require an arg
