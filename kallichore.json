@@ -1340,6 +1340,10 @@
             "type": "string",
             "format": "date-time",
             "description": "An ISO 8601 timestamp of when the server was started"
+          },
+          "server_id": {
+            "type": "string",
+            "description": "A unique identifier generated when the server starts. Clients can compare this against a previously observed value to detect that they are talking to a different server instance (e.g. one that was restarted), and therefore that any persisted bearer token may be stale."
           }
         },
         "required": [

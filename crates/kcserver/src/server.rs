@@ -556,6 +556,11 @@ pub struct Server<C> {
     #[allow(dead_code)]
     token: Option<String>,
     started_time: std::time::Instant,
+    /// A unique identifier generated each time the server starts. Reported in
+    /// the server status so clients can detect when they are talking to a
+    /// different server instance and therefore that a persisted bearer token
+    /// may be stale.
+    server_id: String,
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     client_sessions: Arc<RwLock<Vec<ClientSession>>>,
     idle_nudge_tx: Sender<Option<u32>>,
@@ -634,6 +639,7 @@ impl<C> Server<C> {
         Server {
             token,
             started_time: std::time::Instant::now(),
+            server_id: uuid::Uuid::new_v4().to_string(),
             marker: PhantomData,
             kernel_sessions,
             client_sessions: Arc::new(RwLock::new(vec![])),
@@ -695,6 +701,7 @@ impl<C> Server<C> {
         Server {
             token,
             started_time: std::time::Instant::now(),
+            server_id: uuid::Uuid::new_v4().to_string(),
             marker: PhantomData,
             kernel_sessions,
             client_sessions: Arc::new(RwLock::new(vec![])),
@@ -750,6 +757,7 @@ impl<C> Server<C> {
         Server {
             token,
             started_time: std::time::Instant::now(),
+            server_id: uuid::Uuid::new_v4().to_string(),
             marker: PhantomData,
             kernel_sessions,
             client_sessions: Arc::new(RwLock::new(vec![])),
@@ -2161,6 +2169,7 @@ where
             started: started_datetime,
             uptime_seconds: uptime_seconds as i32,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            server_id: Some(self.server_id.clone()),
         };
 
         Ok(kallichore_api::ServerStatusResponse::ServerStatusAndInformation(resp))

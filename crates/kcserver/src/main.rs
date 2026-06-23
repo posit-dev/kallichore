@@ -354,11 +354,14 @@ async fn main() {
             }
         }
         None => {
-            // Generate a random token
+            // Generate a random token. We use 32 bytes (256 bits) of entropy;
+            // hex-encoded this is 64 characters, which is the maximum length
+            // that fits in the auth token HTTP header (see the token-file
+            // length check above).
             let mut rng = rand::thread_rng();
-            let mut hex_string = String::with_capacity(32);
+            let mut hex_string = String::with_capacity(64);
 
-            for _ in 0..8 {
+            for _ in 0..32 {
                 let byte: u8 = rng.gen();
                 hex_string.push_str(&format!("{:02x}", byte));
             }

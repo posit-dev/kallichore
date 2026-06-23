@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2026-04-08T15:56:17.963495-07:00[America/Los_Angeles]
+- Build date: 2026-06-23T15:49:56.724154-07:00[America/Los_Angeles]
 - Generator version: 7.17.0
 
 For more information, please visit [https://posit.co](https://posit.co)
