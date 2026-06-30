@@ -4364,6 +4364,11 @@ pub struct ServerStatus {
     /// An ISO 8601 timestamp of when the server was started
     #[serde(rename = "started")]
     pub started: chrono::DateTime<chrono::Utc>,
+
+    /// A unique identifier generated when the server starts. Clients can compare this against a previously observed value to detect that they are talking to a different server instance (e.g. one that was restarted), and therefore that any persisted bearer token may be stale.
+    #[serde(rename = "server_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
 }
 
 impl ServerStatus {
@@ -4389,6 +4394,7 @@ impl ServerStatus {
             version,
             process_id,
             started,
+            server_id: None,
         }
     }
 }
@@ -4416,6 +4422,9 @@ impl std::fmt::Display for ServerStatus {
             Some("process_id".to_string()),
             Some(self.process_id.to_string()),
             // Skipping non-primitive type started in query parameter serialization
+            self.server_id
+                .as_ref()
+                .map(|server_id| ["server_id".to_string(), server_id.to_string()].join(",")),
         ];
 
         write!(
@@ -4446,6 +4455,7 @@ impl std::str::FromStr for ServerStatus {
             pub version: Vec<String>,
             pub process_id: Vec<i32>,
             pub started: Vec<chrono::DateTime<chrono::Utc>>,
+            pub server_id: Vec<String>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -4503,6 +4513,10 @@ impl std::str::FromStr for ServerStatus {
                     "started" => intermediate_rep.started.push(
                         <chrono::DateTime<chrono::Utc> as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "server_id" => intermediate_rep.server_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     _ => {
                         return std::result::Result::Err(
@@ -4563,6 +4577,7 @@ impl std::str::FromStr for ServerStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "started missing in ServerStatus".to_string())?,
+            server_id: intermediate_rep.server_id.into_iter().next(),
         })
     }
 }

@@ -1033,6 +1033,7 @@ components:
         busy: true
         active: 6
         started: 2000-01-23T04:56:07.000+00:00
+        server_id: server_id
         version: version
         idle_seconds: 1
       properties:
@@ -1062,6 +1063,12 @@ components:
         started:
           description: An ISO 8601 timestamp of when the server was started
           format: date-time
+          type: string
+        server_id:
+          description: "A unique identifier generated when the server starts. Clients\
+            \ can compare this against a previously observed value to detect that\
+            \ they are talking to a different server instance (e.g. one that was restarted),\
+            \ and therefore that any persisted bearer token may be stale."
           type: string
       required:
       - active
