@@ -108,6 +108,7 @@ pub enum ServerListener {
 
 pub async fn create_with_listener(
     listener: ServerListener,
+    server_id: String,
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
@@ -120,6 +121,7 @@ pub async fn create_with_listener(
             #[cfg(unix)]
             create_tcp_server(
                 tcp_listener,
+                server_id,
                 token,
                 idle_shutdown_hours,
                 log_level,
@@ -130,6 +132,7 @@ pub async fn create_with_listener(
             #[cfg(not(unix))]
             create_tcp_server(
                 tcp_listener,
+                server_id,
                 token,
                 idle_shutdown_hours,
                 log_level,
@@ -141,6 +144,7 @@ pub async fn create_with_listener(
         ServerListener::Unix(unix_listener) => {
             create_unix_server(
                 unix_listener,
+                server_id,
                 token,
                 idle_shutdown_hours,
                 log_level,
@@ -154,6 +158,7 @@ pub async fn create_with_listener(
         ServerListener::NamedPipe(pipe_name) => {
             create_named_pipe_server(
                 pipe_name,
+                server_id,
                 token,
                 idle_shutdown_hours,
                 log_level,
@@ -181,9 +186,13 @@ pub async fn create(
     // Default resource sample interval of 1000ms
     let resource_sample_interval_ms = 1000u64;
 
+    // Generate a fresh server ID for this standalone server instance
+    let server_id = uuid::Uuid::new_v4().to_string();
+
     #[cfg(unix)]
     create_tcp_server(
         listener,
+        server_id,
         token,
         idle_shutdown_hours,
         log_level,
@@ -194,6 +203,7 @@ pub async fn create(
     #[cfg(not(unix))]
     create_tcp_server(
         listener,
+        server_id,
         token,
         idle_shutdown_hours,
         log_level,
@@ -203,6 +213,7 @@ pub async fn create(
 }
 
 struct ServerConfig {
+    server_id: String,
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
@@ -217,6 +228,7 @@ struct ServerConfig {
 impl ServerConfig {
     #[cfg(unix)]
     fn new(
+        server_id: String,
         token: Option<String>,
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
@@ -226,6 +238,7 @@ impl ServerConfig {
         resource_sample_interval_ms: u64,
     ) -> Self {
         Self {
+            server_id,
             token,
             idle_shutdown_hours,
             log_level,
@@ -238,6 +251,7 @@ impl ServerConfig {
 
     #[cfg(not(unix))]
     fn new(
+        server_id: String,
         token: Option<String>,
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
@@ -245,6 +259,7 @@ impl ServerConfig {
         resource_sample_interval_ms: u64,
     ) -> Self {
         Self {
+            server_id,
             token,
             idle_shutdown_hours,
             log_level,
@@ -266,6 +281,7 @@ impl ServerConfig {
     #[cfg(unix)]
     fn create_server<C>(&self) -> Server<C> {
         Server::new(
+            self.server_id.clone(),
             self.token.clone(),
             self.idle_shutdown_hours,
             self.effective_log_level(),
@@ -279,6 +295,7 @@ impl ServerConfig {
     #[cfg(not(unix))]
     fn create_server<C>(&self) -> Server<C> {
         Server::new(
+            self.server_id.clone(),
             self.token.clone(),
             self.idle_shutdown_hours,
             self.effective_log_level(),
@@ -327,6 +344,7 @@ where
 
 async fn create_tcp_server(
     listener: tokio::net::TcpListener,
+    server_id: String,
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
@@ -335,6 +353,7 @@ async fn create_tcp_server(
 ) {
     #[cfg(unix)]
     let config = ServerConfig::new(
+        server_id,
         token,
         idle_shutdown_hours,
         log_level,
@@ -345,6 +364,7 @@ async fn create_tcp_server(
     );
     #[cfg(not(unix))]
     let config = ServerConfig::new(
+        server_id,
         token,
         idle_shutdown_hours,
         log_level,
@@ -400,6 +420,7 @@ async fn create_tcp_server(
 #[cfg(unix)]
 async fn create_unix_server(
     listener: tokio::net::UnixListener,
+    server_id: String,
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
@@ -408,6 +429,7 @@ async fn create_unix_server(
     resource_sample_interval_ms: u64,
 ) {
     let config = ServerConfig::new(
+        server_id,
         token,
         idle_shutdown_hours,
         log_level,
@@ -460,6 +482,16 @@ async fn create_unix_server(
                     // Connection shutdown errors are common and expected when clients
                     // disconnect - only log at debug level to avoid noise
                     let socket_info = socket_path.as_deref().unwrap_or("unknown");
+
+                    // Some clients keep the connection alive with a setting we
+                    // can't control, which causes hyper to fail shutting the
+                    // connection down. These "error shutting down connection"
+                    // errors are harmless, so suppress them entirely while
+                    // still logging every other kind of connection error.
+                    if e.to_string().contains("error shutting down connection") {
+                        return;
+                    }
+
                     log::debug!("Unix socket connection ended ({}): {}", socket_info, e);
                 }
             });
@@ -472,6 +504,7 @@ async fn create_unix_server(
 #[cfg(windows)]
 async fn create_named_pipe_server(
     pipe_name: String,
+    server_id: String,
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
@@ -480,6 +513,7 @@ async fn create_named_pipe_server(
     use tokio::net::windows::named_pipe::ServerOptions;
 
     let config = ServerConfig::new(
+        server_id,
         token,
         idle_shutdown_hours,
         log_level,
@@ -500,7 +534,16 @@ async fn create_named_pipe_server(
     // Create the server future that accepts connections on named pipe
     let server_future = async move {
         loop {
-            // Create a new named pipe server for each connection
+            // Create a new named pipe server for each connection.
+            //
+            // TODO: `ServerOptions` creates the pipe with the process default
+            // DACL. For owner-only access control (matching the Unix socket's
+            // 0600 mode), create the pipe with a `SECURITY_ATTRIBUTES` whose
+            // security descriptor grants access only to the current user's SID
+            // (and SYSTEM). tokio does not expose security attributes, so this
+            // means creating the pipe via raw `CreateNamedPipeW` and wrapping
+            // the handle with `NamedPipeServer::from_raw_handle`. The bearer
+            // token is the access gate in the meantime.
             let pipe_server = match ServerOptions::new().create(&pipe_name) {
                 Ok(server) => server,
                 Err(e) => {
@@ -598,6 +641,7 @@ pub struct Server<C> {
 impl<C> Server<C> {
     #[cfg(unix)]
     pub fn new(
+        server_id: String,
         token: Option<String>,
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
@@ -639,7 +683,7 @@ impl<C> Server<C> {
         Server {
             token,
             started_time: std::time::Instant::now(),
-            server_id: uuid::Uuid::new_v4().to_string(),
+            server_id,
             marker: PhantomData,
             kernel_sessions,
             client_sessions: Arc::new(RwLock::new(vec![])),
@@ -662,6 +706,7 @@ impl<C> Server<C> {
 
     #[cfg(windows)]
     pub fn new(
+        server_id: String,
         token: Option<String>,
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
@@ -701,7 +746,7 @@ impl<C> Server<C> {
         Server {
             token,
             started_time: std::time::Instant::now(),
-            server_id: uuid::Uuid::new_v4().to_string(),
+            server_id,
             marker: PhantomData,
             kernel_sessions,
             client_sessions: Arc::new(RwLock::new(vec![])),
@@ -718,6 +763,7 @@ impl<C> Server<C> {
 
     #[cfg(not(any(unix, windows)))]
     pub fn new(
+        server_id: String,
         token: Option<String>,
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
@@ -757,7 +803,7 @@ impl<C> Server<C> {
         Server {
             token,
             started_time: std::time::Instant::now(),
-            server_id: uuid::Uuid::new_v4().to_string(),
+            server_id,
             marker: PhantomData,
             kernel_sessions,
             client_sessions: Arc::new(RwLock::new(vec![])),

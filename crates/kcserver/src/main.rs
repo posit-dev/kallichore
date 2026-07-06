@@ -21,6 +21,7 @@ use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, W
 mod connection_file;
 mod error;
 mod execution_queue;
+mod handshake_socket;
 mod heartbeat;
 mod jupyter_messages;
 mod kernel_connection;
@@ -41,7 +42,7 @@ mod wire_message_header;
 mod working_dir;
 mod zmq_ws_proxy;
 
-use transport::{ServerConnectionType, TransportConfig, TransportError, TransportType};
+use transport::{TransportConfig, TransportError, TransportType};
 
 /// Validate command line arguments for consistency and correctness
 fn validate_args(args: &Args) -> Result<(), String> {
@@ -110,23 +111,9 @@ fn determine_transport(args: &Args) -> String {
             return "socket".to_string();
         }
 
-        if args.connection_file.is_some() {
-            // Default to socket/named-pipe when using connection file
-            #[cfg(unix)]
-            {
-                "socket".to_string()
-            }
-            #[cfg(windows)]
-            {
-                "named-pipe".to_string()
-            }
-            #[cfg(not(any(unix, windows)))]
-            {
-                "tcp".to_string()
-            }
-        } else {
-            "tcp".to_string()
-        }
+        // Default to TCP. The handshake socket's transport is independent of the
+        // main transport, so it is never used to infer the transport here.
+        "tcp".to_string()
     }
 }
 
@@ -170,11 +157,15 @@ struct Args {
     #[arg(long)]
     log_file: Option<String>,
 
-    /// The path to a connection file. If specified, the server will write
-    /// connection details to the given file, choosing any options not specified
-    /// in the command line arguments (e.g., port, transport type).
+    /// Path to a client-owned handshake socket. On Unix this is a filesystem
+    /// path to a Unix domain socket the client is already listening on; on
+    /// Windows it is the name of a named pipe the client has created (e.g.
+    /// \\.\pipe\...). Immediately after binding its main transport, the server
+    /// connects to this socket, writes a single JSON document describing the
+    /// connection (transport, address, bearer token, server_id, pid, log path),
+    /// and closes.
     #[arg(long)]
-    connection_file: Option<String>,
+    handshake_socket: Option<String>,
 
     /// The number of hours of idle time before the server shuts down. The
     /// server is considered idle if all sessions are idle and no session is
@@ -209,10 +200,10 @@ struct Args {
     #[arg(long)]
     unix_socket: Option<String>,
 
-    /// The transport type to use when creating a connection file. Valid values
+    /// The transport type to use for the main server connection. Valid values
     /// are "tcp", "socket" (Unix only), and "named-pipe" (Windows only).
-    /// If not specified, defaults to "socket" on Unix and "named-pipe" on Windows
-    /// when using --connection-file, otherwise "tcp".
+    /// If not specified, defaults to "socket" when --unix-socket is given,
+    /// otherwise "tcp".
     #[arg(long)]
     transport: Option<String>,
 }
@@ -366,9 +357,9 @@ async fn main() {
                 hex_string.push_str(&format!("{:02x}", byte));
             }
 
-            // If the token is generated and no connection file is specified,
+            // If the token is generated and no handshake socket is specified,
             // log it to the console as there's otherwise no way to retrieve it
-            if args.connection_file.is_none() {
+            if args.handshake_socket.is_none() {
                 log::info!("Generated random auth token: {}", hex_string);
             }
 
@@ -389,24 +380,43 @@ async fn main() {
         env!("CARGO_PKG_VERSION")
     );
 
-    // Display connection information - already handled by transport.log_connection_info()
-
-    // Get connection info for file writing and main server socket before consuming transport
+    // Get connection info for the handshake and main server socket before consuming transport
     let connection_info = transport.to_server_connection_type();
     let main_server_socket = transport.main_server_socket();
 
-    // If a connection file path was specified, write the connection details to it
-    if let Some(connection_file_path) = &args.connection_file {
-        if let Err(e) = write_server_connection_file_new(
-            connection_file_path,
+    // Generate the server ID up front so we can report it in the handshake. The
+    // same ID is threaded into the server so the value reported here matches the
+    // one later returned from the status endpoint, which the client uses to
+    // detect a replaced server.
+    let server_id = uuid::Uuid::new_v4().to_string();
+
+    // If a handshake socket path was specified, connect to it and report the
+    // connection details. The transport's listener is already bound, so the
+    // reported address is valid; connections the client makes immediately after
+    // the handshake queue in the OS backlog until we start accepting below.
+    if let Some(handshake_path) = &args.handshake_socket {
+        let payload = match handshake_socket::HandshakePayload::new(
             &connection_info,
             &token,
             &args.log_file,
+            &server_id,
         ) {
-            log::error!("Failed to write connection file: {}", e);
+            Ok(payload) => payload,
+            Err(e) => {
+                log::error!("Failed to build handshake payload: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        if let Err(e) = handshake_socket::perform_handshake(handshake_path, &payload).await {
+            log::error!(
+                "Failed to report connection details over handshake socket '{}': {}",
+                handshake_path,
+                e
+            );
             std::process::exit(1);
         }
-        log::info!("Wrote connection details to {}", connection_file_path);
+        log::info!("Reported connection details over handshake socket {}", handshake_path);
     }
 
     log::debug!("Starting Kallichore");
@@ -420,6 +430,7 @@ async fn main() {
     // Pass the listener to the server
     server::create_with_listener(
         server_listener,
+        server_id,
         token,
         args.idle_shutdown_hours,
         args.log_level,
@@ -429,169 +440,4 @@ async fn main() {
         resource_sample_interval_ms,
     )
     .await;
-}
-
-/// Write server connection details to a file
-#[allow(dead_code)]
-fn write_server_connection_file(
-    path: &str,
-    port: u16,
-    token: &Option<String>,
-    log_file: &Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use serde::{Deserialize, Serialize};
-    use std::fs::File;
-    use std::io::Write;
-
-    #[derive(Serialize, Deserialize)]
-    struct ServerConnectionInfo {
-        /// The port the server is listening on
-        port: u16,
-
-        /// The full API basepath, starting with 'http'
-        base_path: String,
-
-        /// The path to the server executable (this process)
-        server_path: String,
-
-        /// The PID of the server process
-        server_pid: u32,
-
-        /// The authentication token, if any
-        bearer_token: Option<String>,
-
-        /// The path to the log file, if any
-        log_path: Option<String>,
-    }
-
-    // Get the server path
-    let server_path = std::env::current_exe()?
-        .to_str()
-        .ok_or("Failed to convert server path to string")?
-        .to_string();
-
-    // Get the server PID
-    let server_pid = std::process::id();
-
-    // Create the connection info struct
-    let connection_info = ServerConnectionInfo {
-        port,
-        base_path: format!("http://127.0.0.1:{}", port),
-        server_path,
-        server_pid,
-        bearer_token: token.clone(),
-        log_path: log_file.clone(),
-    };
-
-    // Serialize to JSON
-    let json = serde_json::to_string_pretty(&connection_info)?;
-
-    // Write to file
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
-
-    Ok(())
-}
-
-/// Write server connection details to a file (new format supporting multiple transports)
-fn write_server_connection_file_new(
-    path: &str,
-    connection_info: &ServerConnectionType,
-    token: &Option<String>,
-    log_file: &Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use serde::{Deserialize, Serialize};
-    use std::fs::File;
-    use std::io::Write;
-
-    #[derive(Serialize, Deserialize)]
-    struct ServerConnectionInfoNew {
-        /// The port the server is listening on (TCP only)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        port: Option<u16>,
-
-        /// The full API basepath, starting with 'http' (TCP only)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        base_path: Option<String>,
-
-        /// The path to the Unix domain socket (Unix only)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        socket_path: Option<String>,
-
-        /// The named pipe path (Windows only)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        named_pipe: Option<String>,
-
-        /// The transport type: "tcp", "socket", or "named-pipe"
-        transport: String,
-
-        /// The path to the server executable (this process)
-        server_path: String,
-
-        /// The PID of the server process
-        server_pid: u32,
-
-        /// The authentication token, if any
-        bearer_token: Option<String>,
-
-        /// The path to the log file, if any
-        log_path: Option<String>,
-    }
-
-    // Get the server path
-    let server_path = std::env::current_exe()?
-        .to_str()
-        .ok_or("Failed to convert server path to string")?
-        .to_string();
-
-    // Get the server PID
-    let server_pid = std::process::id();
-
-    // Create the connection info struct based on the connection type
-    let connection_info_new = match connection_info {
-        ServerConnectionType::Tcp { port, base_path } => ServerConnectionInfoNew {
-            port: Some(*port),
-            base_path: Some(base_path.clone()),
-            socket_path: None,
-            named_pipe: None,
-            transport: "tcp".to_string(),
-            server_path,
-            server_pid,
-            bearer_token: token.clone(),
-            log_path: log_file.clone(),
-        },
-        #[cfg(unix)]
-        ServerConnectionType::Socket { socket_path, .. } => ServerConnectionInfoNew {
-            port: None,
-            base_path: None,
-            socket_path: Some(socket_path.clone()),
-            named_pipe: None,
-            transport: "socket".to_string(),
-            server_path,
-            server_pid,
-            bearer_token: token.clone(),
-            log_path: log_file.clone(),
-        },
-        #[cfg(windows)]
-        ServerConnectionType::NamedPipe { pipe_name } => ServerConnectionInfoNew {
-            port: None,
-            base_path: None,
-            socket_path: None,
-            named_pipe: Some(pipe_name.clone()),
-            transport: "named-pipe".to_string(),
-            server_path,
-            server_pid,
-            bearer_token: token.clone(),
-            log_path: log_file.clone(),
-        },
-    };
-
-    // Serialize to JSON
-    let json = serde_json::to_string_pretty(&connection_info_new)?;
-
-    // Write to file
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
-
-    Ok(())
 }

@@ -53,11 +53,11 @@ impl ServerConfig {
     }
 
     #[cfg(windows)]
-    fn named_pipe(connection_file_path: &str) -> Self {
+    fn named_pipe(handshake_path: &str) -> Self {
         Self {
             args: vec![
-                "--connection-file".to_string(),
-                connection_file_path.to_string(),
+                "--handshake-socket".to_string(),
+                handshake_path.to_string(),
                 "--transport".to_string(),
                 "named-pipe".to_string(),
                 "--token".to_string(),
@@ -171,38 +171,24 @@ impl TestServer {
 
     #[cfg(windows)]
     async fn start_named_pipe_server() -> Self {
-        use tempfile::NamedTempFile;
+        use self::test_utils::HandshakeListener;
 
-        // Create a temporary connection file
-        let temp_file = NamedTempFile::new().expect("Failed to create temp connection file");
-        let connection_file_path = temp_file.path().to_string_lossy().to_string();
+        // The test hosts a handshake socket the server connects to at startup.
+        let handshake = HandshakeListener::create().await;
+        let handshake_path = handshake.path().to_string();
 
-        let config = ServerConfig::named_pipe(&connection_file_path);
+        let config = ServerConfig::named_pipe(&handshake_path);
         let child = create_server_process(config).await;
 
-        // Wait for the connection file to be created and read the pipe name from it
-        let mut pipe_name = None;
-        for _attempt in 0..100 {
-            if std::path::Path::new(&connection_file_path).exists() {
-                if let Ok(content) = std::fs::read_to_string(&connection_file_path) {
-                    if !content.trim().is_empty() {
-                        if let Ok(connection_info) =
-                            serde_json::from_str::<serde_json::Value>(&content)
-                        {
-                            if let Some(pipe_path) =
-                                connection_info.get("named_pipe").and_then(|v| v.as_str())
-                            {
-                                pipe_name = Some(pipe_path.to_string());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        // Await the connection details (including the main named pipe).
+        let connection_info = handshake
+            .recv()
+            .await
+            .expect("Failed to receive handshake payload");
 
-        let pipe_name = pipe_name.expect("Failed to get pipe name from connection file");
+        let pipe_name = connection_info
+            .named_pipe
+            .expect("Missing named_pipe in handshake payload");
         println!("Named pipe server started with pipe: {}", pipe_name);
 
         // For named pipe mode, we need to communicate via the pipe

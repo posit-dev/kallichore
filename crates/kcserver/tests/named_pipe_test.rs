@@ -9,7 +9,12 @@
 //! Integration test for Windows named pipe functionality
 
 #[cfg(windows)]
+#[path = "common/mod.rs"]
+mod common;
+
+#[cfg(windows)]
 mod windows_named_pipe_tests {
+    use crate::common::test_utils::HandshakeListener;
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
@@ -23,10 +28,11 @@ mod windows_named_pipe_tests {
 
     impl NamedPipeTestServer {
         async fn start() -> Self {
-            // Create a temporary connection file
-            let temp_file =
-                tempfile::NamedTempFile::new().expect("Failed to create temp connection file");
-            let connection_file_path = temp_file.path().to_string_lossy().to_string();
+            // The test hosts a handshake socket that the server connects to at
+            // startup to report its connection details (including the main
+            // named pipe it created for the API).
+            let handshake = HandshakeListener::create().await;
+            let handshake_path = handshake.path().to_string();
 
             // Try to use pre-built binary first, fall back to cargo run
             let binary_path = std::env::current_dir()
@@ -41,8 +47,8 @@ mod windows_named_pipe_tests {
                 println!("Using pre-built binary: {:?}", binary_path);
                 let mut c = Command::new(&binary_path);
                 c.args(&[
-                    "--connection-file",
-                    &connection_file_path,
+                    "--handshake-socket",
+                    &handshake_path,
                     "--transport",
                     "named-pipe",
                     "--token",
@@ -57,8 +63,8 @@ mod windows_named_pipe_tests {
                     "--bin",
                     "kcserver",
                     "--",
-                    "--connection-file",
-                    &connection_file_path,
+                    "--handshake-socket",
+                    &handshake_path,
                     "--transport",
                     "named-pipe",
                     "--token",
@@ -73,54 +79,20 @@ mod windows_named_pipe_tests {
             cmd.env("RUST_LOG", "debug");
 
             println!("Starting server with command: {:?}", cmd);
-            println!("Connection file path: {}", connection_file_path);
+            println!("Handshake socket path: {}", handshake_path);
             let child = cmd
                 .spawn()
                 .expect("Failed to start kcserver with named pipe");
 
-            // Wait longer for the server to start and write the connection file
-            let mut retries = 0;
-            let connection_info: serde_json::Value = loop {
-                tokio::time::sleep(Duration::from_millis(500)).await;
+            // Await the connection details over the handshake socket.
+            let connection_info = handshake
+                .recv()
+                .await
+                .expect("Failed to receive handshake payload");
 
-                println!("Attempt {}: Checking connection file...", retries + 1);
-
-                match std::fs::read_to_string(&connection_file_path) {
-                    Ok(content) if !content.trim().is_empty() => {
-                        println!("Connection file content: {}", content);
-                        match serde_json::from_str(&content) {
-                            Ok(info) => break info,
-                            Err(_) if retries < 10 => {
-                                retries += 1;
-                                continue;
-                            }
-                            Err(e) => panic!("Failed to parse connection file: {}", e),
-                        }
-                    }
-                    Ok(content) => {
-                        println!(
-                            "Connection file exists but is empty. Content: '{}'",
-                            content
-                        );
-                        if retries < 10 {
-                            retries += 1;
-                            continue;
-                        } else {
-                            panic!("Connection file is empty after 5 seconds");
-                        }
-                    }
-                    Err(e) if retries < 10 => {
-                        println!("Connection file doesn't exist yet: {}", e);
-                        retries += 1;
-                        continue;
-                    }
-                    Err(e) => panic!("Connection file error after 5 seconds: {}", e),
-                }
-            };
-            let pipe_name = connection_info["named_pipe"]
-                .as_str()
-                .expect("Missing named_pipe in connection file")
-                .to_string();
+            let pipe_name = connection_info
+                .named_pipe
+                .expect("Missing named_pipe in handshake payload");
             let test_server = NamedPipeTestServer { child, pipe_name };
 
             test_server

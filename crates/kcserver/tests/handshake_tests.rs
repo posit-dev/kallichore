@@ -1,18 +1,19 @@
 //
-// connection_file_tests.rs
+// handshake_tests.rs
 //
-// Copyright (C) 2025 Posit Software, PBC. All rights reserved.
+// Copyright (C) 2026 Posit Software, PBC. All rights reserved.
 // Licensed under the Elastic License 2.0. See LICENSE.txt for license information.
 //
 
-//! Tests for server startup with connection files
+//! Tests for server startup with the client-owned handshake socket
 
 #[path = "common/mod.rs"]
 mod common;
 
-use common::test_utils::{cleanup_spawned_server, create_server_command, wait_for_connection_file};
+use common::test_utils::{
+    cleanup_spawned_server, create_server_command, HandshakeConnectionInfo, HandshakeListener,
+};
 use kallichore_api::{ApiNoContext, Client, ContextWrapperExt, ServerStatusResponse};
-use serde_json;
 use std::process::Child;
 use std::time::Duration;
 use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
@@ -24,20 +25,6 @@ type ClientContext = swagger::make_context_ty!(
     Option<AuthData>,
     XSpanIdString
 );
-
-#[derive(serde::Deserialize)]
-#[allow(dead_code)]
-struct ServerConnectionInfo {
-    port: Option<u16>,
-    base_path: Option<String>,
-    socket_path: Option<String>,
-    named_pipe: Option<String>,
-    transport: String,
-    server_path: String,
-    server_pid: u32,
-    bearer_token: Option<String>,
-    log_path: Option<String>,
-}
 
 /// Create a client for the given base path
 async fn create_client_for_base_path(
@@ -87,25 +74,21 @@ async fn wait_for_server_ready(client: &Box<dyn ApiNoContext<ClientContext> + Se
     assert!(ready, "Server failed to become ready within timeout");
 }
 
-/// Test basic server startup with connection file
-async fn test_connection_file_startup(
+/// Launch a server that reports over a handshake socket, and return the parsed
+/// connection info plus the child process (caller cleans up).
+async fn test_handshake_startup(
     extra_args: &[&str],
-    test_name: &str,
     expected_transport: &str,
-) -> (ServerConnectionInfo, Child) {
-    let temp_dir = std::env::temp_dir();
-    let connection_file_path = temp_dir.join(format!(
-        "kallichore_test_{}_{}.json",
-        test_name,
-        Uuid::new_v4()
-    ));
-    let connection_file_str = connection_file_path.to_string_lossy().to_string();
+) -> (HandshakeConnectionInfo, Child) {
+    // The client (test) creates and listens on the handshake socket first.
+    let handshake = HandshakeListener::create().await;
+    let handshake_path = handshake.path().to_string();
 
     let mut args = vec![
         "--port",
         "0",
-        "--connection-file",
-        &connection_file_str,
+        "--handshake-socket",
+        &handshake_path,
         "--token",
         "none",
     ];
@@ -114,55 +97,38 @@ async fn test_connection_file_startup(
     let mut cmd = create_server_command(&args);
     let mut child = cmd.spawn().expect("Failed to start kcserver");
 
-    // Wait for connection file to be created
-    if let Err(e) = wait_for_connection_file(&connection_file_path, 100).await {
-        // Try to get error output from the process
-        if let Ok(output) = child.try_wait() {
-            if let Some(_exit_status) = output {
-                if let Ok(final_output) = child.wait_with_output() {
-                    if !final_output.stdout.is_empty() {
-                        println!(
-                            "Server stdout: {}",
-                            String::from_utf8_lossy(&final_output.stdout)
-                        );
-                    }
-                    if !final_output.stderr.is_empty() {
-                        println!(
-                            "Server stderr: {}",
-                            String::from_utf8_lossy(&final_output.stderr)
-                        );
-                    }
+    // Await the single JSON payload from the server.
+    let connection_info = match handshake.recv().await {
+        Ok(info) => info,
+        Err(e) => {
+            // Surface any server output to aid debugging.
+            let _ = child.kill();
+            if let Ok(output) = child.wait_with_output() {
+                if !output.stdout.is_empty() {
+                    println!("Server stdout: {}", String::from_utf8_lossy(&output.stdout));
                 }
-            } else {
-                let _ = child.kill();
-                let _ = child.wait();
+                if !output.stderr.is_empty() {
+                    println!("Server stderr: {}", String::from_utf8_lossy(&output.stderr));
+                }
             }
+            panic!("{}", e);
         }
-        panic!("{}", e);
-    }
-
-    // Read the connection file
-    let connection_content =
-        std::fs::read_to_string(&connection_file_path).expect("Failed to read connection file");
-
-    let connection_info: ServerConnectionInfo =
-        serde_json::from_str(&connection_content).expect("Failed to parse connection file");
+    };
 
     // Verify the connection info
     assert_eq!(connection_info.transport, expected_transport);
     assert!(connection_info.server_pid > 0, "PID should be greater than 0");
-
-    // Return both connection info and child process (caller will cleanup)
-    // Remove connection file but keep socket file for caller to test
-    let _ = std::fs::remove_file(&connection_file_path);
+    assert!(
+        !connection_info.server_id.is_empty(),
+        "server_id should be present"
+    );
 
     (connection_info, child)
 }
 
 #[tokio::test]
-async fn test_server_starts_with_connection_file() {
-    let (connection_info, child) =
-        test_connection_file_startup(&["--transport", "tcp"], "tcp", "tcp").await;
+async fn test_server_starts_with_handshake() {
+    let (connection_info, child) = test_handshake_startup(&["--transport", "tcp"], "tcp").await;
 
     assert!(connection_info.port.is_some(), "Port should be present");
     assert!(
@@ -175,7 +141,7 @@ async fn test_server_starts_with_connection_file() {
     );
 
     let port = connection_info.port.unwrap();
-    let base_path = connection_info.base_path.unwrap();
+    let base_path = connection_info.base_path.clone().unwrap();
 
     assert!(port > 0, "Port should be greater than 0");
     assert_eq!(
@@ -189,7 +155,7 @@ async fn test_server_starts_with_connection_file() {
     );
 
     println!(
-        "Successfully tested server with connection file. Port: {}",
+        "Successfully tested server with handshake socket. Port: {}",
         port
     );
 
@@ -198,11 +164,8 @@ async fn test_server_starts_with_connection_file() {
 }
 
 #[tokio::test]
-async fn test_server_connection_file_with_auth_token() {
+async fn test_server_handshake_with_auth_token() {
     let temp_dir = std::env::temp_dir();
-    let connection_file_path =
-        temp_dir.join(format!("kallichore_test_auth_{}.json", Uuid::new_v4()));
-    let connection_file_str = connection_file_path.to_string_lossy().to_string();
 
     // Create a temporary token file
     let token_file_path = temp_dir.join(format!("kallichore_test_token_{}.txt", Uuid::new_v4()));
@@ -210,11 +173,14 @@ async fn test_server_connection_file_with_auth_token() {
     let test_token = "test_auth_token_12345";
     std::fs::write(&token_file_path, test_token).expect("Failed to write token file");
 
+    let handshake = HandshakeListener::create().await;
+    let handshake_path = handshake.path().to_string();
+
     let args = [
         "--port",
         "0",
-        "--connection-file",
-        &connection_file_str,
+        "--handshake-socket",
+        &handshake_path,
         "--transport",
         "tcp",
         "--token",
@@ -224,23 +190,16 @@ async fn test_server_connection_file_with_auth_token() {
     let mut cmd = create_server_command(&args);
     let child = cmd.spawn().expect("Failed to start kcserver");
 
-    // Wait for connection file
-    wait_for_connection_file(&connection_file_path, 100)
+    let connection_info = handshake
+        .recv()
         .await
-        .expect("Connection file was not created");
-
-    // Read the connection file
-    let connection_content =
-        std::fs::read_to_string(&connection_file_path).expect("Failed to read connection file");
-
-    let connection_info: ServerConnectionInfo =
-        serde_json::from_str(&connection_content).expect("Failed to parse connection file");
+        .expect("Failed to receive handshake payload");
 
     // Verify the connection info includes the auth token
     assert!(connection_info.port.is_some());
     assert_eq!(connection_info.bearer_token, Some(test_token.to_string()));
 
-    let base_path = connection_info.base_path.unwrap();
+    let base_path = connection_info.base_path.clone().unwrap();
 
     // Test that we can connect with the proper auth token
     let client_with_auth = create_client_for_base_path(&base_path, Some(test_token)).await;
@@ -279,35 +238,30 @@ async fn test_server_connection_file_with_auth_token() {
 
     // Clean up
     cleanup_spawned_server(child);
-    let _ = std::fs::remove_file(&connection_file_path);
     let _ = std::fs::remove_file(&token_file_path);
 
     println!(
-        "Successfully tested server with connection file and auth token. Port: {}",
+        "Successfully tested server with handshake socket and auth token. Port: {}",
         connection_info.port.unwrap()
     );
 }
 
 #[tokio::test]
-async fn test_multiple_servers_different_ports() {
-    let temp_dir = std::env::temp_dir();
+async fn test_multiple_servers_different_ports_and_ids() {
     let mut servers = Vec::new();
-    let mut connection_files = Vec::new();
+    let mut ports = Vec::new();
+    let mut server_ids = Vec::new();
 
-    // Start 3 servers
-    for i in 0..3 {
-        let connection_file_path = temp_dir.join(format!(
-            "kallichore_test_multi_{}_{}.json",
-            i,
-            Uuid::new_v4()
-        ));
-        let connection_file_str = connection_file_path.to_string_lossy().to_string();
+    // Start 3 servers, each with its own handshake socket.
+    for _ in 0..3 {
+        let handshake = HandshakeListener::create().await;
+        let handshake_path = handshake.path().to_string();
 
         let args = [
             "--port",
             "0",
-            "--connection-file",
-            &connection_file_str,
+            "--handshake-socket",
+            &handshake_path,
             "--transport",
             "tcp",
             "--token",
@@ -316,96 +270,71 @@ async fn test_multiple_servers_different_ports() {
 
         let mut cmd = create_server_command(&args);
         let child = cmd.spawn().expect("Failed to start kcserver");
-        servers.push(child);
-        connection_files.push(connection_file_path);
 
-        // Small delay between starts
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-
-    // Wait for all connection files and read them
-    let mut ports = Vec::new();
-    for (i, connection_file_path) in connection_files.iter().enumerate() {
-        wait_for_connection_file(connection_file_path, 100)
+        let connection_info = handshake
+            .recv()
             .await
-            .unwrap_or_else(|_| panic!("Connection file {} was not created within timeout", i));
+            .expect("Failed to receive handshake payload");
 
-        let connection_content =
-            std::fs::read_to_string(connection_file_path).expect("Failed to read connection file");
-
-        #[derive(serde::Deserialize)]
-        struct SimpleConnectionInfo {
-            port: u16,
-        }
-
-        let connection_info: SimpleConnectionInfo =
-            serde_json::from_str(&connection_content).expect("Failed to parse connection file");
-
-        ports.push(connection_info.port);
+        ports.push(connection_info.port.expect("Port should be present"));
+        server_ids.push(connection_info.server_id.clone());
+        servers.push(child);
     }
 
     // Verify all servers got different ports
     assert_eq!(ports.len(), 3);
-    ports.sort();
-    ports.dedup();
-    assert_eq!(ports.len(), 3, "All servers should have different ports");
-
-    // Verify all ports are valid
+    let mut sorted_ports = ports.clone();
+    sorted_ports.sort();
+    sorted_ports.dedup();
+    assert_eq!(
+        sorted_ports.len(),
+        3,
+        "All servers should have different ports"
+    );
     for port in &ports {
         assert!(*port > 0, "Port should be greater than 0");
     }
+
+    // Verify all servers got different server_ids
+    let mut sorted_ids = server_ids.clone();
+    sorted_ids.sort();
+    sorted_ids.dedup();
+    assert_eq!(
+        sorted_ids.len(),
+        3,
+        "All servers should have distinct server_ids"
+    );
 
     // Clean up
     for server in servers {
         cleanup_spawned_server(server);
     }
 
-    for connection_file_path in &connection_files {
-        let _ = std::fs::remove_file(connection_file_path);
-    }
-
     println!(
-        "Successfully tested multiple servers with different ports: {:?}",
-        ports
+        "Successfully tested multiple servers with different ports: {:?} and ids: {:?}",
+        ports, server_ids
     );
 }
 
 #[tokio::test]
-#[cfg(unix)]
-async fn test_server_connection_file_default_socket() {
-    let (connection_info, child) = test_connection_file_startup(&[], "socket_default", "socket").await;
+async fn test_server_handshake_default_tcp() {
+    // With no --transport (and no --unix-socket), the server defaults to TCP.
+    let (connection_info, child) = test_handshake_startup(&[], "tcp").await;
 
-    assert_eq!(connection_info.transport, "socket");
-    assert!(connection_info.socket_path.is_some());
-    assert!(connection_info.port.is_none());
-    assert!(connection_info.base_path.is_none());
+    assert_eq!(connection_info.transport, "tcp");
+    assert!(connection_info.port.is_some());
+    assert!(connection_info.base_path.is_some());
+    assert!(connection_info.socket_path.is_none());
     assert!(connection_info.named_pipe.is_none());
 
-    let socket_path = connection_info.socket_path.unwrap();
-
-    // Verify the socket file exists
-    assert!(
-        std::path::Path::new(&socket_path).exists(),
-        "Socket file should exist at: {}",
-        socket_path
-    );
-
-    // Test that we can connect to the socket
-    use std::os::unix::net::UnixStream;
-    let _stream =
-        UnixStream::connect(&socket_path).expect("Should be able to connect to the Unix socket");
-
-    // Clean up (this will remove the socket file)
     cleanup_spawned_server(child);
-    let _ = std::fs::remove_file(&socket_path);
 
-    println!("Successfully tested default socket transport with connection file");
+    println!("Successfully tested default TCP transport with handshake socket");
 }
 
 #[tokio::test]
-async fn test_server_connection_file_explicit_tcp_transport() {
-    let (connection_info, child) =
-        test_connection_file_startup(&["--transport", "tcp"], "tcp_explicit", "tcp").await;
+async fn test_server_handshake_explicit_tcp_transport() {
+    let (connection_info, child) = test_handshake_startup(&["--transport", "tcp"], "tcp").await;
 
     assert_eq!(connection_info.transport, "tcp");
     assert!(connection_info.port.is_some());
@@ -414,7 +343,7 @@ async fn test_server_connection_file_explicit_tcp_transport() {
     assert!(connection_info.named_pipe.is_none());
 
     let port = connection_info.port.unwrap();
-    let base_path = connection_info.base_path.unwrap();
+    let base_path = connection_info.base_path.clone().unwrap();
 
     // Verify the base path is correctly formatted
     assert_eq!(base_path, format!("http://127.0.0.1:{}", port));
@@ -422,18 +351,14 @@ async fn test_server_connection_file_explicit_tcp_transport() {
     // Clean up
     cleanup_spawned_server(child);
 
-    println!("Successfully tested explicit TCP transport with connection file");
+    println!("Successfully tested explicit TCP transport with handshake socket");
 }
 
 #[tokio::test]
 #[cfg(unix)]
-async fn test_server_connection_file_explicit_socket_transport() {
-    let (connection_info, child) = test_connection_file_startup(
-        &["--transport", "socket"],
-        "socket_explicit",
-        "socket",
-    )
-    .await;
+async fn test_server_handshake_explicit_socket_transport() {
+    let (connection_info, child) =
+        test_handshake_startup(&["--transport", "socket"], "socket").await;
 
     assert_eq!(connection_info.transport, "socket");
     assert!(connection_info.socket_path.is_some());
@@ -441,7 +366,7 @@ async fn test_server_connection_file_explicit_socket_transport() {
     assert!(connection_info.base_path.is_none());
     assert!(connection_info.named_pipe.is_none());
 
-    let socket_path = connection_info.socket_path.unwrap();
+    let socket_path = connection_info.socket_path.clone().unwrap();
 
     // Verify the socket file exists
     assert!(
@@ -449,6 +374,17 @@ async fn test_server_connection_file_explicit_socket_transport() {
         "Socket file should exist at: {}",
         socket_path
     );
+
+    // Verify the socket file is owner-only (0600)
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&socket_path)
+            .expect("Failed to stat socket file")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "Socket file should have 0600 permissions");
+    }
 
     // Test that we can connect to the socket
     use std::os::unix::net::UnixStream;
@@ -459,19 +395,17 @@ async fn test_server_connection_file_explicit_socket_transport() {
     cleanup_spawned_server(child);
     let _ = std::fs::remove_file(&socket_path);
 
-    println!("Successfully tested explicit socket transport with connection file");
+    println!("Successfully tested explicit socket transport with handshake socket");
 }
 
 #[tokio::test]
 async fn test_invalid_transport_parameter() {
-    let temp_dir = std::env::temp_dir();
-    let connection_file_path =
-        temp_dir.join(format!("kallichore_test_invalid_{}.json", Uuid::new_v4()));
-    let connection_file_str = connection_file_path.to_string_lossy().to_string();
+    let handshake = HandshakeListener::create().await;
+    let handshake_path = handshake.path().to_string();
 
     let args = [
-        "--connection-file",
-        &connection_file_str,
+        "--handshake-socket",
+        &handshake_path,
         "--transport",
         "invalid-transport",
         "--token",
@@ -481,14 +415,8 @@ async fn test_invalid_transport_parameter() {
     let mut cmd = create_server_command(&args);
     let output = cmd.output().expect("Failed to run command");
 
-    // Server should exit with error code
+    // Server should exit with error code (validation fails before the handshake)
     assert!(!output.status.success());
-
-    // Should not create connection file
-    assert!(!connection_file_path.exists());
-
-    // Clean up (just in case)
-    let _ = std::fs::remove_file(&connection_file_path);
 
     println!("Successfully tested invalid transport parameter rejection");
 }
