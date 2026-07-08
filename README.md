@@ -37,7 +37,7 @@ rk -- LSP over TCP --> r
 
 To run Kallichore, first get a copy of the server from the GitHub Releases page on this repository (or build your own; see below for instructions). This release contains a pre-built binary named `kcserver` for your platform.
 
-For most use cases, it's recommended to run `kcserver` with the `--handshake-socket` argument. Instead of writing a connection file that your client polls for, your client creates and listens on a **handshake socket** first, then launches `kcserver` pointing at it. The server binds its main transport and connects back to the handshake socket exactly once to report its connection details (including the bearer token), then closes. This avoids the file-scanning race some antivirus software introduces on Windows and keeps the token off disk.
+For most use cases, it's recommended to run `kcserver` with the `--handshake-socket` argument. Your client creates and listens on a **handshake socket** first, then launches `kcserver` pointing at it. The server binds its main transport and connects back to the handshake socket exactly once to report its connection details (including the bearer token), then closes. This avoids the file-scanning race some antivirus software introduces on Windows and keeps the token off disk.
 
 On a typical Unix-like system, your client creates a Unix domain socket (in a same-user-only directory), then launches the server telling it to use domain sockets as the main transport (TCP and named pipes are also supported; see [Connection Methods](#connection-methods) for details):
 

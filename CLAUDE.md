@@ -140,9 +140,9 @@ Example usage:
 
 ### Connection Handshake (`--handshake-socket`)
 
-Instead of writing a connection file that the client polls for, kcserver reports its
-connection details over a **client-owned handshake socket**. This avoids the file-scanning
-race some antivirus software introduces on Windows and keeps the bearer token off disk.
+kcserver reports its connection details over a **client-owned handshake socket**. This avoids
+the file-scanning race some antivirus software introduces on Windows and keeps the bearer token
+off disk.
 
 - The client creates and listens on a same-user handshake endpoint (a Unix domain socket on
   Unix, a named pipe on Windows) *before* launching kcserver.
@@ -155,8 +155,9 @@ race some antivirus software introduces on Windows and keeps the bearer token of
 - The main transport is independent of the handshake socket, so `--handshake-socket` never
   influences transport selection. When `--handshake-socket` is omitted, kcserver logs its address
   and generated token to the console (convenient for manual/dev runs).
-- The old `--connection-file` mechanism has been removed. (Note: this is unrelated to the Jupyter
-  *kernel* connection file in `connection_file.rs`, which still exists.)
+
+(Note: this is unrelated to the Jupyter *kernel* connection file in `connection_file.rs`, which
+still exists.)
 
 Example usage:
 ```bash

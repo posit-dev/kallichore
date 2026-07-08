@@ -453,7 +453,7 @@ impl TransportType {
         }
     }
 
-    /// Convert transport to ServerConnectionType for connection file compatibility
+    /// Resolve this transport's address into a `ServerConnectionType` for the handshake payload
     pub fn to_server_connection_type(&self) -> ServerConnectionType {
         match self {
             TransportType::Tcp(transport) => {
@@ -520,7 +520,7 @@ impl TransportType {
     }
 }
 
-/// Information about the server connection that gets written to the connection file
+/// Information about the server connection that is reported to the client over the handshake socket
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Some fields may not be used on all platforms
 pub enum ServerConnectionType {
