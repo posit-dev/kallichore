@@ -190,28 +190,109 @@ pub fn create_server_command(args: &[&str]) -> Command {
     cmd
 }
 
-/// Wait for a connection file to be created with timeout
-pub async fn wait_for_connection_file(
-    connection_file_path: &std::path::Path,
-    timeout_attempts: u32,
-) -> Result<(), String> {
-    let mut attempts = 0;
-    while !connection_file_path.exists() && attempts < timeout_attempts {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        attempts += 1;
-        if attempts % 20 == 0 {
-            println!(
-                "Still waiting for connection file after {} attempts...",
-                attempts
-            );
+/// The connection details the server reports over the handshake socket. Mirrors
+/// the `HandshakePayload` struct on the server side.
+#[derive(serde::Deserialize, Debug, Clone)]
+#[allow(dead_code)]
+pub struct HandshakeConnectionInfo {
+    pub port: Option<u16>,
+    pub base_path: Option<String>,
+    pub socket_path: Option<String>,
+    pub named_pipe: Option<String>,
+    pub transport: String,
+    pub server_path: String,
+    pub server_pid: u32,
+    pub bearer_token: Option<String>,
+    pub log_path: Option<String>,
+    pub server_id: String,
+}
+
+/// A client-owned handshake endpoint that the server connects to once at
+/// startup to report its connection details. The test creates and listens on
+/// the endpoint first, passes `path()` to the server via `--handshake-socket`,
+/// then awaits the single JSON payload with `recv()`.
+pub struct HandshakeListener {
+    path: String,
+    #[cfg(unix)]
+    listener: tokio::net::UnixListener,
+    #[cfg(windows)]
+    server: tokio::net::windows::named_pipe::NamedPipeServer,
+}
+
+impl HandshakeListener {
+    /// Create and start listening on a fresh handshake endpoint.
+    pub async fn create() -> Self {
+        #[cfg(unix)]
+        {
+            let path = std::env::temp_dir()
+                .join(format!("kc-handshake-{}.sock", Uuid::new_v4()))
+                .to_string_lossy()
+                .to_string();
+            let listener =
+                tokio::net::UnixListener::bind(&path).expect("Failed to bind handshake socket");
+            HandshakeListener { path, listener }
+        }
+
+        #[cfg(windows)]
+        {
+            use tokio::net::windows::named_pipe::ServerOptions;
+            let path = format!(r"\\.\pipe\kc-handshake-{}", Uuid::new_v4().simple());
+            let server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&path)
+                .expect("Failed to create handshake named pipe");
+            HandshakeListener { path, server }
         }
     }
 
-    if !connection_file_path.exists() {
-        return Err("Connection file was not created within timeout".to_string());
+    /// The path/name to pass to the server via `--handshake-socket`.
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
-    Ok(())
+    /// Await the single JSON payload the server writes, reading to EOF, and
+    /// return the parsed connection info. Fails if nothing arrives in time.
+    pub async fn recv(self) -> Result<HandshakeConnectionInfo, String> {
+        let read_fut = self.read_payload();
+        match tokio::time::timeout(Duration::from_secs(30), read_fut).await {
+            Ok(Ok(info)) => Ok(info),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("Timed out waiting for handshake payload".to_string()),
+        }
+    }
+
+    #[cfg(unix)]
+    async fn read_payload(self) -> Result<HandshakeConnectionInfo, String> {
+        use tokio::io::AsyncReadExt;
+        let (mut stream, _) = self
+            .listener
+            .accept()
+            .await
+            .map_err(|e| format!("Failed to accept handshake connection: {}", e))?;
+        let mut buf = Vec::new();
+        stream
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| format!("Failed to read handshake payload: {}", e))?;
+        serde_json::from_slice(&buf)
+            .map_err(|e| format!("Failed to parse handshake payload: {}", e))
+    }
+
+    #[cfg(windows)]
+    async fn read_payload(mut self) -> Result<HandshakeConnectionInfo, String> {
+        use tokio::io::AsyncReadExt;
+        self.server
+            .connect()
+            .await
+            .map_err(|e| format!("Failed to accept handshake connection: {}", e))?;
+        let mut buf = Vec::new();
+        self.server
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| format!("Failed to read handshake payload: {}", e))?;
+        serde_json::from_slice(&buf)
+            .map_err(|e| format!("Failed to parse handshake payload: {}", e))
+    }
 }
 
 /// Create a session and handle the response

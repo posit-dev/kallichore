@@ -200,6 +200,24 @@ impl Transport for UnixSocketTransport {
 
         let std_listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
         std_listener.set_nonblocking(true)?;
+
+        // Restrict the socket to the owning user (0600). The socket may be
+        // created under XDG_RUNTIME_DIR (already user-private) or the shared
+        // temp directory (not private), so tightening the file mode ensures no
+        // other local user can connect regardless of where it lives. This is
+        // defense-in-depth alongside the bearer token.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            if let Err(e) = std::fs::set_permissions(&socket_path, perms) {
+                log::warn!(
+                    "Failed to set restrictive permissions on socket '{}': {}",
+                    socket_path,
+                    e
+                );
+            }
+        }
+
         let listener = UnixListener::from_std(std_listener)?;
 
         let connection_info = UnixSocketConnectionInfo {
@@ -435,7 +453,7 @@ impl TransportType {
         }
     }
 
-    /// Convert transport to ServerConnectionType for connection file compatibility
+    /// Resolve this transport's address into a `ServerConnectionType` for the handshake payload
     pub fn to_server_connection_type(&self) -> ServerConnectionType {
         match self {
             TransportType::Tcp(transport) => {
@@ -502,7 +520,7 @@ impl TransportType {
     }
 }
 
-/// Information about the server connection that gets written to the connection file
+/// Information about the server connection that is reported to the client over the handshake socket
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Some fields may not be used on all platforms
 pub enum ServerConnectionType {

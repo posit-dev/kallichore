@@ -138,6 +138,39 @@ Example usage:
 ./target/debug/kcserver --transport named-pipe
 ```
 
+### Connection Handshake (`--handshake-socket`)
+
+kcserver reports its connection details over a **client-owned handshake socket**. This avoids
+the file-scanning race some antivirus software introduces on Windows and keeps the bearer token
+off disk.
+
+- The client creates and listens on a same-user handshake endpoint (a Unix domain socket on
+  Unix, a named pipe on Windows) *before* launching kcserver.
+- kcserver is launched with `--handshake-socket <path>` plus `--transport <tcp|socket|named-pipe>`.
+- After binding its main transport, kcserver connects to the handshake socket, writes a single
+  JSON document (transport + address + `bearer_token` + `server_id` + pid + log path), and closes.
+  See the `handshake_socket` module (`crates/kcserver/src/handshake_socket.rs`) for the payload.
+- The handshake happens only at initial launch; reconnects use persisted state and perform no new
+  handshake.
+- The main transport is independent of the handshake socket, so `--handshake-socket` never
+  influences transport selection. When `--handshake-socket` is omitted, kcserver logs its address
+  and generated token to the console (convenient for manual/dev runs).
+
+(Note: this is unrelated to the Jupyter *kernel* connection file in `connection_file.rs`, which
+still exists.)
+
+Example usage:
+```bash
+# Report over a handshake socket, TCP main transport
+./target/debug/kcserver --handshake-socket /path/to/handshake.sock --transport tcp
+
+# Handshake socket with a Unix-domain-socket main transport (macOS/Linux)
+./target/debug/kcserver --handshake-socket /path/to/handshake.sock --transport socket
+
+# Handshake named pipe with a named-pipe main transport (Windows)
+./target/debug/kcserver.exe --handshake-socket \\.\pipe\kc-handshake --transport named-pipe
+```
+
 ### WebSocket Protocol Support
 
 **Unix Domain Sockets**: Starting with this version, Unix domain socket kernel client sessions use the WebSocket protocol instead of raw JSON. This enables clients to connect using `ws+unix:` URLs and provides a consistent WebSocket interface across all transport types.

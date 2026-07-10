@@ -37,13 +37,15 @@ rk -- LSP over TCP --> r
 
 To run Kallichore, first get a copy of the server from the GitHub Releases page on this repository (or build your own; see below for instructions). This release contains a pre-built binary named `kcserver` for your platform.
 
-For most use cases, it's recommended to run `kcserver` with the `--connection-file` argument to have Kallichore generate a connection file for your client. On a typical Unix-like system, you might use a temporary file for connection information and tell Kallichore to use domain sockets as the transport (TCP and named pipes are also supported; see [Connection Methods](#connection-methods) for details):
+For most use cases, it's recommended to run `kcserver` with the `--handshake-socket` argument. Your client creates and listens on a **handshake socket** first, then launches `kcserver` pointing at it. The server binds its main transport and connects back to the handshake socket exactly once to report its connection details (including the bearer token), then closes. This avoids the file-scanning race some antivirus software introduces on Windows and keeps the token off disk.
+
+On a typical Unix-like system, your client creates a Unix domain socket (in a same-user-only directory), then launches the server telling it to use domain sockets as the main transport (TCP and named pipes are also supported; see [Connection Methods](#connection-methods) for details):
 
 ```bash
-./kcserver --transport socket --connection-file /tmp/kc-connection-file.json
+./kcserver --transport socket --handshake-socket /run/user/1000/kc-handshake.sock
 ```
 
-The server will start up and listen for incoming connections on the specified transport and generate a bearer auth token (see below for [Security Considerations](#security-considerations)). Your client can read connection details from the connection file and connect to the server using the appropriate transport. The connection file looks like this:
+The server will start up, bind its main transport, generate a bearer auth token (see below for [Security Considerations](#security-considerations)), and write a single JSON document to the handshake socket describing how to connect. Your client reads that document to EOF and connects to the main transport. The handshake payload looks like this:
 
 ```json
 {
@@ -52,9 +54,16 @@ The server will start up and listen for incoming connections on the specified tr
   "server_path": "/path/to/kcserver",
   "server_pid": 5259,
   "bearer_token": "4dea37b8a3b3e09f",
+  "server_id": "b1f0c2e4-...",
   "log_path": null
 }
 ```
+
+On Windows, the handshake socket is a named pipe your client creates (e.g. `\\.\pipe\kc-handshake-...`); everything else is identical.
+
+The handshake happens only at initial launch. If your client needs to reconnect (for example after a reload), it should persist the reported connection details and connect directly; the server is not re-launched and performs no new handshake.
+
+If `--handshake-socket` is omitted, the server logs its address and (if generated) its auth token to the console instead, which is convenient for manual and development runs.
 
 See Kallichore's help page for a full list of command-line options:
 
@@ -86,7 +95,7 @@ The following steps are recommended to ensure the security of your Kallichore in
 
 1. **Use a low-privilege user account**: Run Kallichore under a non-privileged user account, not as root. Because Jupyter kernels are basically code execution environments, presume that giving a user access to Kallichore's API is equivalent to giving them shell access.
 2. **Use IPC, not TCP**: If running Kallichore locally, use domain sockets (Unix/macOS) or named pipes (Windows) as the transport. These transports are more secure than TCP, as they can be locked down with file system permissions and do not expose the server to the network.
-3. **Secure the authentication token**: Kallichore uses a simple bearer token for authentication. If generating the token yourself, pass it as a file (so that it is not exposed in the process list) and delete it once the server has started. If allowing the server to generate the token, delete the connection file once it has been read.
+3. **Secure the authentication token**: Kallichore uses a simple bearer token for authentication. If generating the token yourself, pass it as a file (so that it is not exposed in the process list) and delete it once the server has started. If allowing the server to generate the token, deliver it via the handshake socket (`--handshake-socket`) rather than the console, and have your client keep the token in secure storage rather than on disk. The handshake socket itself should be created with same-user-only access control (a `0700` directory on Unix, or a current-user-only security descriptor on Windows).
 
 ## Development
 
@@ -161,13 +170,13 @@ Connections to individual kernels are made with WebSockets, which are establishe
 # Use specific port
 ./kcserver --port 8080
 
-# Create a connection file with TCP
-./kcserver --connection-file connection.json --transport tcp
+# Report connection details over a handshake socket, using TCP as the transport
+./kcserver --handshake-socket /path/to/handshake.sock --transport tcp
 ```
 
-#### Example TCP connection file
+#### Example TCP handshake payload
 
-When using `--connection-file`, the server writes connection details to the specified file:
+When using `--handshake-socket`, the server writes connection details to the handshake socket:
 
 ```json
 {
@@ -177,6 +186,7 @@ When using `--connection-file`, the server writes connection details to the spec
   "server_path": "/path/to/kcserver",
   "server_pid": 12345,
   "bearer_token": "your-auth-token",
+  "server_id": "b1f0c2e4-...",
   "log_path": "/path/to/logfile.log"
 }
 ```
@@ -190,17 +200,19 @@ When using domain sockets, the server listens on a specific socket file instead 
 #### Starting the server with Unix sockets
 
 ```bash
-# Use connection file with socket (default on Unix when using --connection-file)
-./kcserver --connection-file connection.json
+# Report connection details over a handshake socket, using a domain socket as the transport
+./kcserver --handshake-socket /path/to/handshake.sock --transport socket
 
-# Explicitly specify socket transport
-./kcserver --connection-file connection.json --transport socket
-
-# Use specific socket path
+# Use a specific socket path for the main transport
 ./kcserver --unix-socket /tmp/kallichore.sock
+
+# Use a specific socket path and report details over a handshake socket
+./kcserver --unix-socket /tmp/kallichore.sock --handshake-socket /path/to/handshake.sock
 ```
 
-#### Example Unix socket connection file
+The server sets the main socket file to owner-only (`0600`) permissions as defense-in-depth.
+
+#### Example Unix socket handshake payload
 
 ```json
 {
@@ -209,6 +221,7 @@ When using domain sockets, the server listens on a specific socket file instead 
   "server_path": "/path/to/kcserver",
   "server_pid": 12345,
   "bearer_token": "your-auth-token",
+  "server_id": "b1f0c2e4-...",
   "log_path": "/path/to/logfile.log"
 }
 ```
@@ -222,14 +235,11 @@ When using named pipes, the server listens on a named pipe path instead of a TCP
 #### Starting the server with named pipes
 
 ```bash
-# Use connection file with named pipe (default on Windows when using --connection-file)
-kcserver.exe --connection-file connection.json
-
-# Explicitly specify named pipe transport
-kcserver.exe --connection-file connection.json --transport named-pipe
+# Report connection details over a handshake named pipe, using a named pipe as the transport
+kcserver.exe --handshake-socket \\.\pipe\kc-handshake --transport named-pipe
 ```
 
-#### Example named pipe connection file
+#### Example named pipe handshake payload
 
 ```json
 {
@@ -238,17 +248,20 @@ kcserver.exe --connection-file connection.json --transport named-pipe
   "server_path": "C:\\path\\to\\kcserver.exe",
   "server_pid": 12345,
   "bearer_token": "your-auth-token",
+  "server_id": "b1f0c2e4-...",
   "log_path": "C:\\path\\to\\logfile.log"
 }
 ```
 
 ### Transport Selection Rules
 
-The server automatically selects the appropriate transport based on:
+The server selects the main transport based on:
 
 1. **Explicit `--transport` flag**: Overrides all other settings
-2. **Connection file mode**: Defaults to `socket` on Unix, `named-pipe` on Windows, `tcp` elsewhere
-3. **Direct mode**: Uses `tcp` when no connection file is specified
+2. **`--unix-socket` (Unix)**: Infers `socket` when a socket path is given
+3. **Default**: Uses `tcp` otherwise
+
+Note that the main transport is independent of the handshake socket: a client may host a Unix-socket (or named-pipe) handshake while asking the server for a TCP main transport, so `--handshake-socket` never influences the transport selection.
 
 ### Security Considerations
 
