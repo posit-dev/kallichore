@@ -1,6 +1,6 @@
 [package]
 name = "kcserver"
-version = "0.1.67"
+version = "0.1.68"
 rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
