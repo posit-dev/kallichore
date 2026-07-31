@@ -82,6 +82,20 @@ impl EnvironmentResolver {
         // Apply variable actions
         self.apply_var_actions(&mut resolved_env);
 
+        // Log the final resolved environment for debugging. Sort by key so the
+        // output is stable and easy to scan.
+        if log::log_enabled!(log::Level::Debug) {
+            let mut entries: Vec<(&String, &String)> = resolved_env.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            log::debug!(
+                "Resolved {} environment variable(s) for kernel process:",
+                entries.len()
+            );
+            for (key, value) in entries {
+                log::debug!("  {}={}", key, value);
+            }
+        }
+
         resolved_env
     }
 
