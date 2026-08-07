@@ -345,8 +345,9 @@ impl KernelSession {
 
         let startup_proxy_tx = startup_tx.clone();
         tokio::spawn(async move {
+            let connection = kernel.connection.clone();
             kernel
-                .start_zmq_proxy(connection_file.clone(), startup_proxy_tx)
+                .start_zmq_proxy(connection_file.clone(), connection, startup_proxy_tx)
                 .await;
         });
 
@@ -433,6 +434,19 @@ impl KernelSession {
             .update_connection_file(connection_file.clone())
             .await;
 
+        // The kernel we're adopting is already running, signing and
+        // validating messages with its own key -- the one in
+        // `connection_file.info.key`, taken from the `ConnectionInfo` the
+        // adopting client supplied. That's not the same key this session was
+        // created with (`self.connection`'s key is generated locally when a
+        // new session is created, before an adopted kernel's real key is
+        // known), so it must be used in place of the session's own key for
+        // all further communication with this kernel.
+        let connection = self
+            .connection
+            .with_key(&connection_file.info.key)
+            .map_err(KSError::SessionConnectionFailed)?;
+
         // Create a channel to receive startup status
         let (startup_tx, startup_rx) = async_channel::unbounded::<StartupStatus>();
 
@@ -444,7 +458,9 @@ impl KernelSession {
                 kernel.connection.session_id
             );
 
-            kernel.start_zmq_proxy(connection_file, startup_tx).await;
+            kernel
+                .start_zmq_proxy(connection_file, connection, startup_tx)
+                .await;
 
             log::debug!(
                 "[session {}] ZeroMQ proxy for adopted kernel has exited",
@@ -584,16 +600,22 @@ impl KernelSession {
     }
 
     /// Start the ZeroMQ proxy for this kernel session.
+    ///
+    /// `connection` carries the signing key to use for this proxy's
+    /// lifetime. It's usually `self.connection`, but adopted kernels (see
+    /// `connect`) sign with a key that isn't known until the adopting client
+    /// supplies it, so callers pass a corrected connection in that case.
     async fn start_zmq_proxy(
         &self,
         connection_file: ConnectionFile,
+        connection: KernelConnection,
         status_tx: Sender<StartupStatus>,
     ) {
         use crate::{error::KSError, zmq_ws_proxy::ZmqWsProxy};
 
         let mut proxy = ZmqWsProxy::new(
             connection_file.clone(),
-            self.connection.clone(),
+            connection,
             self.state.clone(),
             self.ws_json_tx.clone(),
             self.ws_zmq_rx.clone(),
