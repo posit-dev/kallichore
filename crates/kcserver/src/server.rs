@@ -2122,10 +2122,6 @@ where
     ) -> Result<kallichore_api::ServerStatusResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
         let span_id = ctx_span.get().0.clone();
-        // Paired entry/completion trace events, correlated by X-Span-ID, to
-        // help diagnose intermittent supervisor attachment stalls by
-        // bounding how long the request spent inside this handler (the
-        // capture already records source/write timestamps for each event).
         trace!("server_status - X-Span-ID: {:?} - enter", span_id);
 
         // Make a copy of the active session list to avoid holding the lock
