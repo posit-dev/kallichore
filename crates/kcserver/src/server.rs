@@ -2118,8 +2118,18 @@ where
 
     async fn server_status(
         &self,
-        _context: &C,
+        context: &C,
     ) -> Result<kallichore_api::ServerStatusResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        let span_id = ctx_span.get().0.clone();
+        trace!("server_status - X-Span-ID: {:?}", span_id);
+
+        // Track how long we spend inside the handler itself (as opposed to
+        // time spent in transport/client scheduling before the request
+        // reached us), to help diagnose intermittent supervisor attachment
+        // stalls.
+        let handler_start = std::time::Instant::now();
+
         // Make a copy of the active session list to avoid holding the lock
         let sessions = {
             let sessions = self.kernel_sessions.read().unwrap();
@@ -2217,6 +2227,12 @@ where
             version: env!("CARGO_PKG_VERSION").to_string(),
             server_id: Some(self.server_id.clone()),
         };
+
+        trace!(
+            "server_status - X-Span-ID: {:?} completed in {:?}",
+            span_id,
+            handler_start.elapsed(),
+        );
 
         Ok(kallichore_api::ServerStatusResponse::ServerStatusAndInformation(resp))
     }
