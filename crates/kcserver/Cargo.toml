@@ -52,11 +52,14 @@ percent-encoding = "2.3.1"
 tower = { version = "0.5", features = ["util"] }
 http = "1.2"
 pin-project-lite = "0.2"
+rmcp = { version = "3.3", default-features = false, features = ["server", "transport-streamable-http-server", "schemars", "macros"] }
+tokio-util = "0.7"
 
 [target.'cfg(unix)'.dependencies]
 hyperlocal-next = "0.9"
 
 [dev-dependencies]
+hyper = { version = "1.6", features = ["client", "http1"] }
 tokio-test = "0.4"
 tempfile = "3.0"
 tokio-tungstenite = "0.23.1"

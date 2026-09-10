@@ -1,0 +1,909 @@
+//
+// handler.rs
+//
+// Copyright (C) 2026 Posit Software, PBC. All rights reserved.
+// Licensed under the Elastic License 2.0. See LICENSE.txt for license information.
+//
+//
+
+//! The MCP tools external agents can call.
+//!
+//! Kernel tools (`list_sessions`, `execute_code`, `evaluate_code`,
+//! `interrupt_session`) are answered entirely inside the supervisor and keep
+//! working when Positron is gone. Command tools (`list_positron_commands`,
+//! `run_positron_command`) are brokered to the frontend that owns the calling
+//! agent's token; listing works from the cache while disconnected, running
+//! does not.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use kallichore_api::models;
+use kcshared::kernel_message::ExecutionAttribution;
+use kcshared::mcp_frontend::{AgentCommand, AgentIdentity, CommandRequest};
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{
+    CallToolResult, ContentBlock, Implementation, InitializeResult, MetaObject, ServerCapabilities,
+};
+use rmcp::service::RequestContext;
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler};
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+use super::frontends::CommandOutcome;
+use super::{FrontendId, McpState};
+use crate::kernel_session::{ExecuteError, ExecuteOptions, KernelSession};
+
+/// The most text one tool result may carry. Beyond this the result is trimmed
+/// and flagged, so a runaway cell cannot flood the agent's context.
+const MAX_TEXT_BYTES: usize = 32 * 1024;
+
+/// The default execution timeout when the caller doesn't give one.
+const DEFAULT_TIMEOUT_S: u32 = 60;
+
+/// The longest execution timeout a caller may ask for.
+const MAX_TIMEOUT_S: u32 = 600;
+
+/// How long `run_positron_command` waits for a frontend channel to appear.
+/// Long enough to cover a window reload, short enough to stay inside the
+/// per-tool timeouts agents impose.
+const FRONTEND_CONNECT_WAIT: Duration = Duration::from_secs(15);
+
+/// How long the frontend has to answer a command request once delivered.
+const FRONTEND_REPLY_WAIT: Duration = Duration::from_secs(45);
+
+/// Guidance sent to the agent when it connects. Kept short: it is delivered
+/// once and clients truncate long instruction blocks.
+const INSTRUCTIONS: &str = "\
+You are attached to the user's live Positron session. Prefer execute_code and \
+evaluate_code over shelling out to Rscript or python: the user's session has \
+their data, packages, and working directory already loaded. Call list_sessions \
+first to see what is running and which session is in the foreground.
+
+Everything you run is visible in the user's console, attributed to you. Use \
+evaluate_code for inspection: it does not enter the session's history or \
+advance its execution counter, so it leaves the user's numbering alone. Use \
+execute_code for anything with side effects, which the user should be able to \
+find in their history afterwards. Output can legitimately be empty, so never \
+retry a state-changing call just because nothing came back.
+
+For IDE actions (opening files, starting sessions, installing packages, \
+changing settings), call list_positron_commands to find a command, then \
+run_positron_command. These need Positron connected; the kernel tools do not. \
+No tool ever starts an interpreter on its own.";
+
+/// Serves MCP tool calls against one supervisor.
+#[derive(Clone)]
+pub struct PositronMcpHandler {
+    state: Arc<McpState>,
+}
+
+/// Arguments accepted by `execute_code` and `evaluate_code`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExecuteCodeParams {
+    /// The code to run, in the session's language.
+    pub code: String,
+
+    /// The session to run in. Defaults to the foreground session, or the only
+    /// session when there is exactly one.
+    #[serde(default)]
+    pub session_id: Option<String>,
+
+    /// How long to wait before giving up and interrupting the kernel, in
+    /// seconds. Defaults to 60, maximum 600.
+    #[serde(default)]
+    pub timeout_s: Option<u32>,
+
+    /// For evaluate_code only: queue behind code that is already running
+    /// instead of failing when the session is busy.
+    #[serde(default)]
+    pub wait: Option<bool>,
+}
+
+/// Arguments accepted by `interrupt_session`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct InterruptSessionParams {
+    /// The session to interrupt. Defaults to the foreground session, or the
+    /// only session when there is exactly one.
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// Arguments accepted by `list_positron_commands`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListCommandsParams {
+    /// Case-insensitive text matched against command IDs, descriptions, and
+    /// argument names. Omit to list every command.
+    #[serde(default)]
+    pub query: Option<String>,
+
+    /// The most commands to return.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Arguments accepted by `run_positron_command`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RunCommandParams {
+    /// The command ID, exactly as reported by list_positron_commands.
+    pub command_id: String,
+
+    /// The command's arguments, in the order list_positron_commands gives them.
+    #[serde(default)]
+    pub args: Option<Vec<Value>>,
+}
+
+/// An empty argument list, for tools that take none.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NoParams {}
+
+#[tool_router]
+impl PositronMcpHandler {
+    /// Create a handler over the given supervisor state.
+    pub fn new(state: Arc<McpState>) -> Self {
+        Self { state }
+    }
+
+    #[tool(
+        name = "list_sessions",
+        description = "List the interpreter sessions running in the user's Positron supervisor, \
+                       with their language, status, working directory, and which one is in the \
+                       foreground. Call this before running code so you target the right session. \
+                       Never starts a session.",
+        annotations(title = "List sessions", read_only_hint = true)
+    )]
+    async fn list_sessions(
+        &self,
+        context: RequestContext<RoleServer>,
+        _params: Parameters<NoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let frontend_id = self.frontend_id(&context)?;
+        self.state.note_request();
+
+        let foreground = self.state.registry.foreground_session(&frontend_id).await;
+        let sessions = self.state.sessions();
+
+        let mut entries = Vec::with_capacity(sessions.len());
+        for session in sessions.iter() {
+            let active = session.as_active_session().await;
+            entries.push(json!({
+                "session_id": active.session_id,
+                "display_name": active.display_name,
+                "language": active.language,
+                "mode": active.session_mode.to_string(),
+                "status": active.status.to_string(),
+                "working_directory": active.working_directory,
+                "queue_length": active.execution_queue.length,
+                "is_foreground": Some(&active.session_id) == foreground.as_ref(),
+            }));
+        }
+
+        let body = json!({ "sessions": entries });
+        Ok(self.finish(body, Vec::new(), &frontend_id).await)
+    }
+
+    #[tool(
+        name = "execute_code",
+        description = "Run code in one of the user's live interpreter sessions. The code and its \
+                       output appear in the user's console and enter their history, exactly as if \
+                       they had typed it. Use this for anything with side effects: loading data, \
+                       fitting models, writing files, drawing plots. Output can legitimately be \
+                       empty, so do not retry on an empty result. Queues behind code that is \
+                       already running.",
+        annotations(
+            title = "Run code in the console",
+            destructive_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn execute_code(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<ExecuteCodeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_code(context, params, false).await
+    }
+
+    #[tool(
+        name = "evaluate_code",
+        description = "Evaluate an expression in one of the user's live interpreter sessions to \
+                       inspect state: variable values, data frame shapes, package versions. The \
+                       user sees the code and its output in their console, but it does not enter \
+                       the session's history or advance its execution counter, so their numbering \
+                       is undisturbed. For anything with side effects use execute_code instead. \
+                       Fails when the session is busy unless you pass wait=true.",
+        annotations(
+            title = "Evaluate code for inspection",
+            destructive_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn evaluate_code(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<ExecuteCodeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_code(context, params, true).await
+    }
+
+    #[tool(
+        name = "interrupt_session",
+        description = "Interrupt whatever is currently running in a session, as if the user had \
+                       pressed the interrupt button. Use this when code you started is taking too \
+                       long.",
+        annotations(title = "Interrupt a session", destructive_hint = true)
+    )]
+    async fn interrupt_session(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<InterruptSessionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let frontend_id = self.frontend_id(&context)?;
+        self.state.note_request();
+
+        let session = match self.resolve_session(&frontend_id, params.session_id).await {
+            Ok(session) => session,
+            Err(body) => return Ok(self.error(body, &frontend_id).await),
+        };
+        let session_id = session.connection.session_id.clone();
+
+        match session.interrupt().await {
+            Ok(_) => {
+                log::info!("MCP interrupt_session on session '{}'", session_id);
+                let body = json!({ "status": "ok", "session_id": session_id });
+                Ok(self.finish(body, Vec::new(), &frontend_id).await)
+            }
+            Err(e) => {
+                let body = json!({
+                    "status": "error",
+                    "code": "INTERRUPT_FAILED",
+                    "session_id": session_id,
+                    "message": e.to_string(),
+                });
+                Ok(self.error(body, &frontend_id).await)
+            }
+        }
+    }
+
+    #[tool(
+        name = "list_positron_commands",
+        description = "Search the Positron IDE commands the user has allowed agents to run: \
+                       opening files, starting and restarting sessions, listing and installing \
+                       packages, reading settings, focusing panes. Returns each command's ID, \
+                       description, and argument schema, which you then pass to \
+                       run_positron_command. Works from cache even when Positron is disconnected.",
+        annotations(title = "Search Positron commands", read_only_hint = true)
+    )]
+    async fn list_positron_commands(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<ListCommandsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let frontend_id = self.frontend_id(&context)?;
+        self.state.note_request();
+
+        let catalog = self.state.registry.commands(&frontend_id).await;
+        let total = catalog.len();
+        let matched: Vec<&AgentCommand> = match params.query.as_deref() {
+            Some(query) if !query.trim().is_empty() => catalog
+                .iter()
+                .filter(|command| matches_query(command, query.trim()))
+                .collect(),
+            _ => catalog.iter().collect(),
+        };
+
+        let returned = matched.len();
+        let limit = params.limit.unwrap_or(u32::MAX) as usize;
+        let commands: Vec<Value> = matched
+            .into_iter()
+            .take(limit)
+            .map(|command| {
+                json!({
+                    "id": command.id,
+                    "description": command.description,
+                    "args": command.args.iter().map(|arg| json!({
+                        "name": arg.name,
+                        "description": arg.description,
+                        "required": arg.required,
+                        "schema": arg.schema,
+                    })).collect::<Vec<_>>(),
+                    "returns": command.returns,
+                })
+            })
+            .collect();
+
+        let body = json!({
+            "commands": commands,
+            "matched": returned,
+            "total": total,
+            "truncated": commands.len() < returned,
+        });
+        Ok(self.finish(body, Vec::new(), &frontend_id).await)
+    }
+
+    #[tool(
+        name = "run_positron_command",
+        description = "Run one of the IDE commands returned by list_positron_commands. Requires \
+                       Positron to be connected; waits briefly for a window that is reloading. \
+                       Use this for IDE actions such as starting a session, which the kernel \
+                       tools deliberately never do.",
+        annotations(title = "Run a Positron command", open_world_hint = true)
+    )]
+    async fn run_positron_command(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<RunCommandParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let frontend_id = self.frontend_id(&context)?;
+        self.state.note_request();
+
+        let agent = agent_identity(&context);
+        let request = CommandRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            command_id: params.command_id.clone(),
+            args: params.args.unwrap_or_default(),
+            agent: agent.clone(),
+            deadline_ms: FRONTEND_REPLY_WAIT.as_millis() as u64,
+        };
+
+        let started = std::time::Instant::now();
+        let outcome = self
+            .state
+            .registry
+            .run_command(
+                &frontend_id,
+                request,
+                FRONTEND_CONNECT_WAIT,
+                FRONTEND_REPLY_WAIT,
+            )
+            .await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        let (body, is_error) = match outcome {
+            CommandOutcome::Replied(reply) if reply.ok => (
+                json!({
+                    "status": "ok",
+                    "command_id": params.command_id,
+                    "result": reply.result,
+                    "elapsed_ms": elapsed_ms,
+                }),
+                false,
+            ),
+            CommandOutcome::Replied(reply) => (
+                json!({
+                    "status": "error",
+                    "command_id": params.command_id,
+                    "reason": reply.reason.unwrap_or_else(|| "error".to_string()),
+                    "message": reply.message,
+                    "elapsed_ms": elapsed_ms,
+                }),
+                true,
+            ),
+            CommandOutcome::Disconnected { since } => (
+                json!({
+                    "status": "error",
+                    "command_id": params.command_id,
+                    "reason": "POSITRON_DISCONNECTED",
+                    "message": "Positron is not connected, so IDE commands cannot run. The kernel \
+                                tools (list_sessions, execute_code, evaluate_code, \
+                                interrupt_session) still work. Ask the user to reopen Positron if \
+                                you need this command.",
+                    "positron_disconnected_since": since,
+                    "elapsed_ms": elapsed_ms,
+                }),
+                true,
+            ),
+            CommandOutcome::TimedOut => (
+                json!({
+                    "status": "error",
+                    "command_id": params.command_id,
+                    "reason": "timeout",
+                    "message": format!(
+                        "Positron did not answer within {} seconds",
+                        FRONTEND_REPLY_WAIT.as_secs()
+                    ),
+                    "elapsed_ms": elapsed_ms,
+                }),
+                true,
+            ),
+            CommandOutcome::UnknownFrontend => (
+                json!({
+                    "status": "error",
+                    "command_id": params.command_id,
+                    "reason": "POSITRON_DISCONNECTED",
+                    "message": "The Positron window this token belongs to is no longer registered.",
+                    "elapsed_ms": elapsed_ms,
+                }),
+                true,
+            ),
+        };
+
+        log::info!(
+            "MCP run_positron_command '{}' by {} on frontend '{}': {} in {}ms",
+            params.command_id,
+            agent.name.as_deref().unwrap_or("unknown agent"),
+            frontend_id,
+            if is_error { "failed" } else { "ok" },
+            elapsed_ms
+        );
+
+        Ok(if is_error {
+            self.error(body, &frontend_id).await
+        } else {
+            self.finish(body, Vec::new(), &frontend_id).await
+        })
+    }
+}
+
+impl PositronMcpHandler {
+    /// Shared body of `execute_code` and `evaluate_code`.
+    ///
+    /// The two differ only in `store_history`: an evaluation stays out of the
+    /// session's history and leaves its execution counter alone. Neither uses
+    /// the Jupyter `silent` flag, which would suppress the whole iopub stream
+    /// -- both the `execute_result` the agent asked for and the echo the user
+    /// needs in order to see what the agent is doing in their session.
+    async fn run_code(
+        &self,
+        context: RequestContext<RoleServer>,
+        params: ExecuteCodeParams,
+        inspecting: bool,
+    ) -> Result<CallToolResult, ErrorData> {
+        let frontend_id = self.frontend_id(&context)?;
+        self.state.note_request();
+
+        let tool = if inspecting {
+            "evaluate_code"
+        } else {
+            "execute_code"
+        };
+        let session = match self.resolve_session(&frontend_id, params.session_id).await {
+            Ok(session) => session,
+            Err(body) => return Ok(self.error(body, &frontend_id).await),
+        };
+        let session_id = session.connection.session_id.clone();
+
+        // A queued evaluation looks like a hang to an agent, which then
+        // retries. Refuse instead, unless it asked to wait.
+        if inspecting && !params.wait.unwrap_or(false) {
+            let status = { session.state.read().await.status };
+            if status == models::Status::Busy {
+                let body = json!({
+                    "status": "error",
+                    "code": "RUNTIME_BUSY",
+                    "session_id": session_id,
+                    "message": "The session is busy. Pass wait=true to queue behind the running \
+                                code, or use execute_code, which always queues.",
+                });
+                return Ok(self.error(body, &frontend_id).await);
+            }
+        }
+
+        let agent = agent_identity(&context);
+        let timeout_s = params
+            .timeout_s
+            .unwrap_or(DEFAULT_TIMEOUT_S)
+            .clamp(1, MAX_TIMEOUT_S);
+
+        log::info!(
+            "MCP {} by {} on session '{}' ({} bytes of code)",
+            tool,
+            agent.name.as_deref().unwrap_or("unknown agent"),
+            session_id,
+            params.code.len()
+        );
+        log::debug!("MCP {} code: {}", tool, params.code);
+
+        let options = ExecuteOptions {
+            code: params.code,
+            silent: false,
+            store_history: !inspecting,
+            stop_on_error: true,
+            timeout: Some(Duration::from_secs(timeout_s as u64)),
+            attribution: Some(ExecutionAttribution {
+                source: "agent".to_string(),
+                agent_name: agent.name.clone(),
+                agent_version: agent.version.clone(),
+                frontend_id: frontend_id.clone(),
+                tool: tool.to_string(),
+            }),
+        };
+
+        let started = std::time::Instant::now();
+        let result = session.execute_collect(options).await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        let (mut body, images, is_error) = match result {
+            Ok(reply) => {
+                let (rendered, images) = render_reply(&reply);
+                let is_error = reply.status == models::ExecuteReplyStatus::Error;
+                (rendered, images, is_error)
+            }
+            Err(ExecuteError::Timeout) => (
+                json!({
+                    "status": "timed_out",
+                    "message": format!(
+                        "Execution did not finish within {} seconds; the session was interrupted.",
+                        timeout_s
+                    ),
+                }),
+                Vec::new(),
+                true,
+            ),
+            Err(ExecuteError::NotReady(message)) => (
+                json!({ "status": "error", "code": "SESSION_NOT_READY", "message": message }),
+                Vec::new(),
+                true,
+            ),
+            Err(ExecuteError::SendFailed(message)) => (
+                json!({ "status": "error", "code": "SEND_FAILED", "message": message }),
+                Vec::new(),
+                true,
+            ),
+            Err(ExecuteError::ChannelClosed) => (
+                json!({
+                    "status": "interrupted",
+                    "code": "CHANNEL_CLOSED",
+                    "message": "The kernel's message channel closed while the code was running.",
+                }),
+                Vec::new(),
+                true,
+            ),
+        };
+
+        if let Some(object) = body.as_object_mut() {
+            object.insert("session_id".into(), json!(session_id));
+            object.insert("elapsed_ms".into(), json!(elapsed_ms));
+        }
+
+        log::info!(
+            "MCP {} on session '{}' finished {} in {}ms",
+            tool,
+            session_id,
+            body["status"].as_str().unwrap_or("unknown"),
+            elapsed_ms
+        );
+
+        Ok(if is_error {
+            let mut result = self.error(body, &frontend_id).await;
+            result.content.extend(images);
+            result
+        } else {
+            self.finish(body, images, &frontend_id).await
+        })
+    }
+
+    /// Pick the session a tool call should target.
+    ///
+    /// An explicit ID wins; otherwise the foreground session the frontend
+    /// reported; otherwise the only session, if there is exactly one. Sessions
+    /// are never started implicitly.
+    async fn resolve_session(
+        &self,
+        frontend_id: &str,
+        requested: Option<String>,
+    ) -> Result<KernelSession, Value> {
+        let sessions = self.state.sessions();
+
+        if let Some(session_id) = requested {
+            return sessions
+                .into_iter()
+                .find(|s| s.connection.session_id == session_id)
+                .ok_or_else(|| {
+                    json!({
+                        "status": "error",
+                        "code": "SESSION_NOT_FOUND",
+                        "message": format!("No session with ID '{}'", session_id),
+                    })
+                });
+        }
+
+        if let Some(foreground) = self.state.registry.foreground_session(frontend_id).await {
+            if let Some(session) = sessions
+                .iter()
+                .find(|s| s.connection.session_id == foreground)
+            {
+                return Ok(session.clone());
+            }
+        }
+
+        match sessions.len() {
+            1 => Ok(sessions.into_iter().next().unwrap()),
+            0 => Err(json!({
+                "status": "error",
+                "code": "NO_SESSION_SELECTED",
+                "message": "No interpreter sessions are running. Start one with \
+                            run_positron_command using \
+                            workbench.action.language.runtime.startNewConsoleSession.",
+                "candidates": [],
+            })),
+            _ => {
+                let mut candidates = Vec::with_capacity(sessions.len());
+                for session in sessions.iter() {
+                    let active = session.as_active_session().await;
+                    candidates.push(json!({
+                        "session_id": active.session_id,
+                        "display_name": active.display_name,
+                        "language": active.language,
+                    }));
+                }
+                Err(json!({
+                    "status": "error",
+                    "code": "NO_SESSION_SELECTED",
+                    "message": "Several sessions are running and none is in the foreground. Pass \
+                                session_id explicitly.",
+                    "candidates": candidates,
+                }))
+            }
+        }
+    }
+
+    /// The frontend whose token authorized this call.
+    fn frontend_id(&self, context: &RequestContext<RoleServer>) -> Result<String, ErrorData> {
+        context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<FrontendId>())
+            .map(|id| id.0.clone())
+            .ok_or_else(|| {
+                ErrorData::internal_error(
+                    "Request reached a tool without an authorized frontend",
+                    None,
+                )
+            })
+    }
+
+    /// Add the connection state every tool result carries.
+    async fn decorate(&self, body: &mut Value, frontend_id: &str) {
+        let (connected, since) = self.state.registry.connection_state(frontend_id).await;
+        let Some(object) = body.as_object_mut() else {
+            return;
+        };
+        object.insert("positron_connected".into(), json!(connected));
+        if !connected {
+            object.insert("positron_disconnected_since".into(), json!(since));
+        }
+        object.insert(
+            "positron_version".into(),
+            json!(self.state.registry.positron_version(frontend_id).await),
+        );
+        object.insert("server_version".into(), json!(self.state.server_version()));
+    }
+
+    /// Build a successful result.
+    async fn finish(
+        &self,
+        mut body: Value,
+        images: Vec<ContentBlock>,
+        frontend_id: &str,
+    ) -> CallToolResult {
+        self.decorate(&mut body, frontend_id).await;
+        let mut result = CallToolResult::structured(body);
+        result.content.extend(images);
+        result.meta = Some(self.meta(frontend_id).await);
+        result
+    }
+
+    /// Build a tool-level error result.
+    async fn error(&self, mut body: Value, frontend_id: &str) -> CallToolResult {
+        self.decorate(&mut body, frontend_id).await;
+        let mut result = CallToolResult::structured_error(body);
+        result.meta = Some(self.meta(frontend_id).await);
+        result
+    }
+
+    /// The `_meta` block attached to every result.
+    async fn meta(&self, frontend_id: &str) -> MetaObject {
+        let (connected, since) = self.state.registry.connection_state(frontend_id).await;
+        let mut meta = serde_json::Map::new();
+        meta.insert("positron_connected".into(), json!(connected));
+        if !connected {
+            meta.insert("positron_disconnected_since".into(), json!(since));
+        }
+        MetaObject(meta)
+    }
+}
+
+#[tool_handler]
+impl ServerHandler for PositronMcpHandler {
+    fn get_info(&self) -> InitializeResult {
+        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(
+                Implementation::new("positron", env!("CARGO_PKG_VERSION"))
+                    .with_title("Positron")
+                    .with_description("The user's live Positron interpreter sessions and IDE"),
+            )
+            .with_instructions(INSTRUCTIONS)
+    }
+}
+
+/// The agent behind a request, from the MCP `clientInfo`.
+fn agent_identity(context: &RequestContext<RoleServer>) -> AgentIdentity {
+    match context.client_info() {
+        Some(info) => AgentIdentity {
+            name: Some(info.name.clone()),
+            version: Some(info.version.clone()),
+        },
+        None => AgentIdentity {
+            name: None,
+            version: None,
+        },
+    }
+}
+
+/// Case-insensitive substring match over a command's ID, description, and
+/// argument names. At catalog sizes of a few dozen entries this beats fuzzy
+/// ranking for predictability.
+fn matches_query(command: &AgentCommand, query: &str) -> bool {
+    let query = query.to_lowercase();
+    command.id.to_lowercase().contains(&query)
+        || command.description.to_lowercase().contains(&query)
+        || command
+            .args
+            .iter()
+            .any(|arg| arg.name.to_lowercase().contains(&query))
+}
+
+/// Turn an execute reply into the structured result and image blocks an agent
+/// sees.
+fn render_reply(reply: &models::ExecuteReply) -> (Value, Vec<ContentBlock>) {
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut images = Vec::new();
+    let mut error: Option<Value> = None;
+
+    for output in &reply.output {
+        match output.r#type {
+            models::ExecuteOutputType::Stream => {
+                let text = output.text.as_deref().unwrap_or("");
+                if output.stream_name.as_deref() == Some("stderr") {
+                    stderr.push_str(text);
+                } else {
+                    stdout.push_str(text);
+                }
+            }
+            models::ExecuteOutputType::DisplayData => {
+                if let Some(data) = &output.data {
+                    collect_images(data, &mut images);
+                }
+            }
+            models::ExecuteOutputType::Error => {
+                error = Some(json!({
+                    "name": output.error_name,
+                    "message": output.error_message,
+                    "traceback": output.error_traceback,
+                }));
+            }
+        }
+    }
+
+    if error.is_none() && reply.error_name.is_some() {
+        error = Some(json!({
+            "name": reply.error_name,
+            "message": reply.error_message,
+            "traceback": reply.error_traceback,
+        }));
+    }
+
+    let mut result: Option<serde_json::Map<String, Value>> = None;
+    if let Some(data) = &reply.data {
+        collect_images(data, &mut images);
+        result = Some(
+            data.iter()
+                .map(|(mime, value)| (mime.clone(), json!(value)))
+                .collect(),
+        );
+    }
+
+    let mut budget = MAX_TEXT_BYTES;
+    let (stdout, cut_stdout) = take_budget(stdout, &mut budget);
+    let (stderr, cut_stderr) = take_budget(stderr, &mut budget);
+    let mut cut_result = false;
+    if let Some(result) = result.as_mut() {
+        for value in result.values_mut() {
+            if let Some(text) = value.as_str() {
+                let (trimmed, cut) = take_budget(text.to_string(), &mut budget);
+                cut_result |= cut;
+                *value = json!(trimmed);
+            }
+        }
+    }
+
+    let body = json!({
+        "status": match reply.status {
+            models::ExecuteReplyStatus::Ok => "ok",
+            models::ExecuteReplyStatus::Error => "error",
+        },
+        "execution_count": reply.execution_count,
+        "stdout": stdout,
+        "stderr": stderr,
+        "result": result,
+        "images": images.len(),
+        "error": error,
+        "truncated": cut_stdout || cut_stderr || cut_result,
+    });
+
+    (body, images)
+}
+
+/// Pull any renderable images out of a MIME bundle.
+fn collect_images(
+    data: &std::collections::HashMap<String, String>,
+    images: &mut Vec<ContentBlock>,
+) {
+    for (mime, value) in data {
+        if mime == "image/png" || mime == "image/jpeg" {
+            images.push(ContentBlock::image(value.clone(), mime.clone()));
+        }
+    }
+}
+
+/// Trim `text` to what is left of the budget, reporting whether it was cut.
+fn take_budget(text: String, budget: &mut usize) -> (String, bool) {
+    if text.len() <= *budget {
+        *budget -= text.len();
+        return (text, false);
+    }
+    // Cut on a character boundary so the result stays valid UTF-8.
+    let mut end = *budget;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let trimmed = text[..end].to_string();
+    *budget = 0;
+    (trimmed, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kcshared::mcp_frontend::AgentCommandArg;
+
+    fn command(id: &str, description: &str, arg: &str) -> AgentCommand {
+        AgentCommand {
+            id: id.to_string(),
+            description: description.to_string(),
+            args: vec![AgentCommandArg {
+                name: arg.to_string(),
+                description: None,
+                required: true,
+                schema: None,
+            }],
+            returns: None,
+        }
+    }
+
+    #[test]
+    fn query_matches_id_description_and_arg_names() {
+        let cmd = command(
+            "positronPackages.getPackages",
+            "List installed packages",
+            "filter",
+        );
+        assert!(matches_query(&cmd, "packages"));
+        assert!(matches_query(&cmd, "PACKAGES"));
+        assert!(matches_query(&cmd, "installed"));
+        assert!(matches_query(&cmd, "filter"));
+        assert!(!matches_query(&cmd, "notebook"));
+    }
+
+    #[test]
+    fn budget_trims_on_character_boundaries() {
+        let mut budget = 4;
+        let (text, cut) = take_budget("aé…".to_string(), &mut budget);
+        assert!(cut);
+        assert_eq!(text, "aé");
+        assert_eq!(budget, 0);
+    }
+
+    #[test]
+    fn budget_is_shared_across_fields() {
+        let mut budget = 10;
+        let (first, cut) = take_budget("12345".to_string(), &mut budget);
+        assert_eq!(first, "12345");
+        assert!(!cut);
+        let (second, cut) = take_budget("1234567".to_string(), &mut budget);
+        assert_eq!(second, "12345");
+        assert!(cut);
+    }
+}

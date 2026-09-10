@@ -6,6 +6,7 @@
 //
 //
 
+use chrono::{DateTime, Utc};
 use kallichore_api::models::{self, ConnectionInfo};
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +50,45 @@ pub struct ResourceUpdate {
     pub timestamp: u64,
 }
 
+/// Describes who asked for an execution. iopub messages carry only a
+/// `parent_header`, so this is the only way a client can tell code it did not
+/// submit itself apart from its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionAttribution {
+    /// The kind of actor that requested the execution, e.g. "agent".
+    pub source: String,
+
+    /// The name the agent reported in the MCP `clientInfo`, e.g. "claude-code".
+    pub agent_name: Option<String>,
+
+    /// The version the agent reported in the MCP `clientInfo`.
+    pub agent_version: Option<String>,
+
+    /// The MCP frontend whose token authorized the request.
+    pub frontend_id: String,
+
+    /// The MCP tool used, e.g. "execute_code" or "evaluate_code".
+    pub tool: String,
+}
+
+/// An execution request submitted to a kernel by something other than the
+/// connected client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionRequested {
+    /// The message ID of the `execute_request`; the parent ID of every iopub
+    /// message the execution produces.
+    pub msg_id: String,
+
+    /// The code to be executed.
+    pub code: String,
+
+    /// When the request was submitted.
+    pub requested_at: DateTime<Utc>,
+
+    /// Who requested the execution.
+    pub attribution: ExecutionAttribution,
+}
+
 /// Messages that are sent from Kallichore to the client about the kernel
 /// itself. For messages bridging the Jupyter protocol, see `JupyterMessage`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,4 +126,10 @@ pub enum KernelMessage {
     /// The kernel has completed the JEP 66 handshake. The parameters are the session
     /// ID and connection info.
     HandshakeCompleted(String, ConnectionInfo),
+
+    /// Code was submitted to the kernel by someone other than the connected
+    /// client, such as an external agent using the MCP server. Sent just
+    /// before the `execute_request` is queued, so it always precedes the
+    /// iopub traffic it explains.
+    ExecutionRequested(ExecutionRequested),
 }

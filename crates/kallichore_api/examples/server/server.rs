@@ -99,11 +99,12 @@ use swagger::auth::Authorization;
 use kallichore_api::server::MakeService;
 use kallichore_api::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
-    ConnectionInfoResponse, DeleteSessionResponse, ExecuteCodeResponse,
-    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, DeregisterMcpFrontendResponse,
+    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
+    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    McpFrontendChannelResponse, NewSessionResponse, RegisterMcpFrontendResponse,
+    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -154,6 +155,20 @@ where
         info!(
             "new_session({:?}) - X-Span-ID: {:?}",
             new_session,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Register a Positron frontend with the MCP server
+    async fn register_mcp_frontend(
+        &self,
+        mcp_frontend_registration: models::McpFrontendRegistration,
+        context: &C,
+    ) -> Result<RegisterMcpFrontendResponse, ApiError> {
+        info!(
+            "register_mcp_frontend({:?}) - X-Span-ID: {:?}",
+            mcp_frontend_registration,
             context.get().0.clone()
         );
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))
@@ -246,6 +261,20 @@ where
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
+    /// Deregister a Positron frontend
+    async fn deregister_mcp_frontend(
+        &self,
+        frontend_id: String,
+        context: &C,
+    ) -> Result<DeregisterMcpFrontendResponse, ApiError> {
+        info!(
+            "deregister_mcp_frontend(\"{}\") - X-Span-ID: {:?}",
+            frontend_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
     /// Execute code and return results
     async fn execute_code(
         &self,
@@ -299,6 +328,20 @@ where
         info!(
             "kill_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    async fn mcp_frontend_channel(
+        &self,
+        frontend_id: String,
+        context: &C,
+    ) -> Result<McpFrontendChannelResponse, ApiError> {
+        info!(
+            "mcp_frontend_channel(\"{}\") - X-Span-ID: {:?}",
+            frontend_id,
             context.get().0.clone()
         );
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))

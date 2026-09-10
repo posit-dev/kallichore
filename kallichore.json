@@ -752,6 +752,135 @@
           }
         }
       }
+    },
+    "/mcp/frontends": {
+      "post": {
+        "operationId": "register-mcp-frontend",
+        "summary": "Register a Positron frontend with the MCP server",
+        "description": "Registers (or re-registers) a frontend and starts the MCP listener if it isn't already running. Re-registering with a known frontend ID returns the same bearer token, so agents launched from terminals that outlived the frontend keep working.",
+        "security": [
+          "bearerAuth"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/mcpFrontendRegistration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Frontend registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/mcpFrontend"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          }
+        }
+      }
+    },
+    "/mcp/frontends/{frontend_id}": {
+      "delete": {
+        "operationId": "deregister-mcp-frontend",
+        "summary": "Deregister a Positron frontend",
+        "description": "Removes the frontend and invalidates its token. When the last frontend is removed the MCP listener stops and its port is released.",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "frontend_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Frontend deregistered",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Frontend not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/mcp/frontends/{frontend_id}/channel": {
+      "get": {
+        "operationId": "mcp-frontend-channel",
+        "summary": "Upgrade to a WebSocket carrying the MCP frontend channel",
+        "description": "Opens the bidirectional channel over which the frontend pushes its command catalog and foreground session, and over which the supervisor brokers agent command requests.",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "frontend_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upgraded connection",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Frontend not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1344,6 +1473,9 @@
           "server_id": {
             "type": "string",
             "description": "A unique identifier generated when the server starts. Clients can compare this against a previously observed value to detect that they are talking to a different server instance (e.g. one that was restarted), and therefore that any persisted bearer token may be stale."
+          },
+          "mcp": {
+            "$ref": "#/components/schemas/mcpStatus"
           }
         },
         "required": [
@@ -1436,6 +1568,117 @@
             ]
           }
         }
+      },
+      "mcpFrontendCapabilities": {
+        "type": "object",
+        "properties": {
+          "commands": {
+            "type": "boolean",
+            "description": "Whether the frontend can broker Positron commands over its channel"
+          }
+        },
+        "required": [
+          "commands"
+        ]
+      },
+      "mcpFrontendRegistration": {
+        "type": "object",
+        "properties": {
+          "frontend_id": {
+            "type": "string",
+            "description": "A previously issued frontend ID. Omit to have the server generate one."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "A human-readable name for the frontend, shown in logs and status"
+          },
+          "preferred_port": {
+            "type": "integer",
+            "description": "The TCP port the MCP listener should bind. Used only when the listener isn't running yet, and ignored when the port is unavailable."
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/mcpFrontendCapabilities"
+          }
+        },
+        "required": [
+          "display_name"
+        ]
+      },
+      "mcpFrontend": {
+        "type": "object",
+        "properties": {
+          "frontend_id": {
+            "type": "string",
+            "description": "The frontend's ID; supply it again to re-register after a reconnect"
+          },
+          "token": {
+            "type": "string",
+            "description": "The bearer token agents present to the MCP server. Scoped to this frontend and distinct from the supervisor API token."
+          },
+          "port": {
+            "type": "integer",
+            "description": "The TCP port the MCP listener is bound to on 127.0.0.1"
+          },
+          "url": {
+            "type": "string",
+            "description": "The full MCP endpoint URL agents should connect to"
+          }
+        },
+        "required": [
+          "frontend_id",
+          "port",
+          "token",
+          "url"
+        ]
+      },
+      "mcpFrontendStatus": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "connected": {
+            "type": "boolean",
+            "description": "Whether the frontend's channel is currently connected"
+          }
+        },
+        "required": [
+          "connected",
+          "display_name",
+          "id"
+        ]
+      },
+      "mcpStatus": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Whether the MCP listener is running"
+          },
+          "port": {
+            "type": "integer",
+            "description": "The port the MCP listener is bound to, or 0 when inactive"
+          },
+          "request_count": {
+            "type": "integer",
+            "description": "The number of MCP tool calls served since the listener started"
+          },
+          "frontends": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/mcpFrontendStatus"
+            }
+          }
+        },
+        "required": [
+          "active",
+          "frontends",
+          "port",
+          "request_count"
+        ]
       }
     },
     "responses": {

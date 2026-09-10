@@ -10,6 +10,7 @@
 
 mod connection;
 mod environment;
+mod execute;
 mod handshake;
 mod job_object;
 mod lifecycle;
@@ -41,6 +42,7 @@ use process::ProcessMonitor;
 use startup::StartupCoordinator;
 
 // Re-export utility functions for external use
+pub use execute::{ExecuteError, ExecuteOptions};
 pub use utils::make_message_id;
 
 /// A Jupyter kernel session.

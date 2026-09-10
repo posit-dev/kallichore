@@ -12,14 +12,25 @@ use futures::future::BoxFuture;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::{Request, Response};
 use hyper::service::Service as HyperService;
+use hyper::{Request, Response};
 use swagger::{ApiError, Authorization, Has, XSpanIdString};
 
 use kallichore_api::Api;
 
-/// Extension trait to provide access to the custom websocket request handler
-/// This allows us to access the `channels_websocket_request` method that handles raw HTTP requests
+/// A request path this service handles itself rather than passing to the
+/// generated API service, because completing it needs the raw HTTP request.
+enum WebsocketRoute {
+    /// `/sessions/{session_id}/channels`
+    SessionChannels(String),
+
+    /// `/mcp/frontends/{frontend_id}/channel`
+    McpFrontendChannel(String),
+}
+
+/// Extension trait to provide access to the custom websocket request handlers.
+/// These need the raw HTTP request, which the generated API service does not
+/// hand to its operations.
 pub trait ApiWebsocketExt<C>
 where
     C: Send + Sync + 'static,
@@ -28,6 +39,13 @@ where
         &self,
         request: Request<Incoming>,
         session_id: String,
+        context: &C,
+    ) -> BoxFuture<'static, Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>>;
+
+    fn mcp_frontend_channel_request(
+        &self,
+        request: Request<Incoming>,
+        frontend_id: String,
         context: &C,
     ) -> BoxFuture<'static, Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>>;
 }
@@ -42,6 +60,11 @@ where
 {
     api_impl: T,
     inner_service: kallichore_api::server::Service<T, C>,
+    /// Whether session channels upgrade in place. Only TCP does; the domain
+    /// socket and named pipe transports hand out a per-session endpoint
+    /// instead, so their session channel requests must reach the generated
+    /// service. The MCP frontend channel always upgrades in place.
+    intercept_session_channels: bool,
 }
 
 impl<T, C> WebsocketInterceptorService<T, C>
@@ -49,11 +72,12 @@ where
     T: Api<C> + ApiWebsocketExt<C> + Clone + Send + 'static,
     C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
-    pub fn new(api_impl: T) -> Self {
+    pub fn new(api_impl: T, intercept_session_channels: bool) -> Self {
         let inner_service = kallichore_api::server::Service::new(api_impl.clone());
         Self {
             api_impl,
             inner_service,
+            intercept_session_channels,
         }
     }
 }
@@ -67,6 +91,7 @@ where
         Self {
             api_impl: self.api_impl.clone(),
             inner_service: self.inner_service.clone(),
+            intercept_session_channels: self.intercept_session_channels,
         }
     }
 }
@@ -82,55 +107,21 @@ where
 
     fn call(&self, req: (Request<Incoming>, C)) -> Self::Future {
         let (request, context) = req;
-        let method = request.method().clone();
-        let path = request.uri().path().to_string();
-
-        // Check if this is a websocket channels request
-        if method == hyper::Method::GET && is_websocket_channels_path(&path) {
-            // Extract session_id from path
-            if let Some(session_id) = extract_session_id_from_path(&path) {
-                let api_impl = self.api_impl.clone();
-
-                Box::pin(async move {
-                    // Call our custom websocket request handler with raw request access
-                    match api_impl
-                        .channels_websocket_request(request, session_id, &context)
-                        .await
-                    {
-                        Ok(response) => Ok(response),
-                        Err(e) => {
-                            log::error!("Websocket request handler error: {:?}", e);
-                            let response = Response::builder()
-                                .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(
-                                    Full::new(bytes::Bytes::from("Internal server error during websocket upgrade"))
-                                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
-                                        .boxed()
-                                )
-                                .expect("Unable to create error response");
-                            Ok(response)
-                        }
-                    }
-                })
-            } else {
-                // If we can't extract session_id, fall back to the normal service
-                let inner_service = self.inner_service.clone();
-                Box::pin(async move {
-                    HyperService::call(&inner_service, (request, context))
-                        .await
-                        .map(|response| {
-                            response.map(|body| {
-                                body.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                                    .boxed()
-                            })
-                        })
-                        .map_err(|e| e.into())
-                })
+        let route = if request.method() == hyper::Method::GET {
+            match websocket_route(request.uri().path()) {
+                Some(WebsocketRoute::SessionChannels(_)) if !self.intercept_session_channels => {
+                    None
+                }
+                route => route,
             }
         } else {
+            None
+        };
+
+        let Some(route) = route else {
             // For all other requests, delegate to the generated service
             let inner_service = self.inner_service.clone();
-            Box::pin(async move {
+            return Box::pin(async move {
                 HyperService::call(&inner_service, (request, context))
                     .await
                     .map(|response| {
@@ -140,44 +131,73 @@ where
                         })
                     })
                     .map_err(|e| e.into())
-            })
-        }
+            });
+        };
+
+        let api_impl = self.api_impl.clone();
+        Box::pin(async move {
+            let handled = match route {
+                WebsocketRoute::SessionChannels(session_id) => {
+                    api_impl
+                        .channels_websocket_request(request, session_id, &context)
+                        .await
+                }
+                WebsocketRoute::McpFrontendChannel(frontend_id) => {
+                    api_impl
+                        .mcp_frontend_channel_request(request, frontend_id, &context)
+                        .await
+                }
+            };
+            match handled {
+                Ok(response) => Ok(response),
+                Err(e) => {
+                    log::error!("Websocket request handler error: {:?}", e);
+                    let response = Response::builder()
+                        .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(
+                            Full::new(bytes::Bytes::from(
+                                "Internal server error during websocket upgrade",
+                            ))
+                            .map_err(|_| {
+                                std::io::Error::new(std::io::ErrorKind::Other, "infallible")
+                            })
+                            .boxed(),
+                        )
+                        .expect("Unable to create error response");
+                    Ok(response)
+                }
+            }
+        })
     }
 }
 
-/// Check if the path matches the websocket channels pattern
-fn is_websocket_channels_path(path: &str) -> bool {
-    // Use regex to match /sessions/{session_id}/channels
+/// Match a request path against the routes this service handles itself,
+/// returning the ID captured from the path.
+fn websocket_route(path: &str) -> Option<WebsocketRoute> {
     use regex::Regex;
     use std::sync::OnceLock;
 
-    static WEBSOCKET_REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = WEBSOCKET_REGEX
-        .get_or_init(|| Regex::new(r"^/sessions/[^/?#]+/channels$").expect("Invalid regex"));
+    static SESSION_CHANNELS: OnceLock<Regex> = OnceLock::new();
+    static MCP_FRONTEND_CHANNEL: OnceLock<Regex> = OnceLock::new();
 
-    regex.is_match(path)
+    let sessions = SESSION_CHANNELS
+        .get_or_init(|| Regex::new(r"^/sessions/([^/?#]+)/channels$").expect("Invalid regex"));
+    if let Some(id) = capture_id(sessions, path) {
+        return Some(WebsocketRoute::SessionChannels(id));
+    }
+
+    let frontends = MCP_FRONTEND_CHANNEL
+        .get_or_init(|| Regex::new(r"^/mcp/frontends/([^/?#]+)/channel$").expect("Invalid regex"));
+    capture_id(frontends, path).map(WebsocketRoute::McpFrontendChannel)
 }
 
-/// Extract session_id from the websocket channels path
-fn extract_session_id_from_path(path: &str) -> Option<String> {
-    use regex::Regex;
-    use std::sync::OnceLock;
-
-    static EXTRACT_REGEX: OnceLock<Regex> = OnceLock::new();
-    let regex = EXTRACT_REGEX
-        .get_or_init(|| Regex::new(r"^/sessions/([^/?#]+)/channels$").expect("Invalid regex"));
-
-    regex
-        .captures(path)
-        .and_then(|caps| caps.get(1))
-        .map(|m| {
-            // URL decode the session_id
-            percent_encoding::percent_decode(m.as_str().as_bytes())
-                .decode_utf8()
-                .ok()
-                .map(|s| s.to_string())
-        })
-        .flatten()
+/// Extract and URL-decode the first capture group of a path pattern.
+fn capture_id(regex: &regex::Regex, path: &str) -> Option<String> {
+    let captured = regex.captures(path)?.get(1)?;
+    percent_encoding::percent_decode(captured.as_str().as_bytes())
+        .decode_utf8()
+        .ok()
+        .map(|s| s.to_string())
 }
 
 /// Custom MakeService that creates our websocket interceptor service
@@ -187,6 +207,7 @@ where
     C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
     api_impl: T,
+    intercept_session_channels: bool,
     _marker: std::marker::PhantomData<C>,
 }
 
@@ -195,9 +216,10 @@ where
     T: Api<C> + ApiWebsocketExt<C> + Clone + Send + 'static,
     C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + 'static,
 {
-    pub fn new(api_impl: T) -> Self {
+    pub fn new(api_impl: T, intercept_session_channels: bool) -> Self {
         Self {
             api_impl,
+            intercept_session_channels,
             _marker: std::marker::PhantomData,
         }
     }
@@ -213,7 +235,10 @@ where
     type Future = futures::future::Ready<Result<Self::Response, Self::Error>>;
 
     fn call(&self, _target: Target) -> Self::Future {
-        let service = WebsocketInterceptorService::new(self.api_impl.clone());
+        let service = WebsocketInterceptorService::new(
+            self.api_impl.clone(),
+            self.intercept_session_channels,
+        );
         futures::future::ready(Ok(service))
     }
 }

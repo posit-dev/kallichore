@@ -8,6 +8,7 @@ Method | HTTP request | Description
 **get-server-configuration**](default_api.md#get-server-configuration) | **GET** /server_configuration | Get the server configuration
 **list-sessions**](default_api.md#list-sessions) | **GET** /sessions | List active sessions
 **new-session**](default_api.md#new-session) | **PUT** /sessions | Create a new session
+**register-mcp-frontend**](default_api.md#register-mcp-frontend) | **POST** /mcp/frontends | Register a Positron frontend with the MCP server
 **server-status**](default_api.md#server-status) | **GET** /status | Get server status and information
 **set-server-configuration**](default_api.md#set-server-configuration) | **POST** /server_configuration | Change the server configuration
 **shutdown-server**](default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
@@ -15,10 +16,12 @@ Method | HTTP request | Description
 **channels-upgrade**](default_api.md#channels-upgrade) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket or domain socket for channel communication
 **connection-info**](default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 **delete-session**](default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
+**deregister-mcp-frontend**](default_api.md#deregister-mcp-frontend) | **DELETE** /mcp/frontends/{frontend_id} | Deregister a Positron frontend
 **execute-code**](default_api.md#execute-code) | **POST** /sessions/{session_id}/execute | Execute code and return results
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
 **interrupt-session**](default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
 **kill-session**](default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
+**mcp-frontend-channel**](default_api.md#mcp-frontend-channel) | **GET** /mcp/frontends/{frontend_id}/channel | Upgrade to a WebSocket carrying the MCP frontend channel
 **restart-session**](default_api.md#restart-session) | **POST** /sessions/{session_id}/restart | Restart a session
 **start-session**](default_api.md#start-session) | **POST** /sessions/{session_id}/start | Start a session
 
@@ -105,6 +108,33 @@ Name | Type | Description  | Notes
 ### Return type
 
 [**models::NewSession200Response**](new_session_200_response.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: application/json
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **register-mcp-frontend**
+> models::McpFrontend register-mcp-frontend(mcp_frontend_registration)
+Register a Positron frontend with the MCP server
+
+Registers (or re-registers) a frontend and starts the MCP listener if it isn't already running. Re-registering with a known frontend ID returns the same bearer token, so agents launched from terminals that outlived the frontend keep working.
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **mcp_frontend_registration** | [**McpFrontendRegistration**](McpFrontendRegistration.md)|  | 
+
+### Return type
+
+[**models::McpFrontend**](mcpFrontend.md)
 
 ### Authorization
 
@@ -287,6 +317,33 @@ No authorization required
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 
+# **deregister-mcp-frontend**
+> deregister-mcp-frontend(frontend_id)
+Deregister a Positron frontend
+
+Removes the frontend and invalidates its token. When the last frontend is removed the MCP listener stops and its port is released.
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **frontend_id** | **String**|  | 
+
+### Return type
+
+ (empty response body)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
 # **execute-code**
 > models::ExecuteReply execute-code(session_id, execute_request)
 Execute code and return results
@@ -376,6 +433,33 @@ Name | Type | Description  | Notes
 ### Return type
 
 [**serde_json::Value**](AnyType.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **mcp-frontend-channel**
+> mcp-frontend-channel(frontend_id)
+Upgrade to a WebSocket carrying the MCP frontend channel
+
+Opens the bidirectional channel over which the frontend pushes its command catalog and foreground session, and over which the supervisor brokers agent command requests.
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **frontend_id** | **String**|  | 
+
+### Return type
+
+ (empty response body)
 
 ### Authorization
 

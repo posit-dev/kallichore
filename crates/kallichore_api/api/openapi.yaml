@@ -487,6 +487,98 @@ paths:
                 $ref: "#/components/schemas/error"
           description: Error
       summary: Change the server configuration
+  /mcp/frontends:
+    post:
+      description: "Registers (or re-registers) a frontend and starts the MCP listener\
+        \ if it isn't already running. Re-registering with a known frontend ID returns\
+        \ the same bearer token, so agents launched from terminals that outlived the\
+        \ frontend keep working."
+      operationId: register-mcp-frontend
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/mcpFrontendRegistration"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/mcpFrontend"
+          description: Frontend registered
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/error"
+          description: Invalid request
+        "401":
+          content: {}
+          description: Unauthorized
+      security: []
+      summary: Register a Positron frontend with the MCP server
+  /mcp/frontends/{frontend_id}:
+    delete:
+      description: Removes the frontend and invalidates its token. When the last frontend
+        is removed the MCP listener stops and its port is released.
+      operationId: deregister-mcp-frontend
+      parameters:
+      - explode: false
+        in: path
+        name: frontend_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json: {}
+          description: Frontend deregistered
+        "401":
+          content: {}
+          description: Unauthorized
+        "404":
+          content:
+            application/json: {}
+          description: Frontend not found
+      security: []
+      summary: Deregister a Positron frontend
+  /mcp/frontends/{frontend_id}/channel:
+    get:
+      description: "Opens the bidirectional channel over which the frontend pushes\
+        \ its command catalog and foreground session, and over which the supervisor\
+        \ brokers agent command requests."
+      operationId: mcp-frontend-channel
+      parameters:
+      - explode: false
+        in: path
+        name: frontend_id
+        required: true
+        schema:
+          type: string
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json: {}
+          description: Upgraded connection
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/error"
+          description: Invalid request
+        "401":
+          content: {}
+          description: Unauthorized
+        "404":
+          content:
+            application/json: {}
+          description: Frontend not found
+      security: []
+      summary: Upgrade to a WebSocket carrying the MCP frontend channel
 components:
   responses:
     UnauthorizedError:
@@ -1033,6 +1125,17 @@ components:
         busy: true
         active: 6
         started: 2000-01-23T04:56:07.000+00:00
+        mcp:
+          frontends:
+          - connected: true
+            id: id
+            display_name: display_name
+          - connected: true
+            id: id
+            display_name: display_name
+          port: 7
+          active: true
+          request_count: 9
         server_id: server_id
         version: version
         idle_seconds: 1
@@ -1070,6 +1173,8 @@ components:
             \ they are talking to a different server instance (e.g. one that was restarted),\
             \ and therefore that any persisted bearer token may be stale."
           type: string
+        mcp:
+          $ref: "#/components/schemas/mcpStatus"
       required:
       - active
       - busy
@@ -1222,6 +1327,110 @@ components:
           type: integer
         log_level:
           $ref: "#/components/schemas/serverConfiguration_log_level"
+      type: object
+    mcpFrontendCapabilities:
+      properties:
+        commands:
+          description: Whether the frontend can broker Positron commands over its
+            channel
+          type: boolean
+      required:
+      - commands
+      type: object
+    mcpFrontendRegistration:
+      properties:
+        frontend_id:
+          description: A previously issued frontend ID. Omit to have the server generate
+            one.
+          type: string
+        display_name:
+          description: "A human-readable name for the frontend, shown in logs and\
+            \ status"
+          type: string
+        preferred_port:
+          description: "The TCP port the MCP listener should bind. Used only when\
+            \ the listener isn't running yet, and ignored when the port is unavailable."
+          type: integer
+        capabilities:
+          $ref: "#/components/schemas/mcpFrontendCapabilities"
+      required:
+      - display_name
+      type: object
+    mcpFrontend:
+      example:
+        frontend_id: frontend_id
+        port: 0
+        url: url
+        token: token
+      properties:
+        frontend_id:
+          description: The frontend's ID; supply it again to re-register after a reconnect
+          type: string
+        token:
+          description: The bearer token agents present to the MCP server. Scoped to
+            this frontend and distinct from the supervisor API token.
+          type: string
+        port:
+          description: The TCP port the MCP listener is bound to on 127.0.0.1
+          type: integer
+        url:
+          description: The full MCP endpoint URL agents should connect to
+          type: string
+      required:
+      - frontend_id
+      - port
+      - token
+      - url
+      type: object
+    mcpFrontendStatus:
+      example:
+        connected: true
+        id: id
+        display_name: display_name
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        connected:
+          description: Whether the frontend's channel is currently connected
+          type: boolean
+      required:
+      - connected
+      - display_name
+      - id
+      type: object
+    mcpStatus:
+      example:
+        frontends:
+        - connected: true
+          id: id
+          display_name: display_name
+        - connected: true
+          id: id
+          display_name: display_name
+        port: 7
+        active: true
+        request_count: 9
+      properties:
+        active:
+          description: Whether the MCP listener is running
+          type: boolean
+        port:
+          description: "The port the MCP listener is bound to, or 0 when inactive"
+          type: integer
+        request_count:
+          description: The number of MCP tool calls served since the listener started
+          type: integer
+        frontends:
+          items:
+            $ref: "#/components/schemas/mcpFrontendStatus"
+          type: array
+      required:
+      - active
+      - frontends
+      - port
+      - request_count
       type: object
     new_session_200_response:
       example:

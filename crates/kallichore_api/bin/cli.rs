@@ -8,8 +8,9 @@ use log::{debug, info};
 use kallichore_api::{
     models, AdoptSessionResponse, ApiNoContext, ChannelsUpgradeResponse, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
+    DeregisterMcpFrontendResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    McpFrontendChannelResponse, NewSessionResponse, RegisterMcpFrontendResponse,
     RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
     ShutdownServerResponse, StartSessionResponse,
 };
@@ -85,6 +86,11 @@ enum Operation {
         #[clap(value_parser = parse_json::<models::NewSession>)]
         new_session: models::NewSession,
     },
+    /// Register a Positron frontend with the MCP server
+    RegisterMcpFrontend {
+        #[clap(value_parser = parse_json::<models::McpFrontendRegistration>)]
+        mcp_frontend_registration: models::McpFrontendRegistration,
+    },
     /// Get server status and information
     ServerStatus {},
     /// Change the server configuration
@@ -106,6 +112,8 @@ enum Operation {
     ConnectionInfo { session_id: String },
     /// Delete session
     DeleteSession { session_id: String },
+    /// Deregister a Positron frontend
+    DeregisterMcpFrontend { frontend_id: String },
     /// Execute code and return results
     ExecuteCode {
         session_id: String,
@@ -118,6 +126,8 @@ enum Operation {
     InterruptSession { session_id: String },
     /// Force quit session
     KillSession { session_id: String },
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    McpFrontendChannel { frontend_id: String },
     /// Restart a session
     RestartSession {
         session_id: String,
@@ -254,6 +264,26 @@ async fn main() -> Result<()> {
                 NewSessionResponse::Unauthorized => "Unauthorized\n".to_string(),
             }
         }
+        Operation::RegisterMcpFrontend {
+            mcp_frontend_registration,
+        } => {
+            info!("Performing a RegisterMcpFrontend request");
+
+            let result = client
+                .register_mcp_frontend(mcp_frontend_registration)
+                .await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                RegisterMcpFrontendResponse::FrontendRegistered(body) => {
+                    "FrontendRegistered\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                RegisterMcpFrontendResponse::InvalidRequest(body) => {
+                    "InvalidRequest\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                RegisterMcpFrontendResponse::Unauthorized => "Unauthorized\n".to_string(),
+            }
+        }
         Operation::ServerStatus {} => {
             info!("Performing a ServerStatus request");
 
@@ -383,6 +413,27 @@ async fn main() -> Result<()> {
                 DeleteSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
             }
         }
+        Operation::DeregisterMcpFrontend { frontend_id } => {
+            prompt(
+                args.force,
+                "This will delete the given entry, are you sure?",
+            )?;
+            info!(
+                "Performing a DeregisterMcpFrontend request on {:?}",
+                (&frontend_id)
+            );
+
+            let result = client.deregister_mcp_frontend(frontend_id).await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                DeregisterMcpFrontendResponse::FrontendDeregistered => {
+                    "FrontendDeregistered\n".to_string()
+                }
+                DeregisterMcpFrontendResponse::Unauthorized => "Unauthorized\n".to_string(),
+                DeregisterMcpFrontendResponse::FrontendNotFound => "FrontendNotFound\n".to_string(),
+            }
+        }
         Operation::ExecuteCode {
             session_id,
             execute_request,
@@ -457,6 +508,26 @@ async fn main() -> Result<()> {
                 }
                 KillSessionResponse::Unauthorized => "Unauthorized\n".to_string(),
                 KillSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
+            }
+        }
+        Operation::McpFrontendChannel { frontend_id } => {
+            info!(
+                "Performing a McpFrontendChannel request on {:?}",
+                (&frontend_id)
+            );
+
+            let result = client.mcp_frontend_channel(frontend_id).await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                McpFrontendChannelResponse::UpgradedConnection => {
+                    "UpgradedConnection\n".to_string()
+                }
+                McpFrontendChannelResponse::InvalidRequest(body) => {
+                    "InvalidRequest\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                McpFrontendChannelResponse::Unauthorized => "Unauthorized\n".to_string(),
+                McpFrontendChannelResponse::FrontendNotFound => "FrontendNotFound\n".to_string(),
             }
         }
         Operation::RestartSession {

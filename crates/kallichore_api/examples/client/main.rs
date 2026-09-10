@@ -7,8 +7,9 @@ use futures::{future, stream, Stream};
 use kallichore_api::{
     models, AdoptSessionResponse, Api, ApiNoContext, ChannelsUpgradeResponse, Claims, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
+    DeregisterMcpFrontendResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    McpFrontendChannelResponse, NewSessionResponse, RegisterMcpFrontendResponse,
     RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
     ShutdownServerResponse, StartSessionResponse,
 };
@@ -47,6 +48,7 @@ fn main() {
                     "GetServerConfiguration",
                     "ListSessions",
                     "NewSession",
+                    "RegisterMcpFrontend",
                     "ServerStatus",
                     "SetServerConfiguration",
                     "ShutdownServer",
@@ -54,10 +56,12 @@ fn main() {
                     "ChannelsUpgrade",
                     "ConnectionInfo",
                     "DeleteSession",
+                    "DeregisterMcpFrontend",
                     "ExecuteCode",
                     "GetSession",
                     "InterruptSession",
                     "KillSession",
+                    "McpFrontendChannel",
                     "RestartSession",
                     "StartSession",
                 ])
@@ -171,6 +175,14 @@ fn main() {
             info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
         },
         */
+        /* Disabled because there's no example.
+        Some("RegisterMcpFrontend") => {
+            let result = rt.block_on(client.register_mcp_frontend(
+                  ???
+            ));
+            info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
+        },
+        */
         Some("ServerStatus") => {
             let result = rt.block_on(client.server_status());
             info!(
@@ -228,6 +240,15 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
+        Some("DeregisterMcpFrontend") => {
+            let result =
+                rt.block_on(client.deregister_mcp_frontend("frontend_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
         /* Disabled because there's no example.
         Some("ExecuteCode") => {
             let result = rt.block_on(client.execute_code(
@@ -255,6 +276,15 @@ fn main() {
         }
         Some("KillSession") => {
             let result = rt.block_on(client.kill_session("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
+        Some("McpFrontendChannel") => {
+            let result =
+                rt.block_on(client.mcp_frontend_channel("frontend_id_example".to_string()));
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,

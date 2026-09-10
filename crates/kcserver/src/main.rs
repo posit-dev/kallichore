@@ -27,6 +27,7 @@ mod jupyter_messages;
 mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
+mod mcp;
 #[cfg(target_os = "linux")]
 mod proc_stat;
 mod process_tree;

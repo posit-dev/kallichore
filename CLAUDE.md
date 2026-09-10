@@ -8,7 +8,7 @@ Kallichore is a headless Jupyter kernel supervisor written in Rust that provides
 
 ## Tech Stack
 
-- **Language**: Rust (Edition 2021, minimum version 1.75)
+- **Language**: Rust (Edition 2021, minimum version 1.88)
 - **Architecture**: Multi-crate workspace with auto-generated API layer
 - **Protocols**: Jupyter Protocol, WebSocket, ZeroMQ messaging
 - **Authentication**: Bearer token with HMAC message signing
@@ -179,6 +179,34 @@ Example usage:
 - TCP WebSocket: `ws://localhost:8080/sessions/{session_id}/channels`
 - Unix Socket WebSocket: `ws+unix:/path/to/socket:/sessions/{session_id}/channels` (conceptual - actual connection via domain socket path)
 
+## MCP Server
+
+`kcserver` hosts a Model Context Protocol server so external coding agents (Claude Code, Codex,
+any MCP client) can reach the user's live sessions. It listens on its own loopback TCP socket,
+separate from the main API transport, because agents need a URL.
+
+- The listener starts when the first Positron frontend registers (`POST /mcp/frontends`) and stops
+  when the last one deregisters. No port is open unless someone asked for it.
+- Each frontend gets its own bearer token, distinct from the supervisor API token and scoped to
+  that window's sessions and commands. Requests must present it, and must carry a loopback `Host`
+  and `Origin`.
+- Kernel tools (`list_sessions`, `execute_code`, `evaluate_code`, `interrupt_session`) are answered
+  inside `kcserver` and keep working when Positron is disconnected.
+- Command tools (`list_positron_commands`, `run_positron_command`) are brokered to the frontend
+  over `GET /mcp/frontends/{id}/channel`, a WebSocket that works on all three transports. The
+  command catalog is cached, so searching works while disconnected; running does not.
+- Agent executions go through the same execution queue and WebSocket mirror as Positron's own, and
+  are preceded by a `KernelMessage::ExecutionRequested` event naming the agent. That event buffers
+  while no client is connected, so a window that reopens learns who ran the code it is seeing.
+- Everything an agent runs is visible in the user's console. `evaluate_code` differs from
+  `execute_code` only in `store_history`: it stays out of the session's history and leaves its
+  execution counter alone. Neither uses the Jupyter `silent` flag, which would suppress both the
+  result the agent asked for and the echo the user needs.
+
+Code lives in `crates/kcserver/src/mcp/` (`listener.rs`, `handler.rs`, `frontends.rs`, `auth.rs`,
+`channel.rs`), with shared message types in `crates/kcshared/src/mcp_frontend.rs`. The protocol
+layer is the `rmcp` crate.
+
 ## Testing
 
 ### Running Tests
@@ -197,6 +225,8 @@ cargo test -- --nocapture
 - **Integration tests**: Located in `crates/kcserver/tests/`
   - `integration_test.rs`: General TCP and WebSocket functionality
   - `named_pipe_test.rs`: Windows named pipe specific tests (Windows only)
+  - `mcp_tests.rs`: MCP registration, auth, and command brokering over the real HTTP stack
+  - `mcp_execute_tests.rs`: MCP kernel tools against a real ipykernel
 - **Platform-specific tests**: Automatically disabled on unsupported platforms
 
 ### Test Environment

@@ -8,6 +8,7 @@
 
 #![allow(dead_code)]
 
+pub mod mcp;
 pub mod test_utils;
 pub mod transport;
 
@@ -40,14 +41,16 @@ struct ServerConfig {
 }
 
 impl ServerConfig {
-    fn tcp(port: u16) -> Self {
+    fn tcp(port: u16, extra_args: &[String]) -> Self {
+        let mut args = vec![
+            "--port".to_string(),
+            port.to_string(),
+            "--token".to_string(),
+            "none".to_string(),
+        ];
+        args.extend_from_slice(extra_args);
         Self {
-            args: vec![
-                "--port".to_string(),
-                port.to_string(),
-                "--token".to_string(),
-                "none".to_string(),
-            ],
+            args,
             expected_output_pattern: None,
         }
     }
@@ -138,6 +141,12 @@ impl TestServer {
         Self::start_with_mode(TestServerMode::Http).await
     }
 
+    /// Start an HTTP server with additional command-line arguments.
+    pub async fn start_http_with_args(extra_args: &[&str]) -> Self {
+        let extra: Vec<String> = extra_args.iter().map(|a| a.to_string()).collect();
+        Self::start_http(&extra).await
+    }
+
     pub async fn start_with_mode(mode: TestServerMode) -> Self {
         match mode {
             TestServerMode::Http => Self::start_http_server().await,
@@ -149,8 +158,12 @@ impl TestServer {
     }
 
     async fn start_http_server() -> Self {
+        Self::start_http(&[]).await
+    }
+
+    async fn start_http(extra_args: &[String]) -> Self {
         let port = pick_unused_tcp_port().expect("Failed to pick unused port");
-        let config = ServerConfig::tcp(port);
+        let config = ServerConfig::tcp(port, extra_args);
         let child = create_server_process(config).await;
         let base_url = format!("http://localhost:{}", port);
 
@@ -212,14 +225,15 @@ impl TestServer {
 
     #[cfg(unix)]
     async fn start_domain_socket_server() -> Self {
-        use tempfile::tempdir;
         use uuid::Uuid;
 
-        // Create a temporary directory for the socket
-        let temp_dir = tempdir().expect("Failed to create temp directory");
-        let socket_path = temp_dir
-            .path()
-            .join(format!("kallichore-test-{}.sock", Uuid::new_v4().simple()));
+        // Unix domain socket paths are capped at around 100 characters, and
+        // the platform temp directory is already most of that on macOS, so
+        // build a deliberately short path under /tmp instead.
+        let socket_path = std::path::PathBuf::from(format!(
+            "/tmp/kc-test-{}.sock",
+            &Uuid::new_v4().simple().to_string()[..8]
+        ));
 
         let config = ServerConfig::unix_socket(socket_path.to_str().unwrap());
         let child = create_server_process(config).await;
@@ -370,6 +384,34 @@ impl TestServer {
     #[allow(dead_code)]
     pub fn mode(&self) -> &TestServerMode {
         &self.mode
+    }
+
+    /// Register an MCP frontend, starting the MCP listener.
+    pub async fn register_mcp_frontend(
+        &self,
+        display_name: &str,
+        frontend_id: Option<String>,
+    ) -> kallichore_api::models::McpFrontend {
+        let client = self.create_client().await;
+        let mut registration =
+            kallichore_api::models::McpFrontendRegistration::new(display_name.to_string());
+        registration.frontend_id = frontend_id;
+        registration.capabilities =
+            Some(kallichore_api::models::McpFrontendCapabilities::new(true));
+
+        match client
+            .register_mcp_frontend(registration)
+            .await
+            .expect("Failed to register MCP frontend")
+        {
+            kallichore_api::RegisterMcpFrontendResponse::FrontendRegistered(frontend) => frontend,
+            other => panic!("Unexpected registration response: {:?}", other),
+        }
+    }
+
+    /// Whether the process is still running.
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
     }
 }
 

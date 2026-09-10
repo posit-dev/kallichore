@@ -61,6 +61,17 @@ pub enum NewSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum RegisterMcpFrontendResponse {
+    /// Frontend registered
+    FrontendRegistered(models::McpFrontend),
+    /// Invalid request
+    InvalidRequest(models::Error),
+    /// Unauthorized
+    Unauthorized,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum ServerStatusResponse {
     /// Server status and information
     ServerStatusAndInformation(models::ServerStatus),
@@ -142,6 +153,17 @@ pub enum DeleteSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum DeregisterMcpFrontendResponse {
+    /// Frontend deregistered
+    FrontendDeregistered,
+    /// Unauthorized
+    Unauthorized,
+    /// Frontend not found
+    FrontendNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum ExecuteCodeResponse {
     /// Execution completed
     ExecutionCompleted(models::ExecuteReply),
@@ -190,6 +212,19 @@ pub enum KillSessionResponse {
     Unauthorized,
     /// Session not found
     SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum McpFrontendChannelResponse {
+    /// Upgraded connection
+    UpgradedConnection,
+    /// Invalid request
+    InvalidRequest(models::Error),
+    /// Unauthorized
+    Unauthorized,
+    /// Frontend not found
+    FrontendNotFound,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -245,6 +280,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<NewSessionResponse, ApiError>;
 
+    /// Register a Positron frontend with the MCP server
+    async fn register_mcp_frontend(
+        &self,
+        mcp_frontend_registration: models::McpFrontendRegistration,
+        context: &C,
+    ) -> Result<RegisterMcpFrontendResponse, ApiError>;
+
     /// Get server status and information
     async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError>;
 
@@ -287,6 +329,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<DeleteSessionResponse, ApiError>;
 
+    /// Deregister a Positron frontend
+    async fn deregister_mcp_frontend(
+        &self,
+        frontend_id: String,
+        context: &C,
+    ) -> Result<DeregisterMcpFrontendResponse, ApiError>;
+
     /// Execute code and return results
     async fn execute_code(
         &self,
@@ -315,6 +364,13 @@ pub trait Api<C: Send + Sync> {
         session_id: String,
         context: &C,
     ) -> Result<KillSessionResponse, ApiError>;
+
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    async fn mcp_frontend_channel(
+        &self,
+        frontend_id: String,
+        context: &C,
+    ) -> Result<McpFrontendChannelResponse, ApiError>;
 
     /// Restart a session
     async fn restart_session(
@@ -356,6 +412,12 @@ pub trait ApiNoContext<C: Send + Sync> {
         new_session: models::NewSession,
     ) -> Result<NewSessionResponse, ApiError>;
 
+    /// Register a Positron frontend with the MCP server
+    async fn register_mcp_frontend(
+        &self,
+        mcp_frontend_registration: models::McpFrontendRegistration,
+    ) -> Result<RegisterMcpFrontendResponse, ApiError>;
+
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError>;
 
@@ -388,6 +450,12 @@ pub trait ApiNoContext<C: Send + Sync> {
     /// Delete session
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
 
+    /// Deregister a Positron frontend
+    async fn deregister_mcp_frontend(
+        &self,
+        frontend_id: String,
+    ) -> Result<DeregisterMcpFrontendResponse, ApiError>;
+
     /// Execute code and return results
     async fn execute_code(
         &self,
@@ -406,6 +474,12 @@ pub trait ApiNoContext<C: Send + Sync> {
 
     /// Force quit session
     async fn kill_session(&self, session_id: String) -> Result<KillSessionResponse, ApiError>;
+
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    async fn mcp_frontend_channel(
+        &self,
+        frontend_id: String,
+    ) -> Result<McpFrontendChannelResponse, ApiError>;
 
     /// Restart a session
     async fn restart_session(
@@ -471,6 +545,17 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().new_session(new_session, &context).await
     }
 
+    /// Register a Positron frontend with the MCP server
+    async fn register_mcp_frontend(
+        &self,
+        mcp_frontend_registration: models::McpFrontendRegistration,
+    ) -> Result<RegisterMcpFrontendResponse, ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .register_mcp_frontend(mcp_frontend_registration, &context)
+            .await
+    }
+
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError> {
         let context = self.context().clone();
@@ -530,6 +615,17 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().delete_session(session_id, &context).await
     }
 
+    /// Deregister a Positron frontend
+    async fn deregister_mcp_frontend(
+        &self,
+        frontend_id: String,
+    ) -> Result<DeregisterMcpFrontendResponse, ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .deregister_mcp_frontend(frontend_id, &context)
+            .await
+    }
+
     /// Execute code and return results
     async fn execute_code(
         &self,
@@ -561,6 +657,15 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn kill_session(&self, session_id: String) -> Result<KillSessionResponse, ApiError> {
         let context = self.context().clone();
         self.api().kill_session(session_id, &context).await
+    }
+
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    async fn mcp_frontend_channel(
+        &self,
+        frontend_id: String,
+    ) -> Result<McpFrontendChannelResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().mcp_frontend_channel(frontend_id, &context).await
     }
 
     /// Restart a session
