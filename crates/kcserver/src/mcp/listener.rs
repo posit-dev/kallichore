@@ -128,7 +128,13 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
         let mut mcp = self.mcp.clone();
 
         Box::pin(async move {
+            log::debug!("MCP {} {}", request.method(), request.uri().path());
+
             if request.uri().path() != MCP_PATH {
+                log::warn!(
+                    "Rejecting MCP request: no endpoint at {}",
+                    request.uri().path()
+                );
                 return Ok(status_response(
                     StatusCode::NOT_FOUND,
                     "Not found; the MCP endpoint is at /mcp",

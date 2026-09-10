@@ -21,9 +21,11 @@ use std::time::Duration;
 use kallichore_api::models;
 use kcshared::kernel_message::ExecutionAttribution;
 use kcshared::mcp_frontend::{AgentCommand, AgentIdentity, CommandRequest};
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, ContentBlock, Implementation, InitializeResult, MetaObject, ServerCapabilities,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    InitializeRequestParams, InitializeResult, MetaObject, ServerCapabilities,
 };
 use rmcp::service::RequestContext;
 use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler};
@@ -249,7 +251,6 @@ impl PositronMcpHandler {
 
         match session.interrupt().await {
             Ok(_) => {
-                log::info!("MCP interrupt_session on session '{}'", session_id);
                 let body = json!({ "status": "ok", "session_id": session_id });
                 Ok(self.finish(body, Vec::new(), &frontend_id).await)
             }
@@ -337,14 +338,19 @@ impl PositronMcpHandler {
         let frontend_id = self.frontend_id(&context)?;
         self.state.note_request();
 
-        let agent = agent_identity(&context);
         let request = CommandRequest {
             id: uuid::Uuid::new_v4().to_string(),
             command_id: params.command_id.clone(),
             args: params.args.unwrap_or_default(),
-            agent: agent.clone(),
+            agent: agent_identity(&context),
             deadline_ms: FRONTEND_REPLY_WAIT.as_millis() as u64,
         };
+
+        log::info!(
+            "MCP run_positron_command '{}' on frontend '{}'",
+            params.command_id,
+            frontend_id
+        );
 
         let started = std::time::Instant::now();
         let outcome = self
@@ -418,15 +424,6 @@ impl PositronMcpHandler {
             ),
         };
 
-        log::info!(
-            "MCP run_positron_command '{}' by {} on frontend '{}': {} in {}ms",
-            params.command_id,
-            agent.name.as_deref().unwrap_or("unknown agent"),
-            frontend_id,
-            if is_error { "failed" } else { "ok" },
-            elapsed_ms
-        );
-
         Ok(if is_error {
             self.error(body, &frontend_id).await
         } else {
@@ -486,9 +483,8 @@ impl PositronMcpHandler {
             .clamp(1, MAX_TIMEOUT_S);
 
         log::info!(
-            "MCP {} by {} on session '{}' ({} bytes of code)",
+            "MCP {} on session '{}' ({} bytes of code)",
             tool,
-            agent.name.as_deref().unwrap_or("unknown agent"),
             session_id,
             params.code.len()
         );
@@ -555,14 +551,6 @@ impl PositronMcpHandler {
             object.insert("session_id".into(), json!(session_id));
             object.insert("elapsed_ms".into(), json!(elapsed_ms));
         }
-
-        log::info!(
-            "MCP {} on session '{}' finished {} in {}ms",
-            tool,
-            session_id,
-            body["status"].as_str().unwrap_or("unknown"),
-            elapsed_ms
-        );
 
         Ok(if is_error {
             let mut result = self.error(body, &frontend_id).await;
@@ -714,6 +702,76 @@ impl ServerHandler for PositronMcpHandler {
                     .with_description("The user's live Positron interpreter sessions and IDE"),
             )
             .with_instructions(INSTRUCTIONS)
+    }
+
+    /// Announce the agent, then negotiate as the default implementation does.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        log::info!(
+            "MCP client '{}' {} connected (protocol {})",
+            request.client_info.name,
+            request.client_info.version,
+            request.protocol_version
+        );
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
+    }
+
+    /// Every tool call passes through here, so this is where a request and its
+    /// outcome are logged. Replaces the dispatcher `#[tool_handler]` would
+    /// otherwise generate; the body is that dispatcher plus the logging.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let tool = request.name.clone();
+        let agent = agent_identity(&context);
+        let agent = agent.name.unwrap_or_else(|| "unknown agent".to_string());
+        log::info!("MCP {} requested by {}", tool, agent);
+
+        let started = std::time::Instant::now();
+        let response = Self::tool_router()
+            .call(ToolCallContext::new(self, request, context))
+            .await;
+        let elapsed_ms = started.elapsed().as_millis();
+
+        match &response {
+            Ok(CallToolResponse::Complete(result)) if result.is_error.unwrap_or(false) => {
+                log::info!(
+                    "MCP {} for {} returned an error in {}ms: {}",
+                    tool,
+                    agent,
+                    elapsed_ms,
+                    result
+                        .structured_content
+                        .as_ref()
+                        .map(|body| body.to_string())
+                        .unwrap_or_default()
+                );
+            }
+            Ok(CallToolResponse::Complete(_)) => {
+                log::info!("MCP {} for {} succeeded in {}ms", tool, agent, elapsed_ms);
+            }
+            Ok(_) => log::info!(
+                "MCP {} for {} needs more from the client after {}ms",
+                tool,
+                agent,
+                elapsed_ms
+            ),
+            Err(e) => log::warn!(
+                "MCP {} for {} failed in {}ms: {}",
+                tool,
+                agent,
+                elapsed_ms,
+                e
+            ),
+        }
+
+        response
     }
 }
 
