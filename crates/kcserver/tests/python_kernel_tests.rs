@@ -1645,8 +1645,7 @@ async fn test_startup_environment_functionality() {
             tokio::time::sleep(Duration::from_millis(500)).await;
 
             // Execute Python script to check for shell-specific environment and behaviors
-            let test_script_path = std::env::current_dir()
-                .unwrap()
+            let test_script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests")
                 .join("shell_test.py");
 
