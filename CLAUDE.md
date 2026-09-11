@@ -185,29 +185,33 @@ Example usage:
 any MCP client) can reach the user's live sessions. It listens on its own loopback TCP socket,
 separate from the main API transport, because agents need a URL.
 
-- The listener starts when the first Positron frontend registers (`POST /mcp/frontends`) and stops
-  when the last one deregisters. No port is open unless someone asked for it.
-- One supervisor can be shared by every window of a Positron server, so each registered frontend
-  gets an endpoint of its own at `/mcp/w/<frontend_id>` with its own bearer token, distinct from
+- The listener starts when the first Positron workspace registers (`POST /mcp/workspaces`) and
+  stops when the last one deregisters. No port is open unless someone asked for it.
+- One supervisor can be shared by every window of a Positron server, so each registered workspace
+  gets an endpoint of its own at `/mcp/w/<workspace_id>` with its own bearer token, distinct from
   the supervisor API token. Requests must present the token belonging to the endpoint they address,
-  and must carry a loopback `Host` and `Origin`. A token presented at another frontend's endpoint
+  and must carry a loopback `Host` and `Origin`. A token presented at another workspace's endpoint
   is refused, so an agent holding a stale configuration fails loudly rather than driving the wrong
-  window.
-- Every tool is scoped to the frontend whose endpoint it arrived on. A session belongs to the
-  frontend that created it, named in `frontend_id` on `POST /sessions`, so ownership is settled
-  without Positron being connected. A frontend also reaches sessions it reports holding over its
-  channel (`session_ids` in `hello`, then `sessions_changed`) as long as no other registered
-  frontend owns them; that covers sessions that were already running when MCP was turned on.
-  Naming another window's session returns `SESSION_NOT_VISIBLE`. Both the ownership and the claim
-  outlive the window going away.
+  sessions.
+- A workspace ID is its display name slugified plus a short random suffix (`my-project-h7k2qa`), so
+  the URL agents are configured with is readable. The suffix is not a secret — the token is — but
+  it does keep two folders of the same name from sharing a record. An ID supplied at registration
+  is honored only if it matches `[a-z0-9-]`, since it goes into the endpoint path.
+- Every tool is scoped to the workspace whose endpoint it arrived on. A session belongs to the
+  workspace that created it, named in `workspace_id` on `POST /sessions`, so ownership is settled
+  without Positron being connected. A workspace also reaches sessions it reports holding over a
+  frontend channel (`session_ids` in `hello`, then `sessions_changed`) as long as no other
+  registered workspace owns them; that covers sessions that were already running when MCP was
+  turned on. Naming another workspace's session returns `SESSION_NOT_VISIBLE`. Both the ownership
+  and the claim outlive the window going away.
 - Kernel tools (`list_sessions`, `execute_code`, `evaluate_code`, `interrupt_session`) are answered
   inside `kcserver` and keep working when Positron is disconnected.
-- Command tools (`list_positron_commands`, `run_positron_command`) are brokered to the frontend
-  over `GET /mcp/frontends/{id}/channel`, a WebSocket that works on all three transports. The
-  command catalog is cached, so searching works while disconnected; running does not. Positron
-  keeps the frontend ID in workspace-scoped state, so two windows onto one workspace share a
-  frontend record and attach a channel each; commands go to whichever of them reported focus last,
-  and move to a sibling if that window disappears mid-request.
+- Command tools (`list_positron_commands`, `run_positron_command`) are brokered to a window over
+  `GET /mcp/workspaces/{id}/channel`, a WebSocket that works on all three transports. The command
+  catalog is cached, so searching works while disconnected; running does not. Positron keeps the
+  workspace ID in workspace-scoped state, so two windows onto one workspace share a record and
+  attach a frontend channel each; commands go to whichever of them reported focus last, and move
+  to a sibling if that window disappears mid-request.
 - Agent executions go through the same execution queue and WebSocket mirror as Positron's own, and
   are preceded by a `KernelMessage::ExecutionRequested` event naming the agent. That event buffers
   while no client is connected, so a window that reopens learns who ran the code it is seeing.
@@ -216,9 +220,9 @@ separate from the main API transport, because agents need a URL.
   execution counter alone. Neither uses the Jupyter `silent` flag, which would suppress both the
   result the agent asked for and the echo the user needs.
 
-Code lives in `crates/kcserver/src/mcp/` (`listener.rs`, `handler.rs`, `frontends.rs`, `auth.rs`,
-`channel.rs`), with shared message types in `crates/kcshared/src/mcp_frontend.rs`. The protocol
-layer is the `rmcp` crate.
+Code lives in `crates/kcserver/src/mcp/` (`listener.rs`, `handler.rs`, `workspaces.rs`, `auth.rs`,
+`channel.rs`), with shared frontend-channel message types in `crates/kcshared/src/mcp_frontend.rs`.
+The protocol layer is the `rmcp` crate.
 
 ## Testing
 

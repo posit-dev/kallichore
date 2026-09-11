@@ -12,11 +12,11 @@
 //! which defaults to a Unix socket or named pipe and must stay that way: agents
 //! speak plain HTTP over a URL.
 //!
-//! Every registered frontend has an endpoint of its own under `/mcp/w/`. The
-//! bearer token still decides which frontend a request belongs to; naming it in
-//! the path as well means an agent configured with one window's URL and another
-//! window's token is refused loudly instead of quietly working on the wrong
-//! window.
+//! Every registered workspace has an endpoint of its own under `/mcp/w/`. The
+//! bearer token still decides which workspace a request belongs to; naming it
+//! in the path as well means an agent configured with one workspace's URL and
+//! another's token is refused loudly instead of quietly working on the wrong
+//! sessions.
 
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -36,11 +36,11 @@ use tower::Service as _;
 use super::auth::{check_request, AuthRejection};
 use super::McpState;
 
-/// The path prefix under which each frontend's endpoint lives; the frontend ID
-/// follows.
+/// The path prefix under which each workspace's endpoint lives; the workspace
+/// ID follows.
 const MCP_PATH_PREFIX: &str = "/mcp/w/";
 
-/// The path rmcp's service expects to see once the frontend has been resolved.
+/// The path rmcp's service expects to see once the workspace has been resolved.
 const MCP_PATH: &str = "/mcp";
 
 /// The response body type shared with rmcp's Streamable HTTP service.
@@ -137,7 +137,7 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                 );
                 return Ok(status_response(
                     StatusCode::NOT_FOUND,
-                    "Not found; a window's MCP endpoint is at /mcp/w/<frontend-id>",
+                    "Not found; a workspace's MCP endpoint is at /mcp/w/<workspace-id>",
                 ));
             };
             let addressed = addressed.to_string();
@@ -156,7 +156,7 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                 }
             };
 
-            let Some(frontend_id) = state.registry.frontend_for_token(&token).await else {
+            let Some(workspace_id) = state.registry.workspace_for_token(&token).await else {
                 log::warn!("Rejecting MCP request: invalid bearer token");
                 return Ok(status_response(
                     StatusCode::UNAUTHORIZED,
@@ -164,21 +164,21 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                 ));
             };
 
-            if frontend_id != addressed {
+            if workspace_id != addressed {
                 log::warn!(
-                    "Rejecting MCP request for frontend '{}': the token belongs to '{}'",
+                    "Rejecting MCP request for workspace '{}': the token belongs to '{}'",
                     addressed,
-                    frontend_id
+                    workspace_id
                 );
                 return Ok(status_response(
                     StatusCode::FORBIDDEN,
-                    "This token belongs to a different Positron window. Use the URL and token \
+                    "This token belongs to a different Positron workspace. Use the URL and token \
                      from the same window, which its integrated terminals publish as \
                      POSITRON_MCP_URL and POSITRON_MCP_TOKEN.",
                 ));
             }
 
-            let Some(mut service) = state.service_for(&frontend_id).await else {
+            let Some(mut service) = state.service_for(&workspace_id).await else {
                 log::warn!("Rejecting MCP request: the listener is shutting down");
                 return Ok(status_response(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -186,7 +186,7 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                 ));
             };
 
-            // rmcp serves one endpoint, so the frontend is addressed by the
+            // rmcp serves one endpoint, so the workspace is addressed by the
             // service handling the request rather than by the path.
             let mut request = request;
             let mut parts = request.uri().clone().into_parts();

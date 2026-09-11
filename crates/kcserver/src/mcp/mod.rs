@@ -11,19 +11,19 @@
 //! External coding agents reach the user's live sessions through a loopback
 //! Streamable HTTP endpoint served on a listener separate from the
 //! supervisor's main API transport. The listener starts when the first
-//! Positron frontend registers and stops when the last one deregisters, so no
+//! Positron workspace registers and stops when the last one deregisters, so no
 //! TCP port is open unless someone asked for it.
 //!
 //! One supervisor can be shared by every window of a Positron server, so the
-//! single listener gives each registered frontend an endpoint of its own at
-//! `/mcp/w/<frontend_id>`, with its own token, its own protocol sessions, and a
-//! view restricted to that frontend's sessions and commands.
+//! single listener gives each registered workspace an endpoint of its own at
+//! `/mcp/w/<workspace_id>`, with its own token, its own protocol sessions, and
+//! a view restricted to that workspace's sessions and commands.
 
 pub mod auth;
 pub mod channel;
-pub mod frontends;
 pub mod handler;
 pub mod listener;
+pub mod workspaces;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,11 +36,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::kernel_session::KernelSession;
-use frontends::FrontendRegistry;
 use handler::PositronMcpHandler;
+use workspaces::WorkspaceRegistry;
 
-/// One frontend's MCP endpoint.
-type FrontendService = StreamableHttpService<PositronMcpHandler, LocalSessionManager>;
+/// One workspace's MCP endpoint.
+type WorkspaceService = StreamableHttpService<PositronMcpHandler, LocalSessionManager>;
 
 /// A running MCP listener.
 struct ListenerHandle {
@@ -50,8 +50,8 @@ struct ListenerHandle {
 
 /// Everything the MCP server needs from the supervisor.
 pub struct McpState {
-    /// The registered frontends and their tokens.
-    pub registry: Arc<FrontendRegistry>,
+    /// The registered workspaces and their tokens.
+    pub registry: Arc<WorkspaceRegistry>,
 
     /// The supervisor's kernel sessions.
     kernel_sessions: Arc<std::sync::RwLock<Vec<KernelSession>>>,
@@ -66,8 +66,8 @@ pub struct McpState {
     /// registrations racing cannot each open a port.
     listener: tokio::sync::Mutex<Option<ListenerHandle>>,
 
-    /// The HTTP service behind each frontend's endpoint, built on first use.
-    services: tokio::sync::Mutex<HashMap<String, FrontendService>>,
+    /// The HTTP service behind each workspace's endpoint, built on first use.
+    services: tokio::sync::Mutex<HashMap<String, WorkspaceService>>,
 }
 
 impl McpState {
@@ -77,7 +77,7 @@ impl McpState {
         idle_nudge_tx: mpsc::Sender<Option<u32>>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            registry: Arc::new(FrontendRegistry::new()),
+            registry: Arc::new(WorkspaceRegistry::new()),
             kernel_sessions,
             idle_nudge_tx,
             request_count: AtomicU64::new(0),
@@ -96,9 +96,9 @@ impl McpState {
     ) -> std::io::Result<u16> {
         let mut guard = self.listener.lock().await;
         if let Some(existing) = guard.as_ref() {
-            // One listener serves every frontend, so a later registration's
+            // One listener serves every workspace, so a later registration's
             // preferred port cannot be honoured. Say so rather than leaving the
-            // frontend to wonder why its setting did nothing.
+            // window to wonder why its setting did nothing.
             if let Some(preferred) = preferred_port.filter(|p| *p != 0 && *p != existing.port) {
                 log::info!(
                     "Ignoring preferred MCP port {}; the listener is already on {}",
@@ -128,22 +128,22 @@ impl McpState {
         }
     }
 
-    /// The HTTP service serving a frontend's endpoint.
+    /// The HTTP service serving a workspace's endpoint.
     ///
-    /// Each frontend gets its own service, so the handler knows which window it
+    /// Each workspace gets its own service, so the handler knows which one it
     /// is answering for without inspecting every request, and protocol sessions
-    /// belong to one window and go away with it.
+    /// belong to one workspace and go away with it.
     ///
     /// Returns None when the listener is not running.
-    pub async fn service_for(self: &Arc<Self>, frontend_id: &str) -> Option<FrontendService> {
+    pub async fn service_for(self: &Arc<Self>, workspace_id: &str) -> Option<WorkspaceService> {
         let mut services = self.services.lock().await;
-        if let Some(existing) = services.get(frontend_id) {
+        if let Some(existing) = services.get(workspace_id) {
             return Some(existing.clone());
         }
 
         let cancel = self.listener.lock().await.as_ref()?.cancel.child_token();
         let state = self.clone();
-        let id = frontend_id.to_string();
+        let id = workspace_id.to_string();
         let service = StreamableHttpService::new(
             move || Ok(PositronMcpHandler::new(state.clone(), id.clone())),
             Arc::new(LocalSessionManager::default()),
@@ -152,13 +152,13 @@ impl McpState {
             // agent's name is what attributes executions in the user's console.
             StreamableHttpServerConfig::default().with_cancellation_token(cancel),
         );
-        services.insert(frontend_id.to_string(), service.clone());
+        services.insert(workspace_id.to_string(), service.clone());
         Some(service)
     }
 
-    /// Drop a frontend's endpoint, ending its agents' protocol sessions.
-    pub async fn drop_service(&self, frontend_id: &str) {
-        self.services.lock().await.remove(frontend_id);
+    /// Drop a workspace's endpoint, ending its agents' protocol sessions.
+    pub async fn drop_service(&self, workspace_id: &str) {
+        self.services.lock().await.remove(workspace_id);
     }
 
     /// The port the listener is bound to, if it is running.
@@ -191,7 +191,7 @@ impl McpState {
             active: port.is_some(),
             port: port.unwrap_or(0) as i32,
             request_count: self.request_count.load(Ordering::Relaxed) as i32,
-            frontends: self.registry.status().await,
+            workspaces: self.registry.status().await,
         }
     }
 }

@@ -7,9 +7,9 @@ use futures::{future, stream, Stream};
 use kallichore_api::{
     models, AdoptSessionResponse, Api, ApiNoContext, ChannelsUpgradeResponse, Claims, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    DeregisterMcpFrontendResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
+    DeregisterMcpWorkspaceResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
     GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    McpFrontendChannelResponse, NewSessionResponse, RegisterMcpFrontendResponse,
+    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
     RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
     ShutdownServerResponse, StartSessionResponse,
 };
@@ -48,7 +48,7 @@ fn main() {
                     "GetServerConfiguration",
                     "ListSessions",
                     "NewSession",
-                    "RegisterMcpFrontend",
+                    "RegisterMcpWorkspace",
                     "ServerStatus",
                     "SetServerConfiguration",
                     "ShutdownServer",
@@ -56,12 +56,12 @@ fn main() {
                     "ChannelsUpgrade",
                     "ConnectionInfo",
                     "DeleteSession",
-                    "DeregisterMcpFrontend",
+                    "DeregisterMcpWorkspace",
                     "ExecuteCode",
                     "GetSession",
                     "InterruptSession",
                     "KillSession",
-                    "McpFrontendChannel",
+                    "McpWorkspaceChannel",
                     "RestartSession",
                     "StartSession",
                 ])
@@ -176,8 +176,8 @@ fn main() {
         },
         */
         /* Disabled because there's no example.
-        Some("RegisterMcpFrontend") => {
-            let result = rt.block_on(client.register_mcp_frontend(
+        Some("RegisterMcpWorkspace") => {
+            let result = rt.block_on(client.register_mcp_workspace(
                   ???
             ));
             info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
@@ -240,9 +240,9 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
-        Some("DeregisterMcpFrontend") => {
+        Some("DeregisterMcpWorkspace") => {
             let result =
-                rt.block_on(client.deregister_mcp_frontend("frontend_id_example".to_string()));
+                rt.block_on(client.deregister_mcp_workspace("workspace_id_example".to_string()));
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,
@@ -282,9 +282,9 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
-        Some("McpFrontendChannel") => {
+        Some("McpWorkspaceChannel") => {
             let result =
-                rt.block_on(client.mcp_frontend_channel("frontend_id_example".to_string()));
+                rt.block_on(client.mcp_workspace_channel("workspace_id_example".to_string()));
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,

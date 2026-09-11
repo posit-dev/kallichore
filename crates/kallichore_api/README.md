@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2026-09-11T15:31:29.448249-07:00[America/Los_Angeles]
+- Build date: 2026-09-11T16:01:32.337158-07:00[America/Los_Angeles]
 - Generator version: 7.17.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -94,11 +94,11 @@ cargo run --example client ShutdownServer
 cargo run --example client ChannelsUpgrade
 cargo run --example client ConnectionInfo
 cargo run --example client DeleteSession
-cargo run --example client DeregisterMcpFrontend
+cargo run --example client DeregisterMcpWorkspace
 cargo run --example client GetSession
 cargo run --example client InterruptSession
 cargo run --example client KillSession
-cargo run --example client McpFrontendChannel
+cargo run --example client McpWorkspaceChannel
 cargo run --example client RestartSession
 cargo run --example client StartSession
 ```
@@ -140,7 +140,7 @@ Method | HTTP request | Description
 [**get-server-configuration**](docs/default_api.md#get-server-configuration) | **GET** /server_configuration | Get the server configuration
 [**list-sessions**](docs/default_api.md#list-sessions) | **GET** /sessions | List active sessions
 [**new-session**](docs/default_api.md#new-session) | **PUT** /sessions | Create a new session
-[**register-mcp-frontend**](docs/default_api.md#register-mcp-frontend) | **POST** /mcp/frontends | Register a Positron frontend with the MCP server
+[**register-mcp-workspace**](docs/default_api.md#register-mcp-workspace) | **POST** /mcp/workspaces | Register a Positron workspace with the MCP server
 [**server-status**](docs/default_api.md#server-status) | **GET** /status | Get server status and information
 [**set-server-configuration**](docs/default_api.md#set-server-configuration) | **POST** /server_configuration | Change the server configuration
 [**shutdown-server**](docs/default_api.md#shutdown-server) | **POST** /shutdown | Shut down all sessions and the server itself
@@ -148,12 +148,12 @@ Method | HTTP request | Description
 [**channels-upgrade**](docs/default_api.md#channels-upgrade) | **GET** /sessions/{session_id}/channels | Upgrade to a WebSocket or domain socket for channel communication
 [**connection-info**](docs/default_api.md#connection-info) | **GET** /sessions/{session_id}/connection_info | Get Jupyter connection information for the session
 [**delete-session**](docs/default_api.md#delete-session) | **DELETE** /sessions/{session_id} | Delete session
-[**deregister-mcp-frontend**](docs/default_api.md#deregister-mcp-frontend) | **DELETE** /mcp/frontends/{frontend_id} | Deregister a Positron frontend
+[**deregister-mcp-workspace**](docs/default_api.md#deregister-mcp-workspace) | **DELETE** /mcp/workspaces/{workspace_id} | Deregister a Positron workspace
 [**execute-code**](docs/default_api.md#execute-code) | **POST** /sessions/{session_id}/execute | Execute code and return results
 [**get-session**](docs/default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
 [**interrupt-session**](docs/default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
 [**kill-session**](docs/default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
-[**mcp-frontend-channel**](docs/default_api.md#mcp-frontend-channel) | **GET** /mcp/frontends/{frontend_id}/channel | Upgrade to a WebSocket carrying the MCP frontend channel
+[**mcp-workspace-channel**](docs/default_api.md#mcp-workspace-channel) | **GET** /mcp/workspaces/{workspace_id}/channel | Upgrade to a WebSocket carrying the MCP frontend channel
 [**restart-session**](docs/default_api.md#restart-session) | **POST** /sessions/{session_id}/restart | Restart a session
 [**start-session**](docs/default_api.md#start-session) | **POST** /sessions/{session_id}/start | Start a session
 
@@ -171,11 +171,11 @@ Method | HTTP request | Description
  - [ExecuteRequest](docs/ExecuteRequest.md)
  - [ExecutionQueue](docs/ExecutionQueue.md)
  - [InterruptMode](docs/InterruptMode.md)
- - [McpFrontend](docs/McpFrontend.md)
- - [McpFrontendCapabilities](docs/McpFrontendCapabilities.md)
- - [McpFrontendRegistration](docs/McpFrontendRegistration.md)
- - [McpFrontendStatus](docs/McpFrontendStatus.md)
  - [McpStatus](docs/McpStatus.md)
+ - [McpWorkspace](docs/McpWorkspace.md)
+ - [McpWorkspaceCapabilities](docs/McpWorkspaceCapabilities.md)
+ - [McpWorkspaceRegistration](docs/McpWorkspaceRegistration.md)
+ - [McpWorkspaceStatus](docs/McpWorkspaceStatus.md)
  - [NewSession](docs/NewSession.md)
  - [NewSession200Response](docs/NewSession200Response.md)
  - [ResourceUsage](docs/ResourceUsage.md)

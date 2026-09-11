@@ -132,7 +132,7 @@ impl ToolCall {
 pub struct McpAgent {
     port: u16,
 
-    /// The frontend's endpoint, which names the window in its path.
+    /// The workspace's endpoint, which names it in the path.
     path: String,
 
     token: String,
@@ -143,11 +143,11 @@ pub struct McpAgent {
 }
 
 impl McpAgent {
-    /// Create an agent talking to one frontend's endpoint with its token.
-    pub fn new(port: u16, frontend_id: &str, token: &str) -> Self {
+    /// Create an agent talking to one workspace's endpoint with its token.
+    pub fn new(port: u16, workspace_id: &str, token: &str) -> Self {
         Self {
             port,
-            path: format!("/mcp/w/{}", frontend_id),
+            path: format!("/mcp/w/{}", workspace_id),
             token: token.to_string(),
             name: "test-agent".to_string(),
             version: "1.2.3".to_string(),
@@ -322,11 +322,11 @@ pub struct SimulatedFrontend {
 
 impl SimulatedFrontend {
     /// Connect the frontend channel and start pumping it.
-    pub async fn connect(base_url: &str, frontend_id: &str) -> Self {
+    pub async fn connect(base_url: &str, workspace_id: &str) -> Self {
         let url = format!(
-            "{}/mcp/frontends/{}/channel",
+            "{}/mcp/workspaces/{}/channel",
             base_url.replace("http://", "ws://"),
-            frontend_id
+            workspace_id
         );
         let (stream, response) = tokio_tungstenite::connect_async(&url)
             .await

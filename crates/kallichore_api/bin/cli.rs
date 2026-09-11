@@ -8,9 +8,9 @@ use log::{debug, info};
 use kallichore_api::{
     models, AdoptSessionResponse, ApiNoContext, ChannelsUpgradeResponse, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    DeregisterMcpFrontendResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
+    DeregisterMcpWorkspaceResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
     GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    McpFrontendChannelResponse, NewSessionResponse, RegisterMcpFrontendResponse,
+    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
     RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
     ShutdownServerResponse, StartSessionResponse,
 };
@@ -86,10 +86,10 @@ enum Operation {
         #[clap(value_parser = parse_json::<models::NewSession>)]
         new_session: models::NewSession,
     },
-    /// Register a Positron frontend with the MCP server
-    RegisterMcpFrontend {
-        #[clap(value_parser = parse_json::<models::McpFrontendRegistration>)]
-        mcp_frontend_registration: models::McpFrontendRegistration,
+    /// Register a Positron workspace with the MCP server
+    RegisterMcpWorkspace {
+        #[clap(value_parser = parse_json::<models::McpWorkspaceRegistration>)]
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
     },
     /// Get server status and information
     ServerStatus {},
@@ -112,8 +112,8 @@ enum Operation {
     ConnectionInfo { session_id: String },
     /// Delete session
     DeleteSession { session_id: String },
-    /// Deregister a Positron frontend
-    DeregisterMcpFrontend { frontend_id: String },
+    /// Deregister a Positron workspace
+    DeregisterMcpWorkspace { workspace_id: String },
     /// Execute code and return results
     ExecuteCode {
         session_id: String,
@@ -127,7 +127,7 @@ enum Operation {
     /// Force quit session
     KillSession { session_id: String },
     /// Upgrade to a WebSocket carrying the MCP frontend channel
-    McpFrontendChannel { frontend_id: String },
+    McpWorkspaceChannel { workspace_id: String },
     /// Restart a session
     RestartSession {
         session_id: String,
@@ -264,24 +264,24 @@ async fn main() -> Result<()> {
                 NewSessionResponse::Unauthorized => "Unauthorized\n".to_string(),
             }
         }
-        Operation::RegisterMcpFrontend {
-            mcp_frontend_registration,
+        Operation::RegisterMcpWorkspace {
+            mcp_workspace_registration,
         } => {
-            info!("Performing a RegisterMcpFrontend request");
+            info!("Performing a RegisterMcpWorkspace request");
 
             let result = client
-                .register_mcp_frontend(mcp_frontend_registration)
+                .register_mcp_workspace(mcp_workspace_registration)
                 .await?;
             debug!("Result: {:?}", result);
 
             match result {
-                RegisterMcpFrontendResponse::FrontendRegistered(body) => {
-                    "FrontendRegistered\n".to_string() + &serde_json::to_string_pretty(&body)?
+                RegisterMcpWorkspaceResponse::WorkspaceRegistered(body) => {
+                    "WorkspaceRegistered\n".to_string() + &serde_json::to_string_pretty(&body)?
                 }
-                RegisterMcpFrontendResponse::InvalidRequest(body) => {
+                RegisterMcpWorkspaceResponse::InvalidRequest(body) => {
                     "InvalidRequest\n".to_string() + &serde_json::to_string_pretty(&body)?
                 }
-                RegisterMcpFrontendResponse::Unauthorized => "Unauthorized\n".to_string(),
+                RegisterMcpWorkspaceResponse::Unauthorized => "Unauthorized\n".to_string(),
             }
         }
         Operation::ServerStatus {} => {
@@ -413,25 +413,27 @@ async fn main() -> Result<()> {
                 DeleteSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
             }
         }
-        Operation::DeregisterMcpFrontend { frontend_id } => {
+        Operation::DeregisterMcpWorkspace { workspace_id } => {
             prompt(
                 args.force,
                 "This will delete the given entry, are you sure?",
             )?;
             info!(
-                "Performing a DeregisterMcpFrontend request on {:?}",
-                (&frontend_id)
+                "Performing a DeregisterMcpWorkspace request on {:?}",
+                (&workspace_id)
             );
 
-            let result = client.deregister_mcp_frontend(frontend_id).await?;
+            let result = client.deregister_mcp_workspace(workspace_id).await?;
             debug!("Result: {:?}", result);
 
             match result {
-                DeregisterMcpFrontendResponse::FrontendDeregistered => {
-                    "FrontendDeregistered\n".to_string()
+                DeregisterMcpWorkspaceResponse::WorkspaceDeregistered => {
+                    "WorkspaceDeregistered\n".to_string()
                 }
-                DeregisterMcpFrontendResponse::Unauthorized => "Unauthorized\n".to_string(),
-                DeregisterMcpFrontendResponse::FrontendNotFound => "FrontendNotFound\n".to_string(),
+                DeregisterMcpWorkspaceResponse::Unauthorized => "Unauthorized\n".to_string(),
+                DeregisterMcpWorkspaceResponse::WorkspaceNotFound => {
+                    "WorkspaceNotFound\n".to_string()
+                }
             }
         }
         Operation::ExecuteCode {
@@ -510,24 +512,24 @@ async fn main() -> Result<()> {
                 KillSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
             }
         }
-        Operation::McpFrontendChannel { frontend_id } => {
+        Operation::McpWorkspaceChannel { workspace_id } => {
             info!(
-                "Performing a McpFrontendChannel request on {:?}",
-                (&frontend_id)
+                "Performing a McpWorkspaceChannel request on {:?}",
+                (&workspace_id)
             );
 
-            let result = client.mcp_frontend_channel(frontend_id).await?;
+            let result = client.mcp_workspace_channel(workspace_id).await?;
             debug!("Result: {:?}", result);
 
             match result {
-                McpFrontendChannelResponse::UpgradedConnection => {
+                McpWorkspaceChannelResponse::UpgradedConnection => {
                     "UpgradedConnection\n".to_string()
                 }
-                McpFrontendChannelResponse::InvalidRequest(body) => {
+                McpWorkspaceChannelResponse::InvalidRequest(body) => {
                     "InvalidRequest\n".to_string() + &serde_json::to_string_pretty(&body)?
                 }
-                McpFrontendChannelResponse::Unauthorized => "Unauthorized\n".to_string(),
-                McpFrontendChannelResponse::FrontendNotFound => "FrontendNotFound\n".to_string(),
+                McpWorkspaceChannelResponse::Unauthorized => "Unauthorized\n".to_string(),
+                McpWorkspaceChannelResponse::WorkspaceNotFound => "WorkspaceNotFound\n".to_string(),
             }
         }
         Operation::RestartSession {

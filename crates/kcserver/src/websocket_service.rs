@@ -24,8 +24,8 @@ enum WebsocketRoute {
     /// `/sessions/{session_id}/channels`
     SessionChannels(String),
 
-    /// `/mcp/frontends/{frontend_id}/channel`
-    McpFrontendChannel(String),
+    /// `/mcp/workspaces/{workspace_id}/channel`
+    McpWorkspaceChannel(String),
 }
 
 /// Extension trait to provide access to the custom websocket request handlers.
@@ -42,10 +42,10 @@ where
         context: &C,
     ) -> BoxFuture<'static, Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>>;
 
-    fn mcp_frontend_channel_request(
+    fn mcp_workspace_channel_request(
         &self,
         request: Request<Incoming>,
-        frontend_id: String,
+        workspace_id: String,
         context: &C,
     ) -> BoxFuture<'static, Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>>;
 }
@@ -142,9 +142,9 @@ where
                         .channels_websocket_request(request, session_id, &context)
                         .await
                 }
-                WebsocketRoute::McpFrontendChannel(frontend_id) => {
+                WebsocketRoute::McpWorkspaceChannel(workspace_id) => {
                     api_impl
-                        .mcp_frontend_channel_request(request, frontend_id, &context)
+                        .mcp_workspace_channel_request(request, workspace_id, &context)
                         .await
                 }
             };
@@ -186,9 +186,9 @@ fn websocket_route(path: &str) -> Option<WebsocketRoute> {
         return Some(WebsocketRoute::SessionChannels(id));
     }
 
-    let frontends = MCP_FRONTEND_CHANNEL
-        .get_or_init(|| Regex::new(r"^/mcp/frontends/([^/?#]+)/channel$").expect("Invalid regex"));
-    capture_id(frontends, path).map(WebsocketRoute::McpFrontendChannel)
+    let workspaces = MCP_FRONTEND_CHANNEL
+        .get_or_init(|| Regex::new(r"^/mcp/workspaces/([^/?#]+)/channel$").expect("Invalid regex"));
+    capture_id(workspaces, path).map(WebsocketRoute::McpWorkspaceChannel)
 }
 
 /// Extract and URL-decode the first capture group of a path pattern.

@@ -61,9 +61,9 @@ pub enum NewSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
-pub enum RegisterMcpFrontendResponse {
-    /// Frontend registered
-    FrontendRegistered(models::McpFrontend),
+pub enum RegisterMcpWorkspaceResponse {
+    /// Workspace registered
+    WorkspaceRegistered(models::McpWorkspace),
     /// Invalid request
     InvalidRequest(models::Error),
     /// Unauthorized
@@ -153,13 +153,13 @@ pub enum DeleteSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
-pub enum DeregisterMcpFrontendResponse {
-    /// Frontend deregistered
-    FrontendDeregistered,
+pub enum DeregisterMcpWorkspaceResponse {
+    /// Workspace deregistered
+    WorkspaceDeregistered,
     /// Unauthorized
     Unauthorized,
-    /// Frontend not found
-    FrontendNotFound,
+    /// Workspace not found
+    WorkspaceNotFound,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -216,15 +216,15 @@ pub enum KillSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
-pub enum McpFrontendChannelResponse {
+pub enum McpWorkspaceChannelResponse {
     /// Upgraded connection
     UpgradedConnection,
     /// Invalid request
     InvalidRequest(models::Error),
     /// Unauthorized
     Unauthorized,
-    /// Frontend not found
-    FrontendNotFound,
+    /// Workspace not found
+    WorkspaceNotFound,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -280,12 +280,12 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<NewSessionResponse, ApiError>;
 
-    /// Register a Positron frontend with the MCP server
-    async fn register_mcp_frontend(
+    /// Register a Positron workspace with the MCP server
+    async fn register_mcp_workspace(
         &self,
-        mcp_frontend_registration: models::McpFrontendRegistration,
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
         context: &C,
-    ) -> Result<RegisterMcpFrontendResponse, ApiError>;
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError>;
 
     /// Get server status and information
     async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError>;
@@ -329,12 +329,12 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<DeleteSessionResponse, ApiError>;
 
-    /// Deregister a Positron frontend
-    async fn deregister_mcp_frontend(
+    /// Deregister a Positron workspace
+    async fn deregister_mcp_workspace(
         &self,
-        frontend_id: String,
+        workspace_id: String,
         context: &C,
-    ) -> Result<DeregisterMcpFrontendResponse, ApiError>;
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError>;
 
     /// Execute code and return results
     async fn execute_code(
@@ -366,11 +366,11 @@ pub trait Api<C: Send + Sync> {
     ) -> Result<KillSessionResponse, ApiError>;
 
     /// Upgrade to a WebSocket carrying the MCP frontend channel
-    async fn mcp_frontend_channel(
+    async fn mcp_workspace_channel(
         &self,
-        frontend_id: String,
+        workspace_id: String,
         context: &C,
-    ) -> Result<McpFrontendChannelResponse, ApiError>;
+    ) -> Result<McpWorkspaceChannelResponse, ApiError>;
 
     /// Restart a session
     async fn restart_session(
@@ -412,11 +412,11 @@ pub trait ApiNoContext<C: Send + Sync> {
         new_session: models::NewSession,
     ) -> Result<NewSessionResponse, ApiError>;
 
-    /// Register a Positron frontend with the MCP server
-    async fn register_mcp_frontend(
+    /// Register a Positron workspace with the MCP server
+    async fn register_mcp_workspace(
         &self,
-        mcp_frontend_registration: models::McpFrontendRegistration,
-    ) -> Result<RegisterMcpFrontendResponse, ApiError>;
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError>;
 
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError>;
@@ -450,11 +450,11 @@ pub trait ApiNoContext<C: Send + Sync> {
     /// Delete session
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
 
-    /// Deregister a Positron frontend
-    async fn deregister_mcp_frontend(
+    /// Deregister a Positron workspace
+    async fn deregister_mcp_workspace(
         &self,
-        frontend_id: String,
-    ) -> Result<DeregisterMcpFrontendResponse, ApiError>;
+        workspace_id: String,
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError>;
 
     /// Execute code and return results
     async fn execute_code(
@@ -476,10 +476,10 @@ pub trait ApiNoContext<C: Send + Sync> {
     async fn kill_session(&self, session_id: String) -> Result<KillSessionResponse, ApiError>;
 
     /// Upgrade to a WebSocket carrying the MCP frontend channel
-    async fn mcp_frontend_channel(
+    async fn mcp_workspace_channel(
         &self,
-        frontend_id: String,
-    ) -> Result<McpFrontendChannelResponse, ApiError>;
+        workspace_id: String,
+    ) -> Result<McpWorkspaceChannelResponse, ApiError>;
 
     /// Restart a session
     async fn restart_session(
@@ -545,14 +545,14 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().new_session(new_session, &context).await
     }
 
-    /// Register a Positron frontend with the MCP server
-    async fn register_mcp_frontend(
+    /// Register a Positron workspace with the MCP server
+    async fn register_mcp_workspace(
         &self,
-        mcp_frontend_registration: models::McpFrontendRegistration,
-    ) -> Result<RegisterMcpFrontendResponse, ApiError> {
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError> {
         let context = self.context().clone();
         self.api()
-            .register_mcp_frontend(mcp_frontend_registration, &context)
+            .register_mcp_workspace(mcp_workspace_registration, &context)
             .await
     }
 
@@ -615,14 +615,14 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().delete_session(session_id, &context).await
     }
 
-    /// Deregister a Positron frontend
-    async fn deregister_mcp_frontend(
+    /// Deregister a Positron workspace
+    async fn deregister_mcp_workspace(
         &self,
-        frontend_id: String,
-    ) -> Result<DeregisterMcpFrontendResponse, ApiError> {
+        workspace_id: String,
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError> {
         let context = self.context().clone();
         self.api()
-            .deregister_mcp_frontend(frontend_id, &context)
+            .deregister_mcp_workspace(workspace_id, &context)
             .await
     }
 
@@ -660,12 +660,14 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     }
 
     /// Upgrade to a WebSocket carrying the MCP frontend channel
-    async fn mcp_frontend_channel(
+    async fn mcp_workspace_channel(
         &self,
-        frontend_id: String,
-    ) -> Result<McpFrontendChannelResponse, ApiError> {
+        workspace_id: String,
+    ) -> Result<McpWorkspaceChannelResponse, ApiError> {
         let context = self.context().clone();
-        self.api().mcp_frontend_channel(frontend_id, &context).await
+        self.api()
+            .mcp_workspace_channel(workspace_id, &context)
+            .await
     }
 
     /// Restart a session

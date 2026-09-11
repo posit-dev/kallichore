@@ -50,10 +50,10 @@ const ID_ENCODE_SET: &AsciiSet = &FRAGMENT_ENCODE_SET.add(b'|');
 
 use crate::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
-    ConnectionInfoResponse, DeleteSessionResponse, DeregisterMcpFrontendResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, DeregisterMcpWorkspaceResponse,
     ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
     InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    McpFrontendChannelResponse, NewSessionResponse, RegisterMcpFrontendResponse,
+    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
     RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
     ShutdownServerResponse, StartSessionResponse,
 };
@@ -755,14 +755,14 @@ where
     }
 
     #[allow(clippy::vec_init_then_push)]
-    async fn register_mcp_frontend(
+    async fn register_mcp_workspace(
         &self,
-        param_mcp_frontend_registration: models::McpFrontendRegistration,
+        param_mcp_workspace_registration: models::McpWorkspaceRegistration,
         context: &C,
-    ) -> Result<RegisterMcpFrontendResponse, ApiError> {
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError> {
         let mut client_service = self.client_service.clone();
         #[allow(clippy::uninlined_format_args)]
-        let mut uri = format!("{}/mcp/frontends", self.base_path);
+        let mut uri = format!("{}/mcp/workspaces", self.base_path);
 
         // Query parameters
         let query_string = {
@@ -790,7 +790,7 @@ where
 
         // Consumes basic body
         // Body parameter
-        let body = serde_json::to_string(&param_mcp_frontend_registration)
+        let body = serde_json::to_string(&param_mcp_workspace_registration)
             .expect("impossible to fail to serialize");
         *request.body_mut() = body_from_string(body);
 
@@ -827,11 +827,11 @@ where
 
                 let body = str::from_utf8(&body)
                     .map_err(|e| ApiError(format!("Response was not valid UTF8: {e}")))?;
-                let body = serde_json::from_str::<models::McpFrontend>(body).map_err(|e| {
+                let body = serde_json::from_str::<models::McpWorkspace>(body).map_err(|e| {
                     ApiError(format!("Response body did not match the schema: {e}"))
                 })?;
 
-                Ok(RegisterMcpFrontendResponse::FrontendRegistered(body))
+                Ok(RegisterMcpWorkspaceResponse::WorkspaceRegistered(body))
             }
             400 => {
                 let body = response.into_body();
@@ -846,9 +846,9 @@ where
                     ApiError(format!("Response body did not match the schema: {e}"))
                 })?;
 
-                Ok(RegisterMcpFrontendResponse::InvalidRequest(body))
+                Ok(RegisterMcpWorkspaceResponse::InvalidRequest(body))
             }
-            401 => Ok(RegisterMcpFrontendResponse::Unauthorized),
+            401 => Ok(RegisterMcpWorkspaceResponse::Unauthorized),
             code => {
                 let headers = response.headers().clone();
                 let body = http_body_util::BodyExt::collect(response.into_body())
@@ -1647,17 +1647,17 @@ where
     }
 
     #[allow(clippy::vec_init_then_push)]
-    async fn deregister_mcp_frontend(
+    async fn deregister_mcp_workspace(
         &self,
-        param_frontend_id: String,
+        param_workspace_id: String,
         context: &C,
-    ) -> Result<DeregisterMcpFrontendResponse, ApiError> {
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError> {
         let mut client_service = self.client_service.clone();
         #[allow(clippy::uninlined_format_args)]
         let mut uri = format!(
-            "{}/mcp/frontends/{frontend_id}",
+            "{}/mcp/workspaces/{workspace_id}",
             self.base_path,
-            frontend_id = utf8_percent_encode(&param_frontend_id.to_string(), ID_ENCODE_SET)
+            workspace_id = utf8_percent_encode(&param_workspace_id.to_string(), ID_ENCODE_SET)
         );
 
         // Query parameters
@@ -1703,9 +1703,9 @@ where
             .await?;
 
         match response.status().as_u16() {
-            200 => Ok(DeregisterMcpFrontendResponse::FrontendDeregistered),
-            401 => Ok(DeregisterMcpFrontendResponse::Unauthorized),
-            404 => Ok(DeregisterMcpFrontendResponse::FrontendNotFound),
+            200 => Ok(DeregisterMcpWorkspaceResponse::WorkspaceDeregistered),
+            401 => Ok(DeregisterMcpWorkspaceResponse::Unauthorized),
+            404 => Ok(DeregisterMcpWorkspaceResponse::WorkspaceNotFound),
             code => {
                 let headers = response.headers().clone();
                 let body = http_body_util::BodyExt::collect(response.into_body())
@@ -2199,17 +2199,17 @@ where
     }
 
     #[allow(clippy::vec_init_then_push)]
-    async fn mcp_frontend_channel(
+    async fn mcp_workspace_channel(
         &self,
-        param_frontend_id: String,
+        param_workspace_id: String,
         context: &C,
-    ) -> Result<McpFrontendChannelResponse, ApiError> {
+    ) -> Result<McpWorkspaceChannelResponse, ApiError> {
         let mut client_service = self.client_service.clone();
         #[allow(clippy::uninlined_format_args)]
         let mut uri = format!(
-            "{}/mcp/frontends/{frontend_id}/channel",
+            "{}/mcp/workspaces/{workspace_id}/channel",
             self.base_path,
-            frontend_id = utf8_percent_encode(&param_frontend_id.to_string(), ID_ENCODE_SET)
+            workspace_id = utf8_percent_encode(&param_workspace_id.to_string(), ID_ENCODE_SET)
         );
 
         // Query parameters
@@ -2255,7 +2255,7 @@ where
             .await?;
 
         match response.status().as_u16() {
-            200 => Ok(McpFrontendChannelResponse::UpgradedConnection),
+            200 => Ok(McpWorkspaceChannelResponse::UpgradedConnection),
             400 => {
                 let body = response.into_body();
                 let body = http_body_util::BodyExt::collect(body)
@@ -2269,10 +2269,10 @@ where
                     ApiError(format!("Response body did not match the schema: {e}"))
                 })?;
 
-                Ok(McpFrontendChannelResponse::InvalidRequest(body))
+                Ok(McpWorkspaceChannelResponse::InvalidRequest(body))
             }
-            401 => Ok(McpFrontendChannelResponse::Unauthorized),
-            404 => Ok(McpFrontendChannelResponse::FrontendNotFound),
+            401 => Ok(McpWorkspaceChannelResponse::Unauthorized),
+            404 => Ok(McpWorkspaceChannelResponse::WorkspaceNotFound),
             code => {
                 let headers = response.headers().clone();
                 let body = http_body_util::BodyExt::collect(response.into_body())

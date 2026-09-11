@@ -24,9 +24,9 @@ use futures::SinkExt;
 use common::mcp::{post, McpAgent, SimulatedFrontend};
 use common::test_utils::{create_session_with_client, create_test_session};
 use common::TestServer;
-use kallichore_api::models::McpFrontendRegistration;
+use kallichore_api::models::McpWorkspaceRegistration;
 use kallichore_api::{
-    DeregisterMcpFrontendResponse, RegisterMcpFrontendResponse, ServerStatusResponse,
+    DeregisterMcpWorkspaceResponse, RegisterMcpWorkspaceResponse, ServerStatusResponse,
 };
 use kcshared::mcp_frontend::{
     AgentCommand, AgentCommandArg, CommandReply, CommandsChanged, ForegroundChanged, FrontendHello,
@@ -96,20 +96,29 @@ fn tools_list_body() -> String {
 #[tokio::test]
 async fn test_agent_discovers_and_calls_list_sessions() {
     let server = TestServer::start().await;
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
 
-    assert!(frontend.port > 0, "Registration should report a port");
+    assert!(workspace.port > 0, "Registration should report a port");
     assert_eq!(
-        frontend.url,
+        workspace.url,
         format!(
             "http://127.0.0.1:{}/mcp/w/{}",
-            frontend.port, frontend.frontend_id
+            workspace.port, workspace.workspace_id
         ),
-        "Each window gets an endpoint of its own"
+        "Each workspace gets an endpoint of its own"
     );
-    assert_eq!(frontend.token.len(), 64, "Token should be 32 random bytes");
+    assert!(
+        workspace.workspace_id.starts_with("test-workspace-"),
+        "The ID should name the workspace so the URL reads well: {}",
+        workspace.workspace_id
+    );
+    assert_eq!(workspace.token.len(), 64, "Token should be 32 random bytes");
 
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token);
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
     let info = agent.initialize().await;
     assert_eq!(
         info["serverInfo"]["name"], "positron",
@@ -148,7 +157,7 @@ async fn test_agent_discovers_and_calls_list_sessions() {
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert!(!result.is_error, "list_sessions failed: {:?}", result);
     assert_eq!(result.field("sessions"), &json!([]));
-    assert_eq!(result.field("window")["name"], json!("Test Window"));
+    assert_eq!(result.field("workspace")["name"], json!("Test Workspace"));
     assert_eq!(result.field("positron_connected"), &json!(false));
     assert!(result.structured["server_version"].is_string());
 }
@@ -156,12 +165,12 @@ async fn test_agent_discovers_and_calls_list_sessions() {
 #[tokio::test]
 async fn test_requests_without_valid_credentials_are_refused() {
     let server = TestServer::start().await;
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let port = frontend.port as u16;
-    let path = format!("/mcp/w/{}", frontend.frontend_id);
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let port = workspace.port as u16;
+    let path = format!("/mcp/w/{}", workspace.workspace_id);
 
     // No token at all.
-    let mut headers = agent_headers(port, &frontend.token);
+    let mut headers = agent_headers(port, &workspace.token);
     headers.retain(|(name, _)| *name != "authorization");
     let response = post(port, &path, &headers, &tools_list_body()).await;
     assert_eq!(response.status, 401, "{}", response.body);
@@ -175,20 +184,20 @@ async fn test_requests_without_valid_credentials_are_refused() {
     assert_eq!(response.status, 401, "{}", response.body);
 
     // A non-loopback Host, which is how DNS rebinding shows up.
-    let mut headers = agent_headers(port, &frontend.token);
+    let mut headers = agent_headers(port, &workspace.token);
     headers.retain(|(name, _)| *name != "host");
     headers.push(("host", "evil.example.com".to_string()));
     let response = post(port, &path, &headers, &tools_list_body()).await;
     assert_eq!(response.status, 403, "{}", response.body);
 
     // A non-loopback Origin, which is how a hostile page shows up.
-    let mut headers = agent_headers(port, &frontend.token);
+    let mut headers = agent_headers(port, &workspace.token);
     headers.push(("origin", "https://evil.example.com".to_string()));
     let response = post(port, &path, &headers, &tools_list_body()).await;
     assert_eq!(response.status, 403, "{}", response.body);
 
     // A loopback origin is fine, and a valid token reaches the protocol layer.
-    let mut headers = agent_headers(port, &frontend.token);
+    let mut headers = agent_headers(port, &workspace.token);
     headers.push(("origin", format!("http://localhost:{}", port)));
     let initialize = json!({
         "jsonrpc": "2.0",
@@ -203,16 +212,16 @@ async fn test_requests_without_valid_credentials_are_refused() {
     let response = post(port, &path, &headers, &initialize.to_string()).await;
     assert_eq!(response.status, 200, "{}", response.body);
 
-    // Anything outside a window's endpoint is not served at all.
-    let headers = agent_headers(port, &frontend.token);
+    // Anything outside a workspace's endpoint is not served at all.
+    let headers = agent_headers(port, &workspace.token);
     let response = post(port, "/sessions", &headers, "{}").await;
     assert_eq!(response.status, 404, "{}", response.body);
     let response = post(port, "/mcp", &headers, &tools_list_body()).await;
     assert_eq!(response.status, 404, "{}", response.body);
 
-    // A valid token presented at another window's endpoint is refused, so a
-    // stale configuration fails loudly instead of driving the wrong window.
-    let other = server.register_mcp_frontend("Other Window", None).await;
+    // A valid token presented at another workspace's endpoint is refused, so a
+    // stale configuration fails loudly instead of driving the wrong sessions.
+    let other = server.register_mcp_workspace("Other Workspace", None).await;
     let headers = agent_headers(port, &other.token);
     let response = post(port, &path, &headers, &tools_list_body()).await;
     assert_eq!(response.status, 403, "{}", response.body);
@@ -221,63 +230,68 @@ async fn test_requests_without_valid_credentials_are_refused() {
 #[tokio::test]
 async fn test_registration_is_idempotent_and_deregistration_closes_the_port() {
     let server = TestServer::start().await;
-    let first = server.register_mcp_frontend("Test Window", None).await;
+    let first = server.register_mcp_workspace("Test Workspace", None).await;
 
     // A window that reloads re-registers with its saved ID and must keep
     // working with the token its terminals already hold.
     let again = server
-        .register_mcp_frontend("Test Window (reloaded)", Some(first.frontend_id.clone()))
+        .register_mcp_workspace(
+            "Test Workspace (reloaded)",
+            Some(first.workspace_id.clone()),
+        )
         .await;
-    assert_eq!(again.frontend_id, first.frontend_id);
+    assert_eq!(again.workspace_id, first.workspace_id);
     assert_eq!(again.token, first.token);
     assert_eq!(again.port, first.port);
 
-    // A second window gets its own token on the same listener.
-    let second = server.register_mcp_frontend("Second Window", None).await;
-    assert_ne!(second.frontend_id, first.frontend_id);
+    // A second workspace gets its own token on the same listener.
+    let second = server
+        .register_mcp_workspace("Second Workspace", None)
+        .await;
+    assert_ne!(second.workspace_id, first.workspace_id);
     assert_ne!(second.token, first.token);
     assert_eq!(second.port, first.port);
 
     let client = server.create_client().await;
     match client
-        .deregister_mcp_frontend(first.frontend_id.clone())
+        .deregister_mcp_workspace(first.workspace_id.clone())
         .await
         .expect("Deregistration failed")
     {
-        DeregisterMcpFrontendResponse::FrontendDeregistered => {}
+        DeregisterMcpWorkspaceResponse::WorkspaceDeregistered => {}
         other => panic!("Unexpected deregistration response: {:?}", other),
     }
 
-    // The listener stays up while another frontend is registered, but the
+    // The listener stays up while another workspace is registered, but the
     // deregistered token no longer works.
     let headers = agent_headers(first.port as u16, &first.token);
-    let path = format!("/mcp/w/{}", first.frontend_id);
+    let path = format!("/mcp/w/{}", first.workspace_id);
     let response = post(first.port as u16, &path, &headers, &tools_list_body()).await;
     assert_eq!(response.status, 401, "{}", response.body);
 
     match client
-        .deregister_mcp_frontend(second.frontend_id.clone())
+        .deregister_mcp_workspace(second.workspace_id.clone())
         .await
         .expect("Deregistration failed")
     {
-        DeregisterMcpFrontendResponse::FrontendDeregistered => {}
+        DeregisterMcpWorkspaceResponse::WorkspaceDeregistered => {}
         other => panic!("Unexpected deregistration response: {:?}", other),
     }
 
-    // With the last frontend gone the port is released.
+    // With the last workspace gone the port is released.
     tokio::time::sleep(Duration::from_millis(300)).await;
     let connected = tokio::net::TcpStream::connect(("127.0.0.1", first.port as u16)).await;
     assert!(
         connected.is_err(),
-        "The MCP port should be closed once the last frontend deregisters"
+        "The MCP port should be closed once the last workspace deregisters"
     );
 
     match client
-        .deregister_mcp_frontend(first.frontend_id)
+        .deregister_mcp_workspace(first.workspace_id)
         .await
         .expect("Deregistration failed")
     {
-        DeregisterMcpFrontendResponse::FrontendNotFound => {}
+        DeregisterMcpWorkspaceResponse::WorkspaceNotFound => {}
         other => panic!("Unexpected repeat deregistration response: {:?}", other),
     }
 }
@@ -294,10 +308,14 @@ async fn test_server_status_reports_the_mcp_server() {
     let mcp = status.mcp.expect("Status should include an mcp block");
     assert!(!mcp.active, "The listener should not start on its own");
     assert_eq!(mcp.port, 0);
-    assert!(mcp.frontends.is_empty());
+    assert!(mcp.workspaces.is_empty());
 
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token);
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
     agent.initialize().await;
     agent.call_tool("list_sessions", json!({})).await;
 
@@ -307,14 +325,14 @@ async fn test_server_status_reports_the_mcp_server() {
     };
     let mcp = status.mcp.expect("Status should include an mcp block");
     assert!(mcp.active);
-    assert_eq!(mcp.port, frontend.port);
+    assert_eq!(mcp.port, workspace.port);
     assert!(mcp.request_count >= 1, "Tool calls should be counted");
-    assert_eq!(mcp.frontends.len(), 1);
-    assert_eq!(mcp.frontends[0].id, frontend.frontend_id);
-    assert_eq!(mcp.frontends[0].display_name, "Test Window");
-    assert!(!mcp.frontends[0].connected, "No channel is open yet");
+    assert_eq!(mcp.workspaces.len(), 1);
+    assert_eq!(mcp.workspaces[0].id, workspace.workspace_id);
+    assert_eq!(mcp.workspaces[0].display_name, "Test Workspace");
+    assert!(!mcp.workspaces[0].connected, "No channel is open yet");
 
-    let _channel = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
+    let _channel = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let status = match client.server_status().await.expect("Status failed") {
@@ -322,22 +340,29 @@ async fn test_server_status_reports_the_mcp_server() {
         other => panic!("Unexpected status response: {:?}", other),
     };
     let mcp = status.mcp.expect("Status should include an mcp block");
-    assert!(mcp.frontends[0].connected, "The channel should be reported");
+    assert!(
+        mcp.workspaces[0].connected,
+        "The channel should be reported"
+    );
 }
 
 #[tokio::test]
-async fn test_command_catalog_survives_the_frontend_disconnecting() {
+async fn test_command_catalog_survives_the_window_disconnecting() {
     let server = TestServer::start().await;
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token);
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
     agent.initialize().await;
 
-    // Before the frontend says hello there is nothing to search.
+    // Before a window says hello there is nothing to search.
     let result = agent.call_tool("list_positron_commands", json!({})).await;
     assert_eq!(result.field("total"), &json!(0));
     assert_eq!(result.field("positron_connected"), &json!(false));
 
-    let channel = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
+    let channel = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
     channel.send(FrontendMessage::Hello(FrontendHello {
         positron_version: Some("2026.09.0".to_string()),
         commands: fake_catalog(),
@@ -402,14 +427,18 @@ async fn test_command_catalog_survives_the_frontend_disconnecting() {
 }
 
 #[tokio::test]
-async fn test_run_positron_command_is_brokered_to_the_frontend() {
+async fn test_run_positron_command_is_brokered_to_a_window() {
     let server = TestServer::start().await;
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token)
-        .named("claude-code");
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    )
+    .named("claude-code");
     agent.initialize().await;
 
-    let mut channel = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
+    let mut channel = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
     channel.send(FrontendMessage::Hello(FrontendHello {
         positron_version: Some("2026.09.0".to_string()),
         commands: fake_catalog(),
@@ -448,7 +477,7 @@ async fn test_run_positron_command_is_brokered_to_the_frontend() {
     assert!(!result.is_error, "{:?}", result);
     assert_eq!(result.field("result"), &json!({ "opened": true }));
 
-    // A command the frontend refuses.
+    // A command the window refuses.
     let call = tokio::spawn(async move {
         let result = agent
             .call_tool(
@@ -478,8 +507,12 @@ async fn test_run_positron_command_is_brokered_to_the_frontend() {
 #[tokio::test]
 async fn test_run_positron_command_waits_for_a_reloading_window() {
     let server = TestServer::start().await;
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token);
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
     agent.initialize().await;
 
     // The window is not there yet; the call should hold rather than fail fast.
@@ -494,7 +527,7 @@ async fn test_run_positron_command_waits_for_a_reloading_window() {
     });
 
     tokio::time::sleep(Duration::from_secs(2)).await;
-    let mut channel = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
+    let mut channel = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
     channel.send(FrontendMessage::Hello(FrontendHello {
         commands: fake_catalog(),
         ..Default::default()
@@ -517,8 +550,12 @@ async fn test_run_positron_command_waits_for_a_reloading_window() {
 #[tokio::test]
 async fn test_run_positron_command_reports_a_disconnected_window() {
     let server = TestServer::start().await;
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token);
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
     agent.initialize().await;
 
     let started = std::time::Instant::now();
@@ -549,17 +586,17 @@ async fn test_run_positron_command_reports_a_disconnected_window() {
 }
 
 #[tokio::test]
-async fn test_frontend_channel_rejects_unknown_frontends() {
+async fn test_frontend_channel_rejects_unknown_workspaces() {
     let server = TestServer::start().await;
-    server.register_mcp_frontend("Test Window", None).await;
+    server.register_mcp_workspace("Test Workspace", None).await;
 
     let url = format!(
-        "{}/mcp/frontends/no-such-frontend/channel",
+        "{}/mcp/workspaces/no-such-workspace/channel",
         server.base_url().replace("http://", "ws://")
     );
     let error = tokio_tungstenite::connect_async(&url)
         .await
-        .expect_err("An unknown frontend should not get a channel");
+        .expect_err("An unknown workspace should not get a channel");
     assert!(
         error.to_string().contains("404"),
         "Expected a 404, got: {}",
@@ -570,14 +607,20 @@ async fn test_frontend_channel_rejects_unknown_frontends() {
 #[tokio::test]
 async fn test_the_window_the_user_focused_serves_commands() {
     let server = TestServer::start().await;
-    let frontend = server.register_mcp_frontend("Shared Workspace", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token);
+    let workspace = server
+        .register_mcp_workspace("Shared Workspace", None)
+        .await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
     agent.initialize().await;
 
-    // Two windows onto one workspace share a frontend record, because Positron
-    // keeps the frontend ID and its session list in workspace-scoped state.
+    // Two windows onto one workspace share a record, because Positron keeps the
+    // workspace ID and its session list in workspace-scoped state.
     // Both attach; neither evicts the other.
-    let mut first = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
+    let mut first = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
     first.send(FrontendMessage::Hello(FrontendHello {
         positron_version: Some("first".to_string()),
         commands: fake_catalog(),
@@ -585,7 +628,7 @@ async fn test_the_window_the_user_focused_serves_commands() {
     }));
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let mut second = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
+    let mut second = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
     second.send(FrontendMessage::Hello(FrontendHello {
         positron_version: Some("second".to_string()),
         ..Default::default()
@@ -624,7 +667,7 @@ async fn test_the_window_the_user_focused_serves_commands() {
     assert!(!result.is_error, "{:?}", result);
     assert_eq!(result.field("result"), &json!("in the focused window"));
 
-    // The focused window closing leaves the frontend connected through its
+    // The focused window closing leaves the workspace connected through its
     // sibling, which picks up the next command.
     first.disconnect().await;
     let result = agent.call_tool("list_positron_commands", json!({})).await;
@@ -651,49 +694,54 @@ async fn test_the_window_the_user_focused_serves_commands() {
     assert_eq!(result.field("result"), &json!("in the surviving window"));
 }
 
-/// Create a session belonging to a frontend, or to nobody when `owner` is None.
+/// Create a session belonging to a workspace, or to nobody when `owner` is None.
 ///
 /// The sessions are never started: which sessions an agent may target is
 /// decided before any kernel is touched.
 async fn create_session(server: &TestServer, session_id: &str, owner: Option<&str>) -> String {
     let client = server.create_client().await;
     let mut session = create_test_session(session_id.to_string(), "python3");
-    session.frontend_id = owner.map(|id| id.to_string());
+    session.workspace_id = owner.map(|id| id.to_string());
     create_session_with_client(&client, session).await
 }
 
 #[tokio::test]
-async fn test_sessions_belong_to_the_window_that_created_them() {
+async fn test_sessions_belong_to_the_workspace_that_created_them() {
     let server = TestServer::start().await;
 
-    // Two windows sharing one supervisor, as every window does on Positron
-    // Server. Neither has opened its channel: a session's owner is settled when
-    // it is created, so the kernel tools do not wait on Positron for it.
-    let first = server.register_mcp_frontend("My Window", None).await;
-    let second = server.register_mcp_frontend("Their Window", None).await;
-    let mine = create_session(&server, "session-in-my-window", Some(&first.frontend_id)).await;
+    // Two workspaces sharing one supervisor, as every window does on Positron
+    // Server. Neither has opened a channel: a session's owner is settled when it
+    // is created, so the kernel tools do not wait on Positron for it.
+    let first = server.register_mcp_workspace("My Workspace", None).await;
+    let second = server.register_mcp_workspace("Their Workspace", None).await;
+    let mine = create_session(
+        &server,
+        "session-in-my-workspace",
+        Some(&first.workspace_id),
+    )
+    .await;
     let theirs = create_session(
         &server,
-        "session-in-their-window",
-        Some(&second.frontend_id),
+        "session-in-their-workspace",
+        Some(&second.workspace_id),
     )
     .await;
 
-    let mut agent = McpAgent::new(first.port as u16, &first.frontend_id, &first.token);
+    let mut agent = McpAgent::new(first.port as u16, &first.workspace_id, &first.token);
     agent.initialize().await;
 
     let result = agent.call_tool("list_sessions", json!({})).await;
     let sessions = result.field("sessions").as_array().unwrap().clone();
     assert_eq!(sessions.len(), 1, "{:?}", result);
     assert_eq!(sessions[0]["session_id"], json!(mine));
-    assert_eq!(result.field("window")["name"], json!("My Window"));
+    assert_eq!(result.field("workspace")["name"], json!("My Workspace"));
     assert_eq!(
-        result.field("sessions_in_other_windows"),
+        result.field("sessions_in_other_workspaces"),
         &json!(1),
-        "The agent should know other windows exist without being told about them"
+        "The agent should know other workspaces exist without being told about them"
     );
 
-    // Naming another window's session is refused in terms the agent can act
+    // Naming another workspace's session is refused in terms the agent can act
     // on, rather than running there or claiming the session does not exist.
     let result = agent
         .call_tool("interrupt_session", json!({ "session_id": theirs }))
@@ -712,30 +760,30 @@ async fn test_sessions_belong_to_the_window_that_created_them() {
 }
 
 #[tokio::test]
-async fn test_a_window_reaches_sessions_it_did_not_create_but_not_another_windows() {
+async fn test_a_workspace_reaches_sessions_it_did_not_create_but_not_another_ones() {
     let server = TestServer::start().await;
-    let first = server.register_mcp_frontend("My Window", None).await;
-    let second = server.register_mcp_frontend("Their Window", None).await;
+    let first = server.register_mcp_workspace("My Workspace", None).await;
+    let second = server.register_mcp_workspace("Their Workspace", None).await;
 
-    // A session that was already running when the window registered names no
-    // owner, so the window has to say it holds it.
+    // A session that was already running when the workspace registered names no
+    // owner, so a window has to say it holds it.
     let orphan = create_session(&server, "session-from-before", None).await;
     let theirs = create_session(
         &server,
-        "session-in-their-window",
-        Some(&second.frontend_id),
+        "session-in-their-workspace",
+        Some(&second.workspace_id),
     )
     .await;
 
-    let window = SimulatedFrontend::connect(server.base_url(), &first.frontend_id).await;
+    let window = SimulatedFrontend::connect(server.base_url(), &first.workspace_id).await;
     window.send(FrontendMessage::Hello(FrontendHello {
-        // Claiming the other window's session too, which must not work.
+        // Claiming the other workspace's session too, which must not work.
         session_ids: vec![orphan.clone(), theirs.clone()],
         ..Default::default()
     }));
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let mut agent = McpAgent::new(first.port as u16, &first.frontend_id, &first.token);
+    let mut agent = McpAgent::new(first.port as u16, &first.workspace_id, &first.token);
     agent.initialize().await;
 
     let result = agent.call_tool("list_sessions", json!({})).await;
@@ -750,17 +798,21 @@ async fn test_a_window_reaches_sessions_it_did_not_create_but_not_another_window
     tokio::time::sleep(Duration::from_millis(300)).await;
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert_eq!(result.field("sessions"), &json!([]));
-    assert_eq!(result.field("sessions_in_other_windows"), &json!(2));
+    assert_eq!(result.field("sessions_in_other_workspaces"), &json!(2));
 }
 
 #[tokio::test]
 async fn test_foreground_updates_reach_the_session_tools() {
     let server = TestServer::start().await;
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token);
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
     agent.initialize().await;
 
-    let channel = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
+    let channel = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
     channel.send(FrontendMessage::Hello(FrontendHello {
         foreground_session_id: Some("session-a".to_string()),
         ..Default::default()
@@ -795,16 +847,21 @@ where
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     let registration = json!({
-        "display_name": "Transport Window",
+        "display_name": "Transport Workspace",
         "capabilities": { "commands": true },
     });
-    let response = post_over(connect().await, "/mcp/frontends", &registration.to_string()).await;
-    let frontend: Value = serde_json::from_str(&response).expect("Registration is not JSON");
-    let frontend_id = frontend["frontend_id"].as_str().unwrap().to_string();
-    let port = frontend["port"].as_u64().unwrap() as u16;
-    let token = frontend["token"].as_str().unwrap().to_string();
+    let response = post_over(
+        connect().await,
+        "/mcp/workspaces",
+        &registration.to_string(),
+    )
+    .await;
+    let workspace: Value = serde_json::from_str(&response).expect("Registration is not JSON");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let port = workspace["port"].as_u64().unwrap() as u16;
+    let token = workspace["token"].as_str().unwrap().to_string();
 
-    let request = format!("ws://localhost/mcp/frontends/{}/channel", frontend_id)
+    let request = format!("ws://localhost/mcp/workspaces/{}/channel", workspace_id)
         .into_client_request()
         .expect("Failed to build the upgrade request");
     let (mut ws, _) = tokio_tungstenite::client_async(request, connect().await)
@@ -823,7 +880,7 @@ where
     .expect("Failed to send hello");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let mut agent = McpAgent::new(port, &frontend_id, &token);
+    let mut agent = McpAgent::new(port, &workspace_id, &token);
     agent.initialize().await;
     let result = agent.call_tool("list_positron_commands", json!({})).await;
     assert_eq!(result.field("total"), &json!(3));

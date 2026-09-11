@@ -386,25 +386,27 @@ impl TestServer {
         &self.mode
     }
 
-    /// Register an MCP frontend, starting the MCP listener.
-    pub async fn register_mcp_frontend(
+    /// Register an MCP workspace, starting the MCP listener.
+    pub async fn register_mcp_workspace(
         &self,
         display_name: &str,
-        frontend_id: Option<String>,
-    ) -> kallichore_api::models::McpFrontend {
+        workspace_id: Option<String>,
+    ) -> kallichore_api::models::McpWorkspace {
         let client = self.create_client().await;
         let mut registration =
-            kallichore_api::models::McpFrontendRegistration::new(display_name.to_string());
-        registration.frontend_id = frontend_id;
+            kallichore_api::models::McpWorkspaceRegistration::new(display_name.to_string());
+        registration.workspace_id = workspace_id;
         registration.capabilities =
-            Some(kallichore_api::models::McpFrontendCapabilities::new(true));
+            Some(kallichore_api::models::McpWorkspaceCapabilities::new(true));
 
         match client
-            .register_mcp_frontend(registration)
+            .register_mcp_workspace(registration)
             .await
-            .expect("Failed to register MCP frontend")
+            .expect("Failed to register MCP workspace")
         {
-            kallichore_api::RegisterMcpFrontendResponse::FrontendRegistered(frontend) => frontend,
+            kallichore_api::RegisterMcpWorkspaceResponse::WorkspaceRegistered(workspace) => {
+                workspace
+            }
             other => panic!("Unexpected registration response: {:?}", other),
         }
     }

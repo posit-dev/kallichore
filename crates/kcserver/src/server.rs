@@ -74,9 +74,9 @@ use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsUpgradeResponse, ConnectionInfoResponse,
-    DeleteSessionResponse, DeregisterMcpFrontendResponse, ExecuteCodeResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, McpFrontendChannelResponse, NewSessionResponse,
-    RegisterMcpFrontendResponse, RestartSessionResponse, ShutdownServerResponse,
+    DeleteSessionResponse, DeregisterMcpWorkspaceResponse, ExecuteCodeResponse, GetSessionResponse,
+    InterruptSessionResponse, KillSessionResponse, McpWorkspaceChannelResponse, NewSessionResponse,
+    RegisterMcpWorkspaceResponse, RestartSessionResponse, ShutdownServerResponse,
     StartSessionResponse,
 };
 use kcshared::{
@@ -652,7 +652,7 @@ pub struct Server<C> {
     // Track the main server socket path if it was created by the server
     #[cfg(unix)]
     main_server_socket: Option<String>,
-    // The MCP server: registered frontends, tool state, and the on-demand
+    // The MCP server: registered workspaces, tool state, and the on-demand
     // listener agents connect to
     mcp: Arc<crate::mcp::McpState>,
 }
@@ -1355,7 +1355,7 @@ where
             connection_timeout: session.connection_timeout.clone(),
             protocol_version: session.protocol_version.clone(),
             notebook_uri: session.notebook_uri.clone(),
-            frontend_id: session.frontend_id.clone(),
+            workspace_id: session.workspace_id.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
@@ -1378,11 +1378,11 @@ where
             }
         };
 
-        if let Some(frontend_id) = kernel_session.model.frontend_id.as_deref() {
+        if let Some(workspace_id) = kernel_session.model.workspace_id.as_deref() {
             log::info!(
-                "Session '{}' belongs to MCP frontend '{}'",
+                "Session '{}' belongs to MCP workspace '{}'",
                 new_session_id,
-                frontend_id
+                workspace_id
             );
         }
 
@@ -1973,22 +1973,22 @@ where
         Ok(kallichore_api::ServerStatusResponse::ServerStatusAndInformation(resp))
     }
 
-    /// Register (or re-register) a Positron frontend, starting the MCP
+    /// Register (or re-register) a Positron workspace, starting the MCP
     /// listener if this is the first one.
-    async fn register_mcp_frontend(
+    async fn register_mcp_workspace(
         &self,
-        registration: models::McpFrontendRegistration,
+        registration: models::McpWorkspaceRegistration,
         context: &C,
-    ) -> Result<RegisterMcpFrontendResponse, ApiError> {
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
         info!(
-            "register_mcp_frontend(\"{}\") - X-Span-ID: {:?}",
+            "register_mcp_workspace(\"{}\") - X-Span-ID: {:?}",
             registration.display_name,
             ctx_span.get().0.clone(),
         );
 
         if !self.validate_token(context) {
-            return Ok(RegisterMcpFrontendResponse::Unauthorized);
+            return Ok(RegisterMcpWorkspaceResponse::Unauthorized);
         }
 
         let preferred_port = registration
@@ -1997,78 +1997,81 @@ where
         let port = match self.mcp.ensure_listener(preferred_port).await {
             Ok(port) => port,
             Err(e) => {
-                return Ok(RegisterMcpFrontendResponse::InvalidRequest(models::Error {
-                    code: "mcp_listener_failed".to_string(),
-                    message: format!("Failed to start the MCP listener: {}", e),
-                    details: None,
-                }));
+                return Ok(RegisterMcpWorkspaceResponse::InvalidRequest(
+                    models::Error {
+                        code: "mcp_listener_failed".to_string(),
+                        message: format!("Failed to start the MCP listener: {}", e),
+                        details: None,
+                    },
+                ));
             }
         };
 
-        let (frontend_id, token) = self.mcp.registry.register(&registration).await;
+        let (workspace_id, token) = self.mcp.registry.register(&registration).await;
         info!(
-            "MCP frontend '{}' ({}) registered on port {}",
-            frontend_id, registration.display_name, port
+            "MCP workspace '{}' ({}) registered on port {}",
+            workspace_id, registration.display_name, port
         );
 
-        Ok(RegisterMcpFrontendResponse::FrontendRegistered(
-            models::McpFrontend {
-                // Each frontend has an endpoint of its own, so an agent holding
-                // one window's URL cannot end up talking to another's.
-                url: format!("http://127.0.0.1:{}/mcp/w/{}", port, frontend_id),
-                frontend_id,
+        Ok(RegisterMcpWorkspaceResponse::WorkspaceRegistered(
+            models::McpWorkspace {
+                // Each workspace has an endpoint of its own, so an agent
+                // holding one workspace's URL cannot end up talking to
+                // another's.
+                url: format!("http://127.0.0.1:{}/mcp/w/{}", port, workspace_id),
+                workspace_id,
                 token,
                 port: port as i32,
             },
         ))
     }
 
-    /// Deregister a Positron frontend, stopping the MCP listener when the last
-    /// one goes away.
-    async fn deregister_mcp_frontend(
+    /// Deregister a Positron workspace, stopping the MCP listener when the
+    /// last one goes away.
+    async fn deregister_mcp_workspace(
         &self,
-        frontend_id: String,
+        workspace_id: String,
         context: &C,
-    ) -> Result<DeregisterMcpFrontendResponse, ApiError> {
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError> {
         let ctx_span: &dyn Has<XSpanIdString> = context;
         info!(
-            "deregister_mcp_frontend(\"{}\") - X-Span-ID: {:?}",
-            frontend_id,
+            "deregister_mcp_workspace(\"{}\") - X-Span-ID: {:?}",
+            workspace_id,
             ctx_span.get().0.clone(),
         );
 
         if !self.validate_token(context) {
-            return Ok(DeregisterMcpFrontendResponse::Unauthorized);
+            return Ok(DeregisterMcpWorkspaceResponse::Unauthorized);
         }
 
-        if !self.mcp.registry.deregister(&frontend_id).await {
-            return Ok(DeregisterMcpFrontendResponse::FrontendNotFound);
+        if !self.mcp.registry.deregister(&workspace_id).await {
+            return Ok(DeregisterMcpWorkspaceResponse::WorkspaceNotFound);
         }
-        self.mcp.drop_service(&frontend_id).await;
-        info!("MCP frontend '{}' deregistered", frontend_id);
+        self.mcp.drop_service(&workspace_id).await;
+        info!("MCP workspace '{}' deregistered", workspace_id);
 
         if self.mcp.registry.is_empty().await {
             self.mcp.stop_listener().await;
         }
 
-        Ok(DeregisterMcpFrontendResponse::FrontendDeregistered)
+        Ok(DeregisterMcpWorkspaceResponse::WorkspaceDeregistered)
     }
 
     /// The frontend channel is upgraded to a WebSocket before it reaches the
     /// generated routing, so this is only hit by requests that never asked to
     /// upgrade.
-    async fn mcp_frontend_channel(
+    async fn mcp_workspace_channel(
         &self,
-        frontend_id: String,
+        workspace_id: String,
         context: &C,
-    ) -> Result<McpFrontendChannelResponse, ApiError> {
+    ) -> Result<McpWorkspaceChannelResponse, ApiError> {
         if !self.validate_token(context) {
-            return Ok(McpFrontendChannelResponse::Unauthorized);
+            return Ok(McpWorkspaceChannelResponse::Unauthorized);
         }
-        if !self.mcp.registry.contains(&frontend_id).await {
-            return Ok(McpFrontendChannelResponse::FrontendNotFound);
+        if !self.mcp.registry.contains(&workspace_id).await {
+            return Ok(McpWorkspaceChannelResponse::WorkspaceNotFound);
         }
-        Ok(McpFrontendChannelResponse::InvalidRequest(models::Error {
+        Ok(McpWorkspaceChannelResponse::InvalidRequest(models::Error {
             code: "upgrade_required".to_string(),
             message: "The MCP frontend channel requires a WebSocket upgrade".to_string(),
             details: None,
@@ -2417,10 +2420,10 @@ impl<C> Server<C> {
     /// Unlike session channels, this upgrades in place on every transport: the
     /// frontend is a single long-lived connection per window, so there is no
     /// reason to hand out a separate endpoint.
-    async fn handle_mcp_frontend_channel_request(
+    async fn handle_mcp_workspace_channel_request(
         &self,
         request: hyper::Request<Incoming>,
-        frontend_id: String,
+        workspace_id: String,
         context: &C,
     ) -> Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>
     where
@@ -2433,10 +2436,10 @@ impl<C> Server<C> {
             ));
         }
 
-        if !self.mcp.registry.contains(&frontend_id).await {
+        if !self.mcp.registry.contains(&workspace_id).await {
             return Ok(text_response(
                 StatusCode::NOT_FOUND,
-                format!("No MCP frontend registered with ID '{}'", frontend_id),
+                format!("No MCP workspace registered with ID '{}'", workspace_id),
             ));
         }
 
@@ -2459,7 +2462,7 @@ impl<C> Server<C> {
                 Ok(upgraded) => {
                     let io = TokioIo::new(upgraded);
                     let stream = WebSocketStream::from_raw_socket(io, Role::Server, None).await;
-                    crate::mcp::channel::run(mcp, frontend_id, stream).await;
+                    crate::mcp::channel::run(mcp, workspace_id, stream).await;
                 }
                 Err(e) => {
                     log::error!("Failed to upgrade MCP frontend channel: {}", e);
@@ -2886,17 +2889,17 @@ where
         + Clone
         + 'static,
 {
-    fn mcp_frontend_channel_request(
+    fn mcp_workspace_channel_request(
         &self,
         request: hyper::Request<Incoming>,
-        frontend_id: String,
+        workspace_id: String,
         context: &C,
     ) -> BoxFuture<'static, Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>> {
         let server = self.clone();
         let context = context.clone();
         Box::pin(async move {
             server
-                .handle_mcp_frontend_channel_request(request, frontend_id, &context)
+                .handle_mcp_workspace_channel_request(request, workspace_id, &context)
                 .await
         })
     }

@@ -8,7 +8,7 @@
 
 //! Pumps the WebSocket that connects a Positron window to the supervisor.
 //!
-//! Several windows may share a frontend record, so channels accumulate rather
+//! Several windows may share a workspace record, so channels accumulate rather
 //! than replacing each other; the registry brokers commands to whichever
 //! window the user last focused.
 
@@ -28,19 +28,19 @@ use super::McpState;
 /// closes.
 pub async fn run(
     state: Arc<McpState>,
-    frontend_id: String,
+    workspace_id: String,
     mut stream: WebSocketStream<TokioIo<Upgraded>>,
 ) {
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerFrontendMessage>();
-    let Some(generation) = state.registry.attach_channel(&frontend_id, tx).await else {
+    let Some(generation) = state.registry.attach_channel(&workspace_id, tx).await else {
         log::warn!(
-            "MCP frontend channel opened for unregistered frontend '{}'",
-            frontend_id
+            "MCP frontend channel opened for unregistered workspace '{}'",
+            workspace_id
         );
         let _ = stream.close(None).await;
         return;
     };
-    log::info!("MCP frontend channel connected for '{}'", frontend_id);
+    log::info!("MCP frontend channel connected for '{}'", workspace_id);
 
     loop {
         tokio::select! {
@@ -56,7 +56,7 @@ pub async fn run(
                 if let Err(e) = stream.send(Message::Text(text)).await {
                     log::debug!(
                         "MCP frontend channel for '{}' failed to send: {}",
-                        frontend_id,
+                        workspace_id,
                         e
                     );
                     break;
@@ -69,12 +69,12 @@ pub async fn run(
                             Ok(message) => {
                                 state
                                     .registry
-                                    .handle_message(&frontend_id, generation, message)
+                                    .handle_message(&workspace_id, generation, message)
                                     .await
                             }
                             Err(e) => log::warn!(
-                                "MCP frontend '{}' sent an unreadable frame: {}",
-                                frontend_id,
+                                "MCP frontend channel for '{}' sent an unreadable frame: {}",
+                                workspace_id,
                                 e
                             ),
                         }
@@ -84,7 +84,7 @@ pub async fn run(
                     Some(Err(e)) => {
                         log::debug!(
                             "MCP frontend channel for '{}' ended: {}",
-                            frontend_id,
+                            workspace_id,
                             e
                         );
                         break;
@@ -96,7 +96,7 @@ pub async fn run(
 
     state
         .registry
-        .detach_channel(&frontend_id, generation)
+        .detach_channel(&workspace_id, generation)
         .await;
-    log::info!("MCP frontend channel disconnected for '{}'", frontend_id);
+    log::info!("MCP frontend channel disconnected for '{}'", workspace_id);
 }

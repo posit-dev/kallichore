@@ -339,7 +339,7 @@ async fn test_multiple_kernel_sessions() {
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
             notebook_uri: None,
-            frontend_id: None,
+            workspace_id: None,
             session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),
@@ -1439,7 +1439,7 @@ async fn test_kernel_starts_with_bad_shell_env_var() {
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
             notebook_uri: None,
-            frontend_id: None,
+            workspace_id: None,
             session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),
@@ -1584,7 +1584,7 @@ async fn test_startup_environment_functionality() {
                 continuation_prompt: "   ...: ".to_string(),
                 session_mode: SessionMode::Console,
                 notebook_uri: None,
-                frontend_id: None,
+                workspace_id: None,
                 argv: vec![
                     python_cmd.to_string(),
                     "-m".to_string(),
@@ -1897,7 +1897,7 @@ async fn test_startup_environment_command_mode() {
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
             notebook_uri: None,
-            frontend_id: None,
+            workspace_id: None,
             session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),
@@ -2100,7 +2100,7 @@ async fn test_startup_environment_script_mode() {
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
             notebook_uri: None,
-            frontend_id: None,
+            workspace_id: None,
             session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),

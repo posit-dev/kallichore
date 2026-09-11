@@ -64,8 +64,8 @@ pub struct ExecutionAttribution {
     /// The version the agent reported in the MCP `clientInfo`.
     pub agent_version: Option<String>,
 
-    /// The MCP frontend whose token authorized the request.
-    pub frontend_id: String,
+    /// The MCP workspace whose token authorized the request.
+    pub workspace_id: String,
 
     /// The MCP tool used, e.g. "execute_code" or "evaluate_code".
     pub tool: String,

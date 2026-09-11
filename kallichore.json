@@ -753,11 +753,11 @@
         }
       }
     },
-    "/mcp/frontends": {
+    "/mcp/workspaces": {
       "post": {
-        "operationId": "register-mcp-frontend",
-        "summary": "Register a Positron frontend with the MCP server",
-        "description": "Registers (or re-registers) a frontend and starts the MCP listener if it isn't already running. Re-registering with a known frontend ID returns the same bearer token, so agents launched from terminals that outlived the frontend keep working.",
+        "operationId": "register-mcp-workspace",
+        "summary": "Register a Positron workspace with the MCP server",
+        "description": "Registers (or re-registers) a workspace and starts the MCP listener if it isn't already running. Re-registering with a known workspace ID returns the same bearer token, so agents launched from terminals that outlived the window keep working.",
         "security": [
           "bearerAuth"
         ],
@@ -766,18 +766,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/mcpFrontendRegistration"
+                "$ref": "#/components/schemas/mcpWorkspaceRegistration"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Frontend registered",
+            "description": "Workspace registered",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/mcpFrontend"
+                  "$ref": "#/components/schemas/mcpWorkspace"
                 }
               }
             }
@@ -798,17 +798,17 @@
         }
       }
     },
-    "/mcp/frontends/{frontend_id}": {
+    "/mcp/workspaces/{workspace_id}": {
       "delete": {
-        "operationId": "deregister-mcp-frontend",
-        "summary": "Deregister a Positron frontend",
-        "description": "Removes the frontend and invalidates its token. When the last frontend is removed the MCP listener stops and its port is released.",
+        "operationId": "deregister-mcp-workspace",
+        "summary": "Deregister a Positron workspace",
+        "description": "Removes the workspace and invalidates its token. When the last workspace is removed the MCP listener stops and its port is released.",
         "security": [
           "bearerAuth"
         ],
         "parameters": [
           {
-            "name": "frontend_id",
+            "name": "workspace_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -818,7 +818,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Frontend deregistered",
+            "description": "Workspace deregistered",
             "content": {
               "application/json": {}
             }
@@ -827,7 +827,7 @@
             "$ref": "#/components/responses/UnauthorizedError"
           },
           "404": {
-            "description": "Frontend not found",
+            "description": "Workspace not found",
             "content": {
               "application/json": {}
             }
@@ -835,17 +835,17 @@
         }
       }
     },
-    "/mcp/frontends/{frontend_id}/channel": {
+    "/mcp/workspaces/{workspace_id}/channel": {
       "get": {
-        "operationId": "mcp-frontend-channel",
+        "operationId": "mcp-workspace-channel",
         "summary": "Upgrade to a WebSocket carrying the MCP frontend channel",
-        "description": "Opens the bidirectional channel over which the frontend pushes its command catalog and foreground session, and over which the supervisor brokers agent command requests.",
+        "description": "Opens the bidirectional channel over which a window pushes its workspace's command catalog and foreground session, and over which the supervisor brokers agent command requests.",
         "security": [
           "bearerAuth"
         ],
         "parameters": [
           {
-            "name": "frontend_id",
+            "name": "workspace_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -874,7 +874,7 @@
             "$ref": "#/components/responses/UnauthorizedError"
           },
           "404": {
-            "description": "Frontend not found",
+            "description": "Workspace not found",
             "content": {
               "application/json": {}
             }
@@ -1129,9 +1129,9 @@
             "type": "string",
             "description": "The command or script to run before starting the session"
           },
-          "frontend_id": {
+          "workspace_id": {
             "type": "string",
-            "description": "The MCP frontend creating the session, if the client has registered one. The session belongs to that frontend: agents reach it through that frontend's MCP endpoint and no other."
+            "description": "The MCP workspace creating the session, if the client has registered one. The session belongs to that workspace: agents reach it through that workspace's MCP endpoint and no other."
           }
         },
         "required": [
@@ -1573,51 +1573,51 @@
           }
         }
       },
-      "mcpFrontendCapabilities": {
+      "mcpWorkspaceCapabilities": {
         "type": "object",
         "properties": {
           "commands": {
             "type": "boolean",
-            "description": "Whether the frontend can broker Positron commands over its channel"
+            "description": "Whether the workspace's windows can broker Positron commands over their channels"
           }
         },
         "required": [
           "commands"
         ]
       },
-      "mcpFrontendRegistration": {
+      "mcpWorkspaceRegistration": {
         "type": "object",
         "properties": {
-          "frontend_id": {
+          "workspace_id": {
             "type": "string",
-            "description": "A previously issued frontend ID. Omit to have the server generate one."
+            "description": "A previously issued workspace ID. Omit to have the server generate one from the display name."
           },
           "display_name": {
             "type": "string",
-            "description": "A human-readable name for the frontend, shown in logs and status"
+            "description": "A human-readable name for the workspace, normally the folder the user has open. Shown in logs and status, and used to build the workspace ID."
           },
           "preferred_port": {
             "type": "integer",
             "description": "The TCP port the MCP listener should bind. Used only when the listener isn't running yet, and ignored when the port is unavailable."
           },
           "capabilities": {
-            "$ref": "#/components/schemas/mcpFrontendCapabilities"
+            "$ref": "#/components/schemas/mcpWorkspaceCapabilities"
           }
         },
         "required": [
           "display_name"
         ]
       },
-      "mcpFrontend": {
+      "mcpWorkspace": {
         "type": "object",
         "properties": {
-          "frontend_id": {
+          "workspace_id": {
             "type": "string",
-            "description": "The frontend's ID; supply it again to re-register after a reconnect"
+            "description": "The workspace's ID; supply it again to re-register after a reconnect"
           },
           "token": {
             "type": "string",
-            "description": "The bearer token agents present to the MCP server. Scoped to this frontend and distinct from the supervisor API token."
+            "description": "The bearer token agents present to the MCP server. Scoped to this workspace and distinct from the supervisor API token."
           },
           "port": {
             "type": "integer",
@@ -1625,17 +1625,17 @@
           },
           "url": {
             "type": "string",
-            "description": "The full MCP endpoint URL agents should connect to. Unique to this frontend, so an agent configured with it can only reach this frontend's window."
+            "description": "The full MCP endpoint URL agents should connect to. Unique to this workspace, so an agent configured with it can only reach this workspace's sessions."
           }
         },
         "required": [
-          "frontend_id",
+          "workspace_id",
           "port",
           "token",
           "url"
         ]
       },
-      "mcpFrontendStatus": {
+      "mcpWorkspaceStatus": {
         "type": "object",
         "properties": {
           "id": {
@@ -1646,7 +1646,7 @@
           },
           "connected": {
             "type": "boolean",
-            "description": "Whether the frontend's channel is currently connected"
+            "description": "Whether any of the workspace's windows is currently connected"
           }
         },
         "required": [
@@ -1670,18 +1670,18 @@
             "type": "integer",
             "description": "The number of MCP tool calls served since the listener started"
           },
-          "frontends": {
+          "workspaces": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/mcpFrontendStatus"
+              "$ref": "#/components/schemas/mcpWorkspaceStatus"
             }
           }
         },
         "required": [
           "active",
-          "frontends",
           "port",
-          "request_count"
+          "request_count",
+          "workspaces"
         ]
       }
     },
