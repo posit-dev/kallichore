@@ -359,6 +359,9 @@ async fn collect_execution_output(
                     }
                 }
             }
+            "execute_input" => {
+                // Echo of the submitted code; nothing to collect.
+            }
             other => {
                 log::debug!(
                     "execute_code RPC ignoring unexpected message type '{}' for msg_id '{}'",
