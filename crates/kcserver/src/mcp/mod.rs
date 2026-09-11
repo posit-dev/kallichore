@@ -13,6 +13,11 @@
 //! supervisor's main API transport. The listener starts when the first
 //! Positron frontend registers and stops when the last one deregisters, so no
 //! TCP port is open unless someone asked for it.
+//!
+//! One supervisor can be shared by every window of a Positron server, so the
+//! single listener gives each registered frontend an endpoint of its own at
+//! `/mcp/w/<frontend_id>`, with its own token, its own protocol sessions, and a
+//! view restricted to that frontend's sessions and commands.
 
 pub mod auth;
 pub mod channel;
@@ -20,21 +25,22 @@ pub mod frontends;
 pub mod handler;
 pub mod listener;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use kallichore_api::models;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::kernel_session::KernelSession;
 use frontends::FrontendRegistry;
+use handler::PositronMcpHandler;
 
-/// The frontend whose token authorized an MCP request. Attached to the HTTP
-/// request before it reaches the protocol layer, and read back by the tools to
-/// scope themselves to one window.
-#[derive(Clone, Debug)]
-pub struct FrontendId(pub String);
+/// One frontend's MCP endpoint.
+type FrontendService = StreamableHttpService<PositronMcpHandler, LocalSessionManager>;
 
 /// A running MCP listener.
 struct ListenerHandle {
@@ -59,6 +65,9 @@ pub struct McpState {
     /// The listener, when one is running. Held across the bind so two
     /// registrations racing cannot each open a port.
     listener: tokio::sync::Mutex<Option<ListenerHandle>>,
+
+    /// The HTTP service behind each frontend's endpoint, built on first use.
+    services: tokio::sync::Mutex<HashMap<String, FrontendService>>,
 }
 
 impl McpState {
@@ -73,6 +82,7 @@ impl McpState {
             idle_nudge_tx,
             request_count: AtomicU64::new(0),
             listener: tokio::sync::Mutex::new(None),
+            services: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -86,6 +96,16 @@ impl McpState {
     ) -> std::io::Result<u16> {
         let mut guard = self.listener.lock().await;
         if let Some(existing) = guard.as_ref() {
+            // One listener serves every frontend, so a later registration's
+            // preferred port cannot be honoured. Say so rather than leaving the
+            // frontend to wonder why its setting did nothing.
+            if let Some(preferred) = preferred_port.filter(|p| *p != 0 && *p != existing.port) {
+                log::info!(
+                    "Ignoring preferred MCP port {}; the listener is already on {}",
+                    preferred,
+                    existing.port
+                );
+            }
             return Ok(existing.port);
         }
 
@@ -102,9 +122,43 @@ impl McpState {
         let handle = self.listener.lock().await.take();
         if let Some(handle) = handle {
             handle.cancel.cancel();
+            self.services.lock().await.clear();
             self.request_count.store(0, Ordering::Relaxed);
             log::info!("MCP listener on 127.0.0.1:{} stopped", handle.port);
         }
+    }
+
+    /// The HTTP service serving a frontend's endpoint.
+    ///
+    /// Each frontend gets its own service, so the handler knows which window it
+    /// is answering for without inspecting every request, and protocol sessions
+    /// belong to one window and go away with it.
+    ///
+    /// Returns None when the listener is not running.
+    pub async fn service_for(self: &Arc<Self>, frontend_id: &str) -> Option<FrontendService> {
+        let mut services = self.services.lock().await;
+        if let Some(existing) = services.get(frontend_id) {
+            return Some(existing.clone());
+        }
+
+        let cancel = self.listener.lock().await.as_ref()?.cancel.child_token();
+        let state = self.clone();
+        let id = frontend_id.to_string();
+        let service = StreamableHttpService::new(
+            move || Ok(PositronMcpHandler::new(state.clone(), id.clone())),
+            Arc::new(LocalSessionManager::default()),
+            // Sessions are kept for pre-2026-07-28 clients. Those clients
+            // report who they are only in the initialize handshake, and the
+            // agent's name is what attributes executions in the user's console.
+            StreamableHttpServerConfig::default().with_cancellation_token(cancel),
+        );
+        services.insert(frontend_id.to_string(), service.clone());
+        Some(service)
+    }
+
+    /// Drop a frontend's endpoint, ending its agents' protocol sessions.
+    pub async fn drop_service(&self, frontend_id: &str) {
+        self.services.lock().await.remove(frontend_id);
     }
 
     /// The port the listener is bound to, if it is running.

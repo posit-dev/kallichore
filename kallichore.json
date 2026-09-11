@@ -1128,6 +1128,10 @@
           "startup_environment_arg": {
             "type": "string",
             "description": "The command or script to run before starting the session"
+          },
+          "frontend_id": {
+            "type": "string",
+            "description": "The MCP frontend creating the session, if the client has registered one. The session belongs to that frontend: agents reach it through that frontend's MCP endpoint and no other."
           }
         },
         "required": [
@@ -1621,7 +1625,7 @@
           },
           "url": {
             "type": "string",
-            "description": "The full MCP endpoint URL agents should connect to"
+            "description": "The full MCP endpoint URL agents should connect to. Unique to this frontend, so an agent configured with it can only reach this frontend's window."
           }
         },
         "required": [

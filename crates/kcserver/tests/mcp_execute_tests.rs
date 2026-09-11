@@ -26,6 +26,7 @@ use futures::{SinkExt, StreamExt};
 use kallichore_api::models::Status;
 use kallichore_api::{ApiNoContext, GetSessionResponse, StartSessionResponse};
 use kcshared::kernel_message::KernelMessage;
+use kcshared::mcp_frontend::{ForegroundChanged, FrontendHello, FrontendMessage, SessionsChanged};
 use kcshared::websocket_message::WebsocketMessage;
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
@@ -35,12 +36,30 @@ use uuid::Uuid;
 const TINY_PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
-/// Start a server, register a frontend, and return an initialized agent.
-async fn agent_for(server: &TestServer) -> (String, McpAgent) {
+/// Register a frontend holding the given sessions, connect its channel, and
+/// return an initialized agent for it.
+///
+/// Claiming the sessions is what makes them reachable: an agent only ever sees
+/// the sessions the window it was launched from reports holding.
+async fn agent_for(
+    server: &TestServer,
+    session_ids: &[&str],
+) -> (String, SimulatedFrontend, McpAgent) {
     let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.token).named("claude-code");
+    let window = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
+    window.send(FrontendMessage::Hello(FrontendHello {
+        positron_version: Some("2026.09.0".to_string()),
+        session_ids: session_ids.iter().map(|id| id.to_string()).collect(),
+        focused: true,
+        ..Default::default()
+    }));
+    // Let the claim land before the agent asks what it can reach.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut agent = McpAgent::new(frontend.port as u16, &frontend.frontend_id, &frontend.token)
+        .named("claude-code");
     agent.initialize().await;
-    (frontend.frontend_id, agent)
+    (frontend.frontend_id, window, agent)
 }
 
 /// Create and start a Python session, waiting until the kernel is runnable.
@@ -181,7 +200,7 @@ async fn test_execute_code_returns_output_results_images_and_errors() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
     let session_id = start_session(&client, &python_cmd).await;
-    let (_frontend_id, mut agent) = agent_for(&server).await;
+    let (_frontend_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
 
     let result = agent
         .call_tool(
@@ -276,7 +295,7 @@ async fn test_evaluate_code_returns_a_value_without_touching_history() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
     let session_id = start_session(&client, &python_cmd).await;
-    let (_frontend_id, mut agent) = agent_for(&server).await;
+    let (_frontend_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
 
     // Establish the execution counter with a stored execution.
     let stored = agent
@@ -342,7 +361,7 @@ async fn test_execution_is_announced_before_its_output() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
     let session_id = start_session(&client, &python_cmd).await;
-    let (frontend_id, mut agent) = agent_for(&server).await;
+    let (frontend_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
 
     let mut ws = connect_session_ws(&server, &session_id).await;
 
@@ -406,7 +425,7 @@ async fn test_execution_events_are_buffered_until_the_client_reconnects() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
     let session_id = start_session(&client, &python_cmd).await;
-    let (_frontend_id, mut agent) = agent_for(&server).await;
+    let (_frontend_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
 
     // Nothing is connected: this is the "browser tab closed" case.
     let result = agent
@@ -458,7 +477,7 @@ async fn test_execute_code_times_out_and_interrupts_the_kernel() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
     let session_id = start_session(&client, &python_cmd).await;
-    let (_frontend_id, mut agent) = agent_for(&server).await;
+    let (_frontend_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
 
     let result = agent
         .call_tool(
@@ -495,9 +514,9 @@ async fn test_interrupt_session_stops_a_running_cell() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
     let session_id = start_session(&client, &python_cmd).await;
-    let (_frontend_id, mut agent) = agent_for(&server).await;
+    let (_frontend_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
 
-    let mut runner = McpAgent::new(agent.port(), agent.token());
+    let mut runner = agent.another();
     runner.initialize().await;
     let running_session = session_id.clone();
     let long_running = tokio::spawn(async move {
@@ -535,9 +554,9 @@ async fn test_evaluate_code_refuses_a_busy_session_unless_asked_to_wait() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
     let session_id = start_session(&client, &python_cmd).await;
-    let (_frontend_id, mut agent) = agent_for(&server).await;
+    let (_frontend_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
 
-    let mut runner = McpAgent::new(agent.port(), agent.token());
+    let mut runner = agent.another();
     runner.initialize().await;
     let running_session = session_id.clone();
     let long_running = tokio::spawn(async move {
@@ -583,12 +602,10 @@ async fn test_session_targeting_uses_the_foreground_session() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
     let first = start_session(&client, &python_cmd).await;
+    let (_frontend_id, window, mut agent) = agent_for(&server, &[&first]).await;
 
-    let frontend = server.register_mcp_frontend("Test Window", None).await;
-    let mut agent = McpAgent::new(frontend.port as u16, &frontend.token);
-    agent.initialize().await;
-
-    // One session and no frontend: the only session is unambiguous.
+    // One session and no foreground: the only session the window holds is
+    // unambiguous.
     let result = agent
         .call_tool("execute_code", json!({ "code": "'only one'" }))
         .await;
@@ -597,6 +614,10 @@ async fn test_session_targeting_uses_the_foreground_session() {
 
     // Two sessions and no foreground: refuse and say which are available.
     let second = start_session(&client, &python_cmd).await;
+    window.send(FrontendMessage::SessionsChanged(SessionsChanged {
+        session_ids: vec![first.clone(), second.clone()],
+    }));
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let result = agent
         .call_tool("execute_code", json!({ "code": "'ambiguous'" }))
         .await;
@@ -605,16 +626,10 @@ async fn test_session_targeting_uses_the_foreground_session() {
     let candidates = result.field("candidates").as_array().unwrap().clone();
     assert_eq!(candidates.len(), 2, "{:?}", result);
 
-    // Once a frontend names the foreground session, targeting resolves again.
-    let channel = SimulatedFrontend::connect(server.base_url(), &frontend.frontend_id).await;
-    channel.send(kcshared::mcp_frontend::FrontendMessage::Hello(
-        kcshared::mcp_frontend::FrontendHello {
-            positron_version: Some("2026.09.0".to_string()),
-            commands: vec![],
-            foreground_session_id: Some(second.clone()),
-            history_api_enabled: false,
-        },
-    ));
+    // Once the window names its foreground session, targeting resolves again.
+    window.send(FrontendMessage::ForegroundChanged(ForegroundChanged {
+        session_id: Some(second.clone()),
+    }));
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let result = agent
@@ -640,7 +655,7 @@ async fn test_session_targeting_uses_the_foreground_session() {
 #[tokio::test]
 async fn test_unknown_session_is_reported_not_guessed() {
     let server = TestServer::start().await;
-    let (_frontend_id, mut agent) = agent_for(&server).await;
+    let (_frontend_id, _window, mut agent) = agent_for(&server, &[]).await;
 
     let result = agent
         .call_tool(
@@ -658,7 +673,7 @@ async fn test_mcp_tool_calls_postpone_idle_shutdown() {
     // inactivity. A tool call inside that window has to reset the timer, or an
     // agent working against a closed Positron would lose its sessions.
     let mut server = TestServer::start_http_with_args(&["--idle-shutdown-hours", "0"]).await;
-    let (_frontend_id, mut agent) = agent_for(&server).await;
+    let (_frontend_id, _window, mut agent) = agent_for(&server, &[]).await;
 
     tokio::time::sleep(Duration::from_secs(20)).await;
     assert!(

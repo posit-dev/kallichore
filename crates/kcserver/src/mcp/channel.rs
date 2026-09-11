@@ -6,10 +6,11 @@
 //
 //
 
-//! Pumps the WebSocket that connects a registered frontend to the supervisor.
+//! Pumps the WebSocket that connects a Positron window to the supervisor.
 //!
-//! Reconnection replaces the channel: the last window to connect owns command
-//! brokering, matching how session WebSockets already behave.
+//! Several windows may share a frontend record, so channels accumulate rather
+//! than replacing each other; the registry brokers commands to whichever
+//! window the user last focused.
 
 use std::sync::Arc;
 
@@ -66,7 +67,10 @@ pub async fn run(
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<FrontendMessage>(&text) {
                             Ok(message) => {
-                                state.registry.handle_message(&frontend_id, message).await
+                                state
+                                    .registry
+                                    .handle_message(&frontend_id, generation, message)
+                                    .await
                             }
                             Err(e) => log::warn!(
                                 "MCP frontend '{}' sent an unreadable frame: {}",

@@ -53,7 +53,7 @@ pub struct AgentCommand {
 }
 
 /// The frontend's opening frame, sent immediately after the channel connects.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FrontendHello {
     /// The version of Positron hosting the frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,6 +63,11 @@ pub struct FrontendHello {
     #[serde(default)]
     pub commands: Vec<AgentCommand>,
 
+    /// The sessions this window holds. Agents reach only these, so that code
+    /// never runs somewhere the user cannot see it.
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+
     /// The session agents should target when they don't name one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_session_id: Option<String>,
@@ -70,6 +75,17 @@ pub struct FrontendHello {
     /// Whether the console history API is available in this window.
     #[serde(default)]
     pub history_api_enabled: bool,
+
+    /// Whether the window had focus when it connected.
+    #[serde(default)]
+    pub focused: bool,
+}
+
+/// A change to the set of sessions a window holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionsChanged {
+    /// The complete new set; replaces the cached one.
+    pub session_ids: Vec<String>,
 }
 
 /// A refreshed command catalog.
@@ -122,6 +138,13 @@ pub enum FrontendMessage {
 
     /// The foreground session has changed.
     ForegroundChanged(ForegroundChanged),
+
+    /// The set of sessions this window holds has changed.
+    SessionsChanged(SessionsChanged),
+
+    /// The window took focus. Several windows of one workspace may share a
+    /// frontend, and commands go to whichever of them the user last looked at.
+    Focused,
 
     /// A reply to a previously issued command request.
     CommandReply(CommandReply),

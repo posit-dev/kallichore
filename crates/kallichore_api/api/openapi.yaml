@@ -794,6 +794,11 @@ components:
         startup_environment_arg:
           description: The command or script to run before starting the session
           type: string
+        frontend_id:
+          description: "The MCP frontend creating the session, if the client has registered\
+            \ one. The session belongs to that frontend: agents reach it through that\
+            \ frontend's MCP endpoint and no other."
+          type: string
       required:
       - argv
       - continuation_prompt
@@ -1374,7 +1379,9 @@ components:
           description: The TCP port the MCP listener is bound to on 127.0.0.1
           type: integer
         url:
-          description: The full MCP endpoint URL agents should connect to
+          description: "The full MCP endpoint URL agents should connect to. Unique\
+            \ to this frontend, so an agent configured with it can only reach this\
+            \ frontend's window."
           type: string
       required:
       - frontend_id

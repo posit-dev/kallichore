@@ -2827,7 +2827,7 @@ pub struct McpFrontend {
     #[serde(rename = "port")]
     pub port: i32,
 
-    /// The full MCP endpoint URL agents should connect to
+    /// The full MCP endpoint URL agents should connect to. Unique to this frontend, so an agent configured with it can only reach this frontend's window.
     #[serde(rename = "url")]
     pub url: String,
 }
@@ -4017,6 +4017,11 @@ pub struct NewSession {
     #[serde(rename = "startup_environment_arg")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub startup_environment_arg: Option<String>,
+
+    /// The MCP frontend creating the session, if the client has registered one. The session belongs to that frontend: agents reach it through that frontend's MCP endpoint and no other.
+    #[serde(rename = "frontend_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend_id: Option<String>,
 }
 
 impl NewSession {
@@ -4052,6 +4057,7 @@ impl NewSession {
             protocol_version: Some("5.3".to_string()),
             startup_environment,
             startup_environment_arg: None,
+            frontend_id: None,
         }
     }
 }
@@ -4110,6 +4116,9 @@ impl std::fmt::Display for NewSession {
                     ]
                     .join(",")
                 }),
+            self.frontend_id
+                .as_ref()
+                .map(|frontend_id| ["frontend_id".to_string(), frontend_id.to_string()].join(",")),
         ];
 
         write!(
@@ -4147,6 +4156,7 @@ impl std::str::FromStr for NewSession {
             pub protocol_version: Vec<String>,
             pub startup_environment: Vec<models::StartupEnvironment>,
             pub startup_environment_arg: Vec<String>,
+            pub frontend_id: Vec<String>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -4239,6 +4249,10 @@ impl std::str::FromStr for NewSession {
                     "startup_environment_arg" => intermediate_rep.startup_environment_arg.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "frontend_id" => intermediate_rep.frontend_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing NewSession".to_string(),
@@ -4317,6 +4331,7 @@ impl std::str::FromStr for NewSession {
                 .next()
                 .ok_or_else(|| "startup_environment missing in NewSession".to_string())?,
             startup_environment_arg: intermediate_rep.startup_environment_arg.into_iter().next(),
+            frontend_id: intermediate_rep.frontend_id.into_iter().next(),
         })
     }
 }

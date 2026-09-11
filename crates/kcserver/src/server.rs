@@ -1355,6 +1355,7 @@ where
             connection_timeout: session.connection_timeout.clone(),
             protocol_version: session.protocol_version.clone(),
             notebook_uri: session.notebook_uri.clone(),
+            frontend_id: session.frontend_id.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
@@ -1376,6 +1377,14 @@ where
                 return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
             }
         };
+
+        if let Some(frontend_id) = kernel_session.model.frontend_id.as_deref() {
+            log::info!(
+                "Session '{}' belongs to MCP frontend '{}'",
+                new_session_id,
+                frontend_id
+            );
+        }
 
         let mut sessions = sessions.write().unwrap();
         sessions.push(kernel_session);
@@ -2004,10 +2013,12 @@ where
 
         Ok(RegisterMcpFrontendResponse::FrontendRegistered(
             models::McpFrontend {
+                // Each frontend has an endpoint of its own, so an agent holding
+                // one window's URL cannot end up talking to another's.
+                url: format!("http://127.0.0.1:{}/mcp/w/{}", port, frontend_id),
                 frontend_id,
                 token,
                 port: port as i32,
-                url: format!("http://127.0.0.1:{}/mcp", port),
             },
         ))
     }
@@ -2033,6 +2044,7 @@ where
         if !self.mcp.registry.deregister(&frontend_id).await {
             return Ok(DeregisterMcpFrontendResponse::FrontendNotFound);
         }
+        self.mcp.drop_service(&frontend_id).await;
         info!("MCP frontend '{}' deregistered", frontend_id);
 
         if self.mcp.registry.is_empty().await {

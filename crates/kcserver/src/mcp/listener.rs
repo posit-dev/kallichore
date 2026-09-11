@@ -11,6 +11,12 @@
 //! This is a separate TCP listener from the supervisor's main API transport,
 //! which defaults to a Unix socket or named pipe and must stay that way: agents
 //! speak plain HTTP over a URL.
+//!
+//! Every registered frontend has an endpoint of its own under `/mcp/w/`. The
+//! bearer token still decides which frontend a request belongs to; naming it in
+//! the path as well means an agent configured with one window's URL and another
+//! window's token is refused loudly instead of quietly working on the wrong
+//! window.
 
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -23,17 +29,18 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as HttpBuilder;
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::Service as _;
 
 use super::auth::{check_request, AuthRejection};
-use super::handler::PositronMcpHandler;
-use super::{FrontendId, McpState};
+use super::McpState;
 
-/// The path agents post JSON-RPC to.
+/// The path prefix under which each frontend's endpoint lives; the frontend ID
+/// follows.
+const MCP_PATH_PREFIX: &str = "/mcp/w/";
+
+/// The path rmcp's service expects to see once the frontend has been resolved.
 const MCP_PATH: &str = "/mcp";
 
 /// The response body type shared with rmcp's Streamable HTTP service.
@@ -65,16 +72,6 @@ pub async fn bind(preferred_port: Option<u16>) -> std::io::Result<(TcpListener, 
 
 /// Serve MCP requests on an already-bound listener until `cancel` fires.
 pub fn serve(listener: TcpListener, state: Arc<McpState>, cancel: CancellationToken) {
-    let handler_state = state.clone();
-    let mcp_service = StreamableHttpService::new(
-        move || Ok(PositronMcpHandler::new(handler_state.clone())),
-        Arc::new(LocalSessionManager::default()),
-        // Sessions are kept for pre-2026-07-28 clients. Those clients report
-        // who they are only in the initialize handshake, and the agent's name
-        // is what attributes executions in the user's console.
-        StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token()),
-    );
-
     tokio::spawn(async move {
         loop {
             let (stream, peer) = tokio::select! {
@@ -91,7 +88,6 @@ pub fn serve(listener: TcpListener, state: Arc<McpState>, cancel: CancellationTo
             let io = TokioIo::new(stream);
             let service = McpConnectionService {
                 state: state.clone(),
-                mcp: mcp_service.clone(),
             };
             let connection_cancel = cancel.clone();
             tokio::spawn(async move {
@@ -115,7 +111,6 @@ pub fn serve(listener: TcpListener, state: Arc<McpState>, cancel: CancellationTo
 #[derive(Clone)]
 struct McpConnectionService {
     state: Arc<McpState>,
-    mcp: StreamableHttpService<PositronMcpHandler, LocalSessionManager>,
 }
 
 impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
@@ -125,21 +120,27 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
 
     fn call(&self, request: Request<Incoming>) -> Self::Future {
         let state = self.state.clone();
-        let mut mcp = self.mcp.clone();
 
         Box::pin(async move {
             log::debug!("MCP {} {}", request.method(), request.uri().path());
 
-            if request.uri().path() != MCP_PATH {
+            let Some(addressed) = request
+                .uri()
+                .path()
+                .strip_prefix(MCP_PATH_PREFIX)
+                .map(|id| id.trim_end_matches('/'))
+                .filter(|id| !id.is_empty())
+            else {
                 log::warn!(
                     "Rejecting MCP request: no endpoint at {}",
                     request.uri().path()
                 );
                 return Ok(status_response(
                     StatusCode::NOT_FOUND,
-                    "Not found; the MCP endpoint is at /mcp",
+                    "Not found; a window's MCP endpoint is at /mcp/w/<frontend-id>",
                 ));
-            }
+            };
+            let addressed = addressed.to_string();
 
             let token = match check_request(request.headers()) {
                 Ok(token) => token.to_string(),
@@ -163,10 +164,36 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                 ));
             };
 
-            let mut request = request;
-            request.extensions_mut().insert(FrontendId(frontend_id));
+            if frontend_id != addressed {
+                log::warn!(
+                    "Rejecting MCP request for frontend '{}': the token belongs to '{}'",
+                    addressed,
+                    frontend_id
+                );
+                return Ok(status_response(
+                    StatusCode::FORBIDDEN,
+                    "This token belongs to a different Positron window. Use the URL and token \
+                     from the same window, which its integrated terminals publish as \
+                     POSITRON_MCP_URL and POSITRON_MCP_TOKEN.",
+                ));
+            }
 
-            match mcp.call(request).await {
+            let Some(mut service) = state.service_for(&frontend_id).await else {
+                log::warn!("Rejecting MCP request: the listener is shutting down");
+                return Ok(status_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The MCP server is shutting down",
+                ));
+            };
+
+            // rmcp serves one endpoint, so the frontend is addressed by the
+            // service handling the request rather than by the path.
+            let mut request = request;
+            let mut parts = request.uri().clone().into_parts();
+            parts.path_and_query = Some(MCP_PATH.parse().expect("MCP path is a valid path"));
+            *request.uri_mut() = hyper::Uri::from_parts(parts).expect("Rewritten MCP URI is valid");
+
+            match service.call(request).await {
                 Ok(response) => Ok(response),
                 Err(never) => match never {},
             }

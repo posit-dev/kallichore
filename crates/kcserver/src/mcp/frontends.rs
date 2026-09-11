@@ -9,11 +9,18 @@
 //! Tracks the Positron frontends registered with the MCP server.
 //!
 //! A frontend record owns the bearer token agents present, the cached command
-//! catalog, and the channel used to broker command requests. Records outlive
-//! the channel: when a window closes, the token and catalog stay valid so an
-//! agent in a terminal keeps working, and reconnecting reuses the record.
+//! catalog, the set of sessions the frontend holds, and the channels used to
+//! broker command requests. Records outlive their channels: when a window
+//! closes, the token, catalog, and session set stay valid so an agent in a
+//! terminal keeps working, and reconnecting reuses the record.
+//!
+//! A record represents one Positron *view* of a workspace, not one window.
+//! Positron stores the frontend ID in workspace-scoped state, and its session
+//! set is workspace-scoped too, so two windows onto the same workspace share a
+//! record and attach a channel each. Commands go to whichever of them the user
+//! last focused.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -24,24 +31,118 @@ use kcshared::mcp_frontend::{
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot, Notify, RwLock};
 
+/// One attached window's channel.
+struct FrontendChannel {
+    /// Identifies this channel for the lifetime of the record; handed back on
+    /// focus and teardown so a channel that has already been replaced cannot
+    /// disturb its successor.
+    generation: u64,
+
+    /// When the window behind this channel last took focus. The highest wins
+    /// command brokering.
+    focus_seq: u64,
+
+    tx: mpsc::UnboundedSender<ServerFrontendMessage>,
+}
+
+/// A command request waiting for an answer.
+struct Pending {
+    /// Kept so the request can be re-sent to another window if the one serving
+    /// it disconnects mid-flight.
+    request: CommandRequest,
+
+    /// The channel the request was handed to.
+    served_by: u64,
+
+    reply: oneshot::Sender<CommandReply>,
+}
+
 /// A registered frontend.
 struct Frontend {
     display_name: String,
     token: String,
     positron_version: Option<String>,
     commands: Vec<AgentCommand>,
+
+    /// The sessions this frontend says it holds. Sessions it created name it
+    /// as their owner and need no claim; this covers the rest, such as sessions
+    /// that were already running when the frontend registered.
+    session_ids: Vec<String>,
+
     foreground_session_id: Option<String>,
     disconnected_since: Option<DateTime<Utc>>,
-    /// Incremented on every connect, so a channel that has been replaced can
-    /// tell that its own teardown must not clear the new one's state.
-    channel_generation: u64,
-    channel_tx: Option<mpsc::UnboundedSender<ServerFrontendMessage>>,
-    pending: HashMap<String, oneshot::Sender<CommandReply>>,
+    next_generation: u64,
+    next_focus_seq: u64,
+    channels: Vec<FrontendChannel>,
+    pending: HashMap<String, Pending>,
 }
 
 impl Frontend {
     fn connected(&self) -> bool {
-        self.channel_tx.is_some()
+        !self.channels.is_empty()
+    }
+
+    /// The channel commands should go to: the window the user last focused, or
+    /// the most recently attached if none has ever reported focus.
+    fn primary(&self) -> Option<usize> {
+        self.channels
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, channel)| channel.focus_seq)
+            .map(|(index, _)| index)
+    }
+
+    /// Attach a channel and return its generation.
+    ///
+    /// A new channel starts unfocused, and says in its `hello` whether its
+    /// window has focus. Connecting must not be enough to take command
+    /// brokering, or a background window reloading would pull an agent's IDE
+    /// commands away from the window the user is working in.
+    fn attach(&mut self, tx: mpsc::UnboundedSender<ServerFrontendMessage>) -> u64 {
+        self.next_generation += 1;
+        self.channels.push(FrontendChannel {
+            generation: self.next_generation,
+            focus_seq: 0,
+            tx,
+        });
+        self.disconnected_since = None;
+        self.next_generation
+    }
+
+    /// Make a channel's window the one commands go to.
+    fn focus(&mut self, generation: u64) {
+        let focus_seq = self.take_focus_seq();
+        if let Some(channel) = self
+            .channels
+            .iter_mut()
+            .find(|channel| channel.generation == generation)
+        {
+            channel.focus_seq = focus_seq;
+        }
+    }
+
+    fn take_focus_seq(&mut self) -> u64 {
+        self.next_focus_seq += 1;
+        self.next_focus_seq
+    }
+
+    /// Hand a request to the window commands should go to, discarding channels
+    /// that have died since we last heard from them.
+    ///
+    /// Returns the generation of the channel that took it.
+    fn dispatch(&mut self, request: &CommandRequest) -> Option<u64> {
+        loop {
+            let index = self.primary()?;
+            let channel = &self.channels[index];
+            if channel
+                .tx
+                .send(ServerFrontendMessage::CommandRequest(request.clone()))
+                .is_ok()
+            {
+                return Some(channel.generation);
+            }
+            self.channels.remove(index);
+        }
     }
 }
 
@@ -62,7 +163,7 @@ pub enum CommandOutcome {
 
     /// No frontend channel connected within the wait.
     Disconnected {
-        /// When the frontend's channel dropped, if it was ever connected.
+        /// When the frontend's last channel dropped, if it was ever connected.
         since: Option<DateTime<Utc>>,
     },
 
@@ -109,10 +210,12 @@ impl FrontendRegistry {
                 token: token.clone(),
                 positron_version: None,
                 commands: Vec::new(),
+                session_ids: Vec::new(),
                 foreground_session_id: None,
                 disconnected_since: None,
-                channel_generation: 0,
-                channel_tx: None,
+                next_generation: 0,
+                next_focus_seq: 0,
+                channels: Vec::new(),
                 pending: HashMap::new(),
             },
         );
@@ -137,6 +240,13 @@ impl FrontendRegistry {
         self.frontends.read().await.contains_key(frontend_id)
     }
 
+    /// The IDs of every registered frontend. A session whose owner is not among
+    /// them belongs to a window that has gone for good, so it is up for
+    /// adoption.
+    pub async fn registered_ids(&self) -> HashSet<String> {
+        self.frontends.read().await.keys().cloned().collect()
+    }
+
     /// Find the frontend a bearer token belongs to.
     ///
     /// Tokens are compared in constant time so a caller cannot learn a valid
@@ -152,10 +262,11 @@ impl FrontendRegistry {
         found
     }
 
-    /// Attach a newly connected channel, replacing any existing one.
+    /// Attach a newly connected channel.
     ///
     /// Returns the channel's generation, which must be handed back to
-    /// `detach_channel`, or None if the frontend is not registered.
+    /// `handle_message` and `detach_channel`, or None if the frontend is not
+    /// registered.
     pub async fn attach_channel(
         &self,
         frontend_id: &str,
@@ -163,35 +274,63 @@ impl FrontendRegistry {
     ) -> Option<u64> {
         let generation = {
             let mut frontends = self.frontends.write().await;
-            let frontend = frontends.get_mut(frontend_id)?;
-            frontend.channel_generation += 1;
-            frontend.channel_tx = Some(channel_tx);
-            frontend.disconnected_since = None;
-            frontend.channel_generation
+            frontends.get_mut(frontend_id)?.attach(channel_tx)
         };
         self.connected.notify_waiters();
         Some(generation)
     }
 
-    /// Detach a channel that has closed. Pending command requests are failed
-    /// immediately rather than left to time out.
+    /// Detach a channel that has closed.
     ///
-    /// Does nothing if a newer channel has since taken over.
+    /// Requests the departing window was serving move to another attached
+    /// window, if there is one; otherwise they fail immediately rather than
+    /// being left to time out.
     pub async fn detach_channel(&self, frontend_id: &str, generation: u64) {
         let mut frontends = self.frontends.write().await;
         let Some(frontend) = frontends.get_mut(frontend_id) else {
             return;
         };
-        if frontend.channel_generation != generation {
-            return;
+        frontend
+            .channels
+            .retain(|channel| channel.generation != generation);
+
+        let orphaned: Vec<String> = frontend
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.served_by == generation)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in orphaned {
+            let Some(pending) = frontend.pending.remove(&id) else {
+                continue;
+            };
+            // A request the departing window was serving moves to a sibling.
+            // When there is none, dropping the reply sender resolves the
+            // caller's wait, which then reports the frontend as disconnected.
+            if let Some(served_by) = frontend.dispatch(&pending.request) {
+                frontend.pending.insert(
+                    id,
+                    Pending {
+                        served_by,
+                        ..pending
+                    },
+                );
+            }
         }
-        frontend.channel_tx = None;
-        frontend.disconnected_since = Some(Utc::now());
-        frontend.pending.clear();
+
+        if !frontend.connected() {
+            frontend.disconnected_since = Some(Utc::now());
+            frontend.pending.clear();
+        }
     }
 
-    /// Apply a message received from a frontend.
-    pub async fn handle_message(&self, frontend_id: &str, message: FrontendMessage) {
+    /// Apply a message received from a frontend over the given channel.
+    pub async fn handle_message(
+        &self,
+        frontend_id: &str,
+        generation: u64,
+        message: FrontendMessage,
+    ) {
         let mut frontends = self.frontends.write().await;
         let Some(frontend) = frontends.get_mut(frontend_id) else {
             return;
@@ -199,14 +338,19 @@ impl FrontendRegistry {
         match message {
             FrontendMessage::Hello(hello) => {
                 log::info!(
-                    "MCP frontend '{}' ({}) connected with {} command(s)",
+                    "MCP frontend '{}' ({}) connected with {} command(s) and {} session(s)",
                     frontend_id,
                     hello.positron_version.as_deref().unwrap_or("unknown"),
-                    hello.commands.len()
+                    hello.commands.len(),
+                    hello.session_ids.len()
                 );
                 frontend.positron_version = hello.positron_version;
                 frontend.commands = hello.commands;
+                frontend.session_ids = hello.session_ids;
                 frontend.foreground_session_id = hello.foreground_session_id;
+                if hello.focused {
+                    frontend.focus(generation);
+                }
             }
             FrontendMessage::CommandsChanged(changed) => {
                 log::info!(
@@ -219,9 +363,18 @@ impl FrontendRegistry {
             FrontendMessage::ForegroundChanged(changed) => {
                 frontend.foreground_session_id = changed.session_id;
             }
+            FrontendMessage::SessionsChanged(changed) => {
+                log::debug!(
+                    "MCP frontend '{}' now holds {} session(s)",
+                    frontend_id,
+                    changed.session_ids.len()
+                );
+                frontend.session_ids = changed.session_ids;
+            }
+            FrontendMessage::Focused => frontend.focus(generation),
             FrontendMessage::CommandReply(reply) => match frontend.pending.remove(&reply.id) {
-                Some(sender) => {
-                    let _ = sender.send(reply);
+                Some(pending) => {
+                    let _ = pending.reply.send(reply);
                 }
                 None => log::debug!(
                     "MCP frontend '{}' replied to unknown command request '{}'",
@@ -243,6 +396,16 @@ impl FrontendRegistry {
             .unwrap_or_default()
     }
 
+    /// The sessions a frontend says it holds, beyond those it created.
+    pub async fn session_ids(&self, frontend_id: &str) -> Vec<String> {
+        self.frontends
+            .read()
+            .await
+            .get(frontend_id)
+            .map(|f| f.session_ids.clone())
+            .unwrap_or_default()
+    }
+
     /// The session a frontend last reported as foreground.
     pub async fn foreground_session(&self, frontend_id: &str) -> Option<String> {
         self.frontends
@@ -252,12 +415,22 @@ impl FrontendRegistry {
             .and_then(|f| f.foreground_session_id.clone())
     }
 
-    /// Whether a frontend's channel is connected, and if not, when it dropped.
+    /// Whether any of a frontend's windows is connected, and if not, when the
+    /// last one dropped.
     pub async fn connection_state(&self, frontend_id: &str) -> (bool, Option<DateTime<Utc>>) {
         match self.frontends.read().await.get(frontend_id) {
             Some(frontend) => (frontend.connected(), frontend.disconnected_since),
             None => (false, None),
         }
+    }
+
+    /// The name a frontend registered itself under, normally its workspace.
+    pub async fn display_name(&self, frontend_id: &str) -> Option<String> {
+        self.frontends
+            .read()
+            .await
+            .get(frontend_id)
+            .map(|f| f.display_name.clone())
     }
 
     /// The version of Positron hosting a frontend, if it has said hello.
@@ -300,8 +473,8 @@ impl FrontendRegistry {
 
         match tokio::time::timeout(reply_wait, receiver).await {
             Ok(Ok(reply)) => CommandOutcome::Replied(reply),
-            // The sender was dropped, which happens when the channel detaches
-            // while the request is in flight.
+            // The sender was dropped, which happens when the last window
+            // detaches while the request is in flight.
             Ok(Err(_)) => {
                 let (_, since) = self.connection_state(frontend_id).await;
                 CommandOutcome::Disconnected { since }
@@ -313,7 +486,7 @@ impl FrontendRegistry {
         }
     }
 
-    /// Try to hand a command request to a connected frontend.
+    /// Try to hand a command request to one of a frontend's windows.
     ///
     /// Returns `Ok(None)` when the frontend is registered but not connected.
     async fn enqueue(
@@ -325,21 +498,20 @@ impl FrontendRegistry {
         let Some(frontend) = frontends.get_mut(frontend_id) else {
             return Err(CommandOutcome::UnknownFrontend);
         };
-        let Some(channel_tx) = frontend.channel_tx.clone() else {
+        let Some(served_by) = frontend.dispatch(request) else {
+            frontend.disconnected_since.get_or_insert_with(Utc::now);
             return Ok(None);
         };
 
         let (tx, rx) = oneshot::channel();
-        frontend.pending.insert(request.id.clone(), tx);
-        if channel_tx
-            .send(ServerFrontendMessage::CommandRequest(request.clone()))
-            .is_err()
-        {
-            frontend.pending.remove(&request.id);
-            frontend.channel_tx = None;
-            frontend.disconnected_since = Some(Utc::now());
-            return Ok(None);
-        }
+        frontend.pending.insert(
+            request.id.clone(),
+            Pending {
+                request: request.clone(),
+                served_by,
+                reply: tx,
+            },
+        );
         Ok(Some(rx))
     }
 
@@ -388,6 +560,62 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kcshared::mcp_frontend::{AgentIdentity, FrontendHello, SessionsChanged};
+
+    fn registration(display_name: &str) -> models::McpFrontendRegistration {
+        models::McpFrontendRegistration::new(display_name.to_string())
+    }
+
+    fn request(id: &str) -> CommandRequest {
+        CommandRequest {
+            id: id.to_string(),
+            command_id: "workbench.action.files.newFile".to_string(),
+            args: Vec::new(),
+            agent: AgentIdentity {
+                name: None,
+                version: None,
+            },
+            deadline_ms: 1000,
+        }
+    }
+
+    /// Attach a channel, returning its generation and receiving end.
+    async fn attach(
+        registry: &FrontendRegistry,
+        frontend_id: &str,
+    ) -> (u64, mpsc::UnboundedReceiver<ServerFrontendMessage>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let generation = registry.attach_channel(frontend_id, tx).await.unwrap();
+        (generation, rx)
+    }
+
+    /// Hand a request to the registry, expecting it to reach a window.
+    async fn enqueue(
+        registry: &FrontendRegistry,
+        frontend_id: &str,
+        request_id: &str,
+    ) -> oneshot::Receiver<CommandReply> {
+        match registry.enqueue(frontend_id, &request(request_id)).await {
+            Ok(Some(receiver)) => receiver,
+            _ => panic!("request '{}' was not accepted", request_id),
+        }
+    }
+
+    fn sent_request_id(message: ServerFrontendMessage) -> String {
+        match message {
+            ServerFrontendMessage::CommandRequest(request) => request.id,
+        }
+    }
+
+    fn reply(id: &str) -> FrontendMessage {
+        FrontendMessage::CommandReply(CommandReply {
+            id: id.to_string(),
+            ok: true,
+            result: None,
+            reason: None,
+            message: None,
+        })
+    }
 
     #[test]
     fn constant_time_eq_matches_equality() {
@@ -400,7 +628,7 @@ mod tests {
     #[tokio::test]
     async fn re_registration_preserves_the_token() {
         let registry = FrontendRegistry::new();
-        let mut registration = models::McpFrontendRegistration::new("Window 1".to_string());
+        let mut registration = registration("Window 1");
         let (id, token) = registry.register(&registration).await;
 
         registration.frontend_id = Some(id.clone());
@@ -415,12 +643,111 @@ mod tests {
     #[tokio::test]
     async fn deregistration_invalidates_the_token() {
         let registry = FrontendRegistry::new();
-        let registration = models::McpFrontendRegistration::new("Window 1".to_string());
-        let (id, token) = registry.register(&registration).await;
+        let (id, token) = registry.register(&registration("Window 1")).await;
 
         assert!(registry.deregister(&id).await);
         assert!(registry.frontend_for_token(&token).await.is_none());
         assert!(registry.is_empty().await);
         assert!(!registry.deregister(&id).await);
+    }
+
+    #[tokio::test]
+    async fn the_session_claim_outlives_the_window() {
+        let registry = FrontendRegistry::new();
+        let (id, _) = registry.register(&registration("Window 1")).await;
+        let (generation, _channel) = attach(&registry, &id).await;
+
+        registry
+            .handle_message(
+                &id,
+                generation,
+                FrontendMessage::Hello(FrontendHello {
+                    positron_version: Some("2026.10.0".to_string()),
+                    commands: Vec::new(),
+                    session_ids: vec!["python-1".to_string()],
+                    foreground_session_id: Some("python-1".to_string()),
+                    history_api_enabled: false,
+                    focused: true,
+                }),
+            )
+            .await;
+        assert_eq!(
+            registry.session_ids(&id).await,
+            vec!["python-1".to_string()]
+        );
+
+        registry
+            .handle_message(
+                &id,
+                generation,
+                FrontendMessage::SessionsChanged(SessionsChanged {
+                    session_ids: vec!["python-1".to_string(), "r-1".to_string()],
+                }),
+            )
+            .await;
+        assert_eq!(registry.session_ids(&id).await.len(), 2);
+
+        // The claim survives the window going away, so an agent in a terminal
+        // that outlived it keeps reaching the same sessions.
+        registry.detach_channel(&id, generation).await;
+        assert_eq!(registry.session_ids(&id).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn commands_go_to_the_window_the_user_last_focused() {
+        let registry = FrontendRegistry::new();
+        let (id, _) = registry.register(&registration("Shared workspace")).await;
+        let (first_generation, mut first) = attach(&registry, &id).await;
+        let (_, mut second) = attach(&registry, &id).await;
+
+        // Until a window reports focus, the most recent one serves.
+        enqueue(&registry, &id, "a").await;
+        assert_eq!(sent_request_id(second.recv().await.unwrap()), "a");
+
+        registry
+            .handle_message(&id, first_generation, FrontendMessage::Focused)
+            .await;
+        enqueue(&registry, &id, "b").await;
+        assert_eq!(sent_request_id(first.recv().await.unwrap()), "b");
+        assert!(second.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_departing_window_hands_its_request_to_a_sibling() {
+        let registry = FrontendRegistry::new();
+        let (id, _) = registry.register(&registration("Shared workspace")).await;
+        let (first_generation, mut first) = attach(&registry, &id).await;
+        let (second_generation, mut second) = attach(&registry, &id).await;
+
+        // Focus the first window so it takes the request, then close it.
+        registry
+            .handle_message(&id, first_generation, FrontendMessage::Focused)
+            .await;
+        let receiver = enqueue(&registry, &id, "a").await;
+        assert_eq!(sent_request_id(first.recv().await.unwrap()), "a");
+
+        registry.detach_channel(&id, first_generation).await;
+        assert_eq!(sent_request_id(second.recv().await.unwrap()), "a");
+
+        registry
+            .handle_message(&id, second_generation, reply("a"))
+            .await;
+        assert!(receiver.await.unwrap().ok);
+    }
+
+    #[tokio::test]
+    async fn the_last_window_leaving_fails_pending_requests() {
+        let registry = FrontendRegistry::new();
+        let (id, _) = registry.register(&registration("Window 1")).await;
+        let (generation, mut channel) = attach(&registry, &id).await;
+
+        let receiver = enqueue(&registry, &id, "a").await;
+        assert_eq!(sent_request_id(channel.recv().await.unwrap()), "a");
+
+        registry.detach_channel(&id, generation).await;
+        assert!(receiver.await.is_err());
+        let (connected, since) = registry.connection_state(&id).await;
+        assert!(!connected);
+        assert!(since.is_some());
     }
 }

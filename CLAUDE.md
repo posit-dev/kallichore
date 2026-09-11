@@ -187,14 +187,27 @@ separate from the main API transport, because agents need a URL.
 
 - The listener starts when the first Positron frontend registers (`POST /mcp/frontends`) and stops
   when the last one deregisters. No port is open unless someone asked for it.
-- Each frontend gets its own bearer token, distinct from the supervisor API token and scoped to
-  that window's sessions and commands. Requests must present it, and must carry a loopback `Host`
-  and `Origin`.
+- One supervisor can be shared by every window of a Positron server, so each registered frontend
+  gets an endpoint of its own at `/mcp/w/<frontend_id>` with its own bearer token, distinct from
+  the supervisor API token. Requests must present the token belonging to the endpoint they address,
+  and must carry a loopback `Host` and `Origin`. A token presented at another frontend's endpoint
+  is refused, so an agent holding a stale configuration fails loudly rather than driving the wrong
+  window.
+- Every tool is scoped to the frontend whose endpoint it arrived on. A session belongs to the
+  frontend that created it, named in `frontend_id` on `POST /sessions`, so ownership is settled
+  without Positron being connected. A frontend also reaches sessions it reports holding over its
+  channel (`session_ids` in `hello`, then `sessions_changed`) as long as no other registered
+  frontend owns them; that covers sessions that were already running when MCP was turned on.
+  Naming another window's session returns `SESSION_NOT_VISIBLE`. Both the ownership and the claim
+  outlive the window going away.
 - Kernel tools (`list_sessions`, `execute_code`, `evaluate_code`, `interrupt_session`) are answered
   inside `kcserver` and keep working when Positron is disconnected.
 - Command tools (`list_positron_commands`, `run_positron_command`) are brokered to the frontend
   over `GET /mcp/frontends/{id}/channel`, a WebSocket that works on all three transports. The
-  command catalog is cached, so searching works while disconnected; running does not.
+  command catalog is cached, so searching works while disconnected; running does not. Positron
+  keeps the frontend ID in workspace-scoped state, so two windows onto one workspace share a
+  frontend record and attach a channel each; commands go to whichever of them reported focus last,
+  and move to a sibling if that window disappears mid-request.
 - Agent executions go through the same execution queue and WebSocket mirror as Positron's own, and
   are preceded by a `KernelMessage::ExecutionRequested` event naming the agent. That event buffers
   while no client is connected, so a window that reopens learns who ran the code it is seeing.

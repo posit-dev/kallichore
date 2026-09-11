@@ -62,6 +62,7 @@ pub fn create_test_session(session_id: String, python_cmd: &str) -> NewSession {
         input_prompt: "In [{}]: ".to_string(),
         continuation_prompt: "   ...: ".to_string(),
         notebook_uri: None,
+        frontend_id: None,
         session_mode: SessionMode::Console,
         argv: vec![
             python_cmd.to_string(),

@@ -131,6 +131,10 @@ impl ToolCall {
 /// An external agent talking to the MCP server.
 pub struct McpAgent {
     port: u16,
+
+    /// The frontend's endpoint, which names the window in its path.
+    path: String,
+
     token: String,
     name: String,
     version: String,
@@ -139,13 +143,28 @@ pub struct McpAgent {
 }
 
 impl McpAgent {
-    /// Create an agent that will present the given bearer token.
-    pub fn new(port: u16, token: &str) -> Self {
+    /// Create an agent talking to one frontend's endpoint with its token.
+    pub fn new(port: u16, frontend_id: &str, token: &str) -> Self {
         Self {
             port,
+            path: format!("/mcp/w/{}", frontend_id),
             token: token.to_string(),
             name: "test-agent".to_string(),
             version: "1.2.3".to_string(),
+            session_id: None,
+            next_id: 0,
+        }
+    }
+
+    /// A second agent on the same endpoint, as a second terminal in the same
+    /// window would be.
+    pub fn another(&self) -> Self {
+        Self {
+            port: self.port,
+            path: self.path.clone(),
+            token: self.token.clone(),
+            name: self.name.clone(),
+            version: self.version.clone(),
             session_id: None,
             next_id: 0,
         }
@@ -165,6 +184,11 @@ impl McpAgent {
     /// The bearer token this agent presents.
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    /// The path of the endpoint this agent posts to.
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
     /// Complete the MCP handshake, returning the `initialize` result.
@@ -254,13 +278,13 @@ impl McpAgent {
             "method": method,
             "params": params,
         });
-        post(self.port, "/mcp", &self.headers(), &body.to_string()).await
+        post(self.port, &self.path, &self.headers(), &body.to_string()).await
     }
 
     /// Send a JSON-RPC notification, which expects no response body.
     async fn notify(&self, method: &str, params: Value) {
         let body = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        post(self.port, "/mcp", &self.headers(), &body.to_string()).await;
+        post(self.port, &self.path, &self.headers(), &body.to_string()).await;
     }
 
     /// The headers every request carries.

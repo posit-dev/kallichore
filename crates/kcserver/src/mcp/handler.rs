@@ -14,6 +14,12 @@
 //! `run_positron_command`) are brokered to the frontend that owns the calling
 //! agent's token; listing works from the cache while disconnected, running
 //! does not.
+//!
+//! Every tool is scoped to one frontend: a handler is built per frontend
+//! endpoint, and it sees only the sessions belonging to that frontend's
+//! window. A supervisor shared by several Positron windows therefore looks to
+//! each agent like the window it was launched from, and code can never run
+//! somewhere the user is not looking.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +39,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::frontends::CommandOutcome;
-use super::{FrontendId, McpState};
+use super::McpState;
 use crate::kernel_session::{ExecuteError, ExecuteOptions, KernelSession};
 
 /// The most text one tool result may carry. Beyond this the result is trimmed
@@ -57,10 +63,12 @@ const FRONTEND_REPLY_WAIT: Duration = Duration::from_secs(45);
 /// Guidance sent to the agent when it connects. Kept short: it is delivered
 /// once and clients truncate long instruction blocks.
 const INSTRUCTIONS: &str = "\
-You are attached to the user's live Positron session. Prefer execute_code and \
-evaluate_code over shelling out to Rscript or python: the user's session has \
-their data, packages, and working directory already loaded. Call list_sessions \
-first to see what is running and which session is in the foreground.
+You are attached to one Positron window's live sessions: the window whose \
+terminal you were launched from. Other windows sharing this supervisor are \
+invisible to you, which is deliberate. Prefer execute_code and evaluate_code \
+over shelling out to Rscript or python: the user's session has their data, \
+packages, and working directory already loaded. Call list_sessions first to see \
+what is running and which session is in the foreground.
 
 Everything you run is visible in the user's console, attributed to you. Use \
 evaluate_code for inspection: it does not enter the session's history or \
@@ -74,10 +82,14 @@ changing settings), call list_positron_commands to find a command, then \
 run_positron_command. These need Positron connected; the kernel tools do not. \
 No tool ever starts an interpreter on its own.";
 
-/// Serves MCP tool calls against one supervisor.
+/// Serves MCP tool calls for one registered frontend.
 #[derive(Clone)]
 pub struct PositronMcpHandler {
     state: Arc<McpState>,
+
+    /// The window every call is answered for. Fixed when the handler is built,
+    /// so no tool can reach another window by mistake.
+    frontend_id: String,
 }
 
 /// Arguments accepted by `execute_code` and `evaluate_code`.
@@ -141,29 +153,33 @@ pub struct NoParams {}
 
 #[tool_router]
 impl PositronMcpHandler {
-    /// Create a handler over the given supervisor state.
-    pub fn new(state: Arc<McpState>) -> Self {
-        Self { state }
+    /// Create a handler answering for one frontend.
+    pub fn new(state: Arc<McpState>, frontend_id: String) -> Self {
+        Self { state, frontend_id }
     }
 
     #[tool(
         name = "list_sessions",
-        description = "List the interpreter sessions running in the user's Positron supervisor, \
-                       with their language, status, working directory, and which one is in the \
-                       foreground. Call this before running code so you target the right session. \
-                       Never starts a session.",
+        description = "List the interpreter sessions running in the Positron window you are \
+                       attached to, with their language, status, working directory, and which one \
+                       is in the foreground. Call this before running code so you target the \
+                       right session. Sessions belonging to the user's other windows are not \
+                       listed and cannot be reached. Never starts a session.",
         annotations(title = "List sessions", read_only_hint = true)
     )]
     async fn list_sessions(
         &self,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
         _params: Parameters<NoParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let frontend_id = self.frontend_id(&context)?;
         self.state.note_request();
 
-        let foreground = self.state.registry.foreground_session(&frontend_id).await;
-        let sessions = self.state.sessions();
+        let foreground = self
+            .state
+            .registry
+            .foreground_session(&self.frontend_id)
+            .await;
+        let (sessions, elsewhere) = self.visible_sessions().await;
 
         let mut entries = Vec::with_capacity(sessions.len());
         for session in sessions.iter() {
@@ -180,8 +196,17 @@ impl PositronMcpHandler {
             }));
         }
 
-        let body = json!({ "sessions": entries });
-        Ok(self.finish(body, Vec::new(), &frontend_id).await)
+        let mut body = json!({
+            "sessions": entries,
+            "window": self.window().await,
+        });
+        // Say that other windows exist without naming their sessions: an agent
+        // told "there should be a session" needs a true answer, and the user's
+        // other projects are none of its business.
+        if elsewhere > 0 {
+            body["sessions_in_other_windows"] = json!(elsewhere);
+        }
+        Ok(self.finish(body, Vec::new()).await)
     }
 
     #[tool(
@@ -237,22 +262,21 @@ impl PositronMcpHandler {
     )]
     async fn interrupt_session(
         &self,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
         Parameters(params): Parameters<InterruptSessionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let frontend_id = self.frontend_id(&context)?;
         self.state.note_request();
 
-        let session = match self.resolve_session(&frontend_id, params.session_id).await {
+        let session = match self.resolve_session(params.session_id).await {
             Ok(session) => session,
-            Err(body) => return Ok(self.error(body, &frontend_id).await),
+            Err(body) => return Ok(self.error(body).await),
         };
         let session_id = session.connection.session_id.clone();
 
         match session.interrupt().await {
             Ok(_) => {
                 let body = json!({ "status": "ok", "session_id": session_id });
-                Ok(self.finish(body, Vec::new(), &frontend_id).await)
+                Ok(self.finish(body, Vec::new()).await)
             }
             Err(e) => {
                 let body = json!({
@@ -261,7 +285,7 @@ impl PositronMcpHandler {
                     "session_id": session_id,
                     "message": e.to_string(),
                 });
-                Ok(self.error(body, &frontend_id).await)
+                Ok(self.error(body).await)
             }
         }
     }
@@ -277,13 +301,12 @@ impl PositronMcpHandler {
     )]
     async fn list_positron_commands(
         &self,
-        context: RequestContext<RoleServer>,
+        _context: RequestContext<RoleServer>,
         Parameters(params): Parameters<ListCommandsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let frontend_id = self.frontend_id(&context)?;
         self.state.note_request();
 
-        let catalog = self.state.registry.commands(&frontend_id).await;
+        let catalog = self.state.registry.commands(&self.frontend_id).await;
         let total = catalog.len();
         let matched: Vec<&AgentCommand> = match params.query.as_deref() {
             Some(query) if !query.trim().is_empty() => catalog
@@ -319,7 +342,7 @@ impl PositronMcpHandler {
             "total": total,
             "truncated": commands.len() < returned,
         });
-        Ok(self.finish(body, Vec::new(), &frontend_id).await)
+        Ok(self.finish(body, Vec::new()).await)
     }
 
     #[tool(
@@ -335,7 +358,6 @@ impl PositronMcpHandler {
         context: RequestContext<RoleServer>,
         Parameters(params): Parameters<RunCommandParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let frontend_id = self.frontend_id(&context)?;
         self.state.note_request();
 
         let request = CommandRequest {
@@ -349,7 +371,7 @@ impl PositronMcpHandler {
         log::info!(
             "MCP run_positron_command '{}' on frontend '{}'",
             params.command_id,
-            frontend_id
+            self.frontend_id
         );
 
         let started = std::time::Instant::now();
@@ -357,7 +379,7 @@ impl PositronMcpHandler {
             .state
             .registry
             .run_command(
-                &frontend_id,
+                &self.frontend_id,
                 request,
                 FRONTEND_CONNECT_WAIT,
                 FRONTEND_REPLY_WAIT,
@@ -425,9 +447,9 @@ impl PositronMcpHandler {
         };
 
         Ok(if is_error {
-            self.error(body, &frontend_id).await
+            self.error(body).await
         } else {
-            self.finish(body, Vec::new(), &frontend_id).await
+            self.finish(body, Vec::new()).await
         })
     }
 }
@@ -446,7 +468,6 @@ impl PositronMcpHandler {
         params: ExecuteCodeParams,
         inspecting: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let frontend_id = self.frontend_id(&context)?;
         self.state.note_request();
 
         let tool = if inspecting {
@@ -454,9 +475,9 @@ impl PositronMcpHandler {
         } else {
             "execute_code"
         };
-        let session = match self.resolve_session(&frontend_id, params.session_id).await {
+        let session = match self.resolve_session(params.session_id).await {
             Ok(session) => session,
-            Err(body) => return Ok(self.error(body, &frontend_id).await),
+            Err(body) => return Ok(self.error(body).await),
         };
         let session_id = session.connection.session_id.clone();
 
@@ -472,7 +493,7 @@ impl PositronMcpHandler {
                     "message": "The session is busy. Pass wait=true to queue behind the running \
                                 code, or use execute_code, which always queues.",
                 });
-                return Ok(self.error(body, &frontend_id).await);
+                return Ok(self.error(body).await);
             }
         }
 
@@ -500,7 +521,7 @@ impl PositronMcpHandler {
                 source: "agent".to_string(),
                 agent_name: agent.name.clone(),
                 agent_version: agent.version.clone(),
-                frontend_id: frontend_id.clone(),
+                frontend_id: self.frontend_id.clone(),
                 tool: tool.to_string(),
             }),
         };
@@ -553,11 +574,11 @@ impl PositronMcpHandler {
         }
 
         Ok(if is_error {
-            let mut result = self.error(body, &frontend_id).await;
+            let mut result = self.error(body).await;
             result.content.extend(images);
             result
         } else {
-            self.finish(body, images, &frontend_id).await
+            self.finish(body, images).await
         })
     }
 
@@ -565,28 +586,50 @@ impl PositronMcpHandler {
     ///
     /// An explicit ID wins; otherwise the foreground session the frontend
     /// reported; otherwise the only session, if there is exactly one. Sessions
-    /// are never started implicitly.
-    async fn resolve_session(
-        &self,
-        frontend_id: &str,
-        requested: Option<String>,
-    ) -> Result<KernelSession, Value> {
-        let sessions = self.state.sessions();
+    /// are never started implicitly, and only the calling frontend's own
+    /// sessions are ever candidates.
+    async fn resolve_session(&self, requested: Option<String>) -> Result<KernelSession, Value> {
+        let (sessions, elsewhere) = self.visible_sessions().await;
 
         if let Some(session_id) = requested {
-            return sessions
+            if let Some(session) = sessions
                 .into_iter()
                 .find(|s| s.connection.session_id == session_id)
-                .ok_or_else(|| {
-                    json!({
-                        "status": "error",
-                        "code": "SESSION_NOT_FOUND",
-                        "message": format!("No session with ID '{}'", session_id),
-                    })
-                });
+            {
+                return Ok(session);
+            }
+            // Tell an agent that named another window's session why it can't
+            // have it, so it stops rather than retrying the same ID.
+            let exists = self
+                .state
+                .sessions()
+                .iter()
+                .any(|s| s.connection.session_id == session_id);
+            return Err(if exists {
+                json!({
+                    "status": "error",
+                    "code": "SESSION_NOT_VISIBLE",
+                    "message": format!(
+                        "Session '{}' belongs to one of the user's other Positron windows. You \
+                         can only reach the sessions of the window you were launched from.",
+                        session_id
+                    ),
+                })
+            } else {
+                json!({
+                    "status": "error",
+                    "code": "SESSION_NOT_FOUND",
+                    "message": format!("No session with ID '{}'", session_id),
+                })
+            });
         }
 
-        if let Some(foreground) = self.state.registry.foreground_session(frontend_id).await {
+        if let Some(foreground) = self
+            .state
+            .registry
+            .foreground_session(&self.frontend_id)
+            .await
+        {
             if let Some(session) = sessions
                 .iter()
                 .find(|s| s.connection.session_id == foreground)
@@ -600,9 +643,15 @@ impl PositronMcpHandler {
             0 => Err(json!({
                 "status": "error",
                 "code": "NO_SESSION_SELECTED",
-                "message": "No interpreter sessions are running. Start one with \
-                            run_positron_command using \
-                            workbench.action.language.runtime.startNewConsoleSession.",
+                "message": if elsewhere > 0 {
+                    "This Positron window has no interpreter sessions running; the ones in the \
+                     user's other windows are not yours to use. Start one with \
+                     run_positron_command using \
+                     workbench.action.language.runtime.startNewConsoleSession."
+                } else {
+                    "No interpreter sessions are running. Start one with run_positron_command \
+                     using workbench.action.language.runtime.startNewConsoleSession."
+                },
                 "candidates": [],
             })),
             _ => {
@@ -626,24 +675,52 @@ impl PositronMcpHandler {
         }
     }
 
-    /// The frontend whose token authorized this call.
-    fn frontend_id(&self, context: &RequestContext<RoleServer>) -> Result<String, ErrorData> {
-        context
-            .extensions
-            .get::<http::request::Parts>()
-            .and_then(|parts| parts.extensions.get::<FrontendId>())
-            .map(|id| id.0.clone())
-            .ok_or_else(|| {
-                ErrorData::internal_error(
-                    "Request reached a tool without an authorized frontend",
-                    None,
-                )
+    /// The sessions the calling frontend can reach, and how many of the
+    /// supervisor's other sessions belong to the user's other windows.
+    ///
+    /// A session belongs to the window that created it, which names itself when
+    /// it asks for the session. A window also reaches sessions it reports
+    /// holding as long as no other registered window owns them, which covers
+    /// sessions that were already running when it registered, and sessions left
+    /// behind by a window that has gone for good.
+    async fn visible_sessions(&self) -> (Vec<KernelSession>, usize) {
+        let claimed = self.state.registry.session_ids(&self.frontend_id).await;
+        let registered = self.state.registry.registered_ids().await;
+        let sessions = self.state.sessions();
+        let total = sessions.len();
+        let visible: Vec<KernelSession> = sessions
+            .into_iter()
+            .filter(|session| {
+                let owner = session.model.frontend_id.as_deref();
+                if owner == Some(self.frontend_id.as_str()) {
+                    return true;
+                }
+                let unowned = owner.is_none_or(|owner| !registered.contains(owner));
+                unowned
+                    && claimed
+                        .iter()
+                        .any(|id| *id == session.connection.session_id)
             })
+            .collect();
+        let elsewhere = total - visible.len();
+        (visible, elsewhere)
+    }
+
+    /// The window this handler answers for, as agents and their users see it.
+    async fn window(&self) -> Value {
+        json!({
+            "id": self.frontend_id,
+            "name": self.state.registry.display_name(&self.frontend_id).await,
+        })
     }
 
     /// Add the connection state every tool result carries.
-    async fn decorate(&self, body: &mut Value, frontend_id: &str) {
-        let (connected, since) = self.state.registry.connection_state(frontend_id).await;
+    async fn decorate(&self, body: &mut Value) {
+        let (connected, since) = self
+            .state
+            .registry
+            .connection_state(&self.frontend_id)
+            .await;
         let Some(object) = body.as_object_mut() else {
             return;
         };
@@ -653,41 +730,46 @@ impl PositronMcpHandler {
         }
         object.insert(
             "positron_version".into(),
-            json!(self.state.registry.positron_version(frontend_id).await),
+            json!(
+                self.state
+                    .registry
+                    .positron_version(&self.frontend_id)
+                    .await
+            ),
         );
         object.insert("server_version".into(), json!(self.state.server_version()));
     }
 
     /// Build a successful result.
-    async fn finish(
-        &self,
-        mut body: Value,
-        images: Vec<ContentBlock>,
-        frontend_id: &str,
-    ) -> CallToolResult {
-        self.decorate(&mut body, frontend_id).await;
+    async fn finish(&self, mut body: Value, images: Vec<ContentBlock>) -> CallToolResult {
+        self.decorate(&mut body).await;
         let mut result = CallToolResult::structured(body);
         result.content.extend(images);
-        result.meta = Some(self.meta(frontend_id).await);
+        result.meta = Some(self.meta().await);
         result
     }
 
     /// Build a tool-level error result.
-    async fn error(&self, mut body: Value, frontend_id: &str) -> CallToolResult {
-        self.decorate(&mut body, frontend_id).await;
+    async fn error(&self, mut body: Value) -> CallToolResult {
+        self.decorate(&mut body).await;
         let mut result = CallToolResult::structured_error(body);
-        result.meta = Some(self.meta(frontend_id).await);
+        result.meta = Some(self.meta().await);
         result
     }
 
     /// The `_meta` block attached to every result.
-    async fn meta(&self, frontend_id: &str) -> MetaObject {
-        let (connected, since) = self.state.registry.connection_state(frontend_id).await;
+    async fn meta(&self) -> MetaObject {
+        let (connected, since) = self
+            .state
+            .registry
+            .connection_state(&self.frontend_id)
+            .await;
         let mut meta = serde_json::Map::new();
         meta.insert("positron_connected".into(), json!(connected));
         if !connected {
             meta.insert("positron_disconnected_since".into(), json!(since));
         }
+        meta.insert("positron_window".into(), self.window().await);
         MetaObject(meta)
     }
 }
