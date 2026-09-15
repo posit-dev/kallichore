@@ -30,6 +30,14 @@ pub enum AuthRejection {
 /// Resolving that token to a frontend is the caller's job, so this stays
 /// independent of the registry's locking.
 pub fn check_request(headers: &HeaderMap) -> Result<&str, AuthRejection> {
+    check_loopback(headers)?;
+    bearer_token(headers)
+        .ok_or_else(|| AuthRejection::Unauthorized("No bearer token supplied".to_string()))
+}
+
+/// Apply the loopback guards alone, for the one request that carries no token:
+/// the server card, which exists to be read before a client has one.
+pub fn check_loopback(headers: &HeaderMap) -> Result<(), AuthRejection> {
     if let Some(host) = headers.get(HOST) {
         let host = host
             .to_str()
@@ -54,8 +62,7 @@ pub fn check_request(headers: &HeaderMap) -> Result<&str, AuthRejection> {
         }
     }
 
-    bearer_token(headers)
-        .ok_or_else(|| AuthRejection::Unauthorized("No bearer token supplied".to_string()))
+    Ok(())
 }
 
 /// Extract the token from an `Authorization: Bearer <token>` header.

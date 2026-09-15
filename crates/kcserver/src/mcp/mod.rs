@@ -17,9 +17,11 @@
 //! One supervisor can be shared by every window of a Positron server, so the
 //! single listener gives each registered workspace an endpoint of its own at
 //! `/mcp/w/<workspace_id>`, with its own token, its own protocol sessions, and
-//! a view restricted to that workspace's sessions and commands.
+//! a view restricted to that workspace's sessions and commands. Each endpoint
+//! describes itself at `/mcp/w/<workspace_id>/server-card`.
 
 pub mod auth;
+pub mod card;
 pub mod channel;
 pub mod handler;
 pub mod listener;

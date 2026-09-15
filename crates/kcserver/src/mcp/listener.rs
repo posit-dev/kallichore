@@ -17,8 +17,13 @@
 //! in the path as well means an agent configured with one workspace's URL and
 //! another's token is refused loudly instead of quietly working on the wrong
 //! sessions.
+//!
+//! Each endpoint also serves its [server card](super::card) at
+//! `/server-card`, the one request that needs no token.
 
+use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
+use std::hash::{Hash, Hasher};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
@@ -26,14 +31,16 @@ use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use hyper::{Request, Response, StatusCode};
+use hyper::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_NONE_MATCH};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as HttpBuilder;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower::Service as _;
 
-use super::auth::{check_request, AuthRejection};
+use super::auth::{check_loopback, check_request, AuthRejection};
+use super::card::{server_card, CARD_MEDIA_TYPE, CARD_PATH_SUFFIX};
 use super::McpState;
 
 /// The path prefix under which each workspace's endpoint lives; the workspace
@@ -45,6 +52,15 @@ const MCP_PATH: &str = "/mcp";
 
 /// The response body type shared with rmcp's Streamable HTTP service.
 type McpBody = BoxBody<Bytes, Infallible>;
+
+/// The URL of a workspace's endpoint: what agents are configured with, and what
+/// its server card advertises.
+pub fn endpoint_url(port: u16, workspace_id: &str) -> String {
+    format!(
+        "http://127.0.0.1:{}{}{}",
+        port, MCP_PATH_PREFIX, workspace_id
+    )
+}
 
 /// Bind the MCP listener on loopback.
 ///
@@ -124,13 +140,21 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
         Box::pin(async move {
             log::debug!("MCP {} {}", request.method(), request.uri().path());
 
-            let Some(addressed) = request
+            let addressed = request
                 .uri()
                 .path()
                 .strip_prefix(MCP_PATH_PREFIX)
-                .map(|id| id.trim_end_matches('/'))
-                .filter(|id| !id.is_empty())
-            else {
+                .map(|rest| rest.trim_end_matches('/'));
+
+            // The card is read before a client has a token, so it is routed
+            // ahead of the bearer check.
+            if let Some(workspace_id) =
+                addressed.and_then(|rest| rest.strip_suffix(CARD_PATH_SUFFIX))
+            {
+                return Ok(card_response(&state, &request, workspace_id).await);
+            }
+
+            let Some(addressed) = addressed.filter(|id| !id.is_empty()) else {
                 log::warn!(
                     "Rejecting MCP request: no endpoint at {}",
                     request.uri().path()
@@ -201,11 +225,82 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
     }
 }
 
+/// Serve a workspace's server card.
+///
+/// Unauthenticated, but still behind the loopback guards: a page in the user's
+/// browser has no business reading it, and for the same reason the response
+/// carries no CORS headers, which the card specification asks for on the public
+/// endpoints it was written for. Nor does it invite a shared cache to keep a
+/// document naming the user's workspace; an entity tag is enough to save the
+/// transfer.
+async fn card_response(
+    state: &Arc<McpState>,
+    request: &Request<Incoming>,
+    workspace_id: &str,
+) -> Response<McpBody> {
+    if request.method() != Method::GET {
+        return status_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "A server card is read with GET",
+        );
+    }
+
+    if let Err(AuthRejection::Forbidden(reason) | AuthRejection::Unauthorized(reason)) =
+        check_loopback(request.headers())
+    {
+        log::warn!("Rejecting server card request: {}", reason);
+        return status_response(StatusCode::FORBIDDEN, &reason);
+    }
+
+    let Some(display_name) = state.registry.display_name(workspace_id).await else {
+        return status_response(
+            StatusCode::NOT_FOUND,
+            "No such workspace; its window may have closed",
+        );
+    };
+    let Some(port) = state.port().await else {
+        return status_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The MCP server is shutting down",
+        );
+    };
+
+    let card = server_card(port, workspace_id, &display_name).to_string();
+    let etag = entity_tag(&card);
+    let unchanged = request
+        .headers()
+        .get(IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(',').any(|tag| tag.trim() == etag));
+
+    let builder = Response::builder()
+        .header(CACHE_CONTROL, "no-cache")
+        .header(ETAG, &etag);
+    let response = if unchanged {
+        builder
+            .status(StatusCode::NOT_MODIFIED)
+            .body(Full::new(Bytes::new()).boxed())
+    } else {
+        builder
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, CARD_MEDIA_TYPE)
+            .body(Full::new(Bytes::from(card)).boxed())
+    };
+    response.expect("Unable to build server card response")
+}
+
+/// An opaque validator for a card, so an unchanged one need not be sent twice.
+fn entity_tag(card: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    card.hash(&mut hasher);
+    format!("\"{:016x}\"", hasher.finish())
+}
+
 /// Build a plain-text response with the given status.
 fn status_response(status: StatusCode, message: &str) -> Response<McpBody> {
     Response::builder()
         .status(status)
-        .header(hyper::header::CONTENT_TYPE, "text/plain")
+        .header(CONTENT_TYPE, "text/plain")
         .body(Full::new(Bytes::from(message.to_string())).boxed())
         .expect("Unable to build MCP status response")
 }

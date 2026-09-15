@@ -2018,7 +2018,7 @@ where
                 // Each workspace has an endpoint of its own, so an agent
                 // holding one workspace's URL cannot end up talking to
                 // another's.
-                url: format!("http://127.0.0.1:{}/mcp/w/{}", port, workspace_id),
+                url: crate::mcp::listener::endpoint_url(port, &workspace_id),
                 workspace_id,
                 token,
                 port: port as i32,

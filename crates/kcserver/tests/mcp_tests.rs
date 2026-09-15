@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use futures::SinkExt;
 
-use common::mcp::{post, McpAgent, SimulatedFrontend};
+use common::mcp::{get, post, McpAgent, SimulatedFrontend};
 use common::test_utils::{create_session_with_client, create_test_session};
 use common::TestServer;
 use kallichore_api::models::McpWorkspaceRegistration;
@@ -225,6 +225,94 @@ async fn test_requests_without_valid_credentials_are_refused() {
     let headers = agent_headers(port, &other.token);
     let response = post(port, &path, &headers, &tools_list_body()).await;
     assert_eq!(response.status, 403, "{}", response.body);
+}
+
+/// The header set a client probing for a server card sends.
+fn card_headers(port: u16) -> Vec<(&'static str, String)> {
+    vec![
+        ("accept", "application/mcp-server-card+json".to_string()),
+        ("host", format!("127.0.0.1:{}", port)),
+    ]
+}
+
+#[tokio::test]
+async fn test_the_endpoint_publishes_a_server_card() {
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("Card Workspace", None).await;
+    let port = workspace.port as u16;
+    let path = format!("/mcp/w/{}/server-card", workspace.workspace_id);
+
+    // Read with no token, which is what makes the card worth serving.
+    let response = get(port, &path, &card_headers(port)).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(
+        response.headers.get("content-type").unwrap(),
+        "application/mcp-server-card+json"
+    );
+    let card = response.json();
+    assert_eq!(
+        card["remotes"][0]["url"], workspace.url,
+        "The card should advertise the endpoint registration handed out"
+    );
+    assert!(
+        !response.body.contains(&workspace.token),
+        "A card is public metadata and must not carry the token: {}",
+        response.body
+    );
+
+    // What the card claims is what the live server does.
+    let mut agent = McpAgent::new(port, &workspace.workspace_id, &workspace.token);
+    let initialized = agent.initialize().await;
+    assert_eq!(initialized["serverInfo"]["title"], card["title"]);
+    assert!(
+        card["remotes"][0]["supportedProtocolVersions"]
+            .as_array()
+            .expect("The card should list protocol versions")
+            .contains(&initialized["protocolVersion"]),
+        "The negotiated version should be one the card offers: {}",
+        card["remotes"][0]["supportedProtocolVersions"]
+    );
+
+    // An unchanged card is validated rather than sent again.
+    let etag = response
+        .headers
+        .get("etag")
+        .expect("The card should carry an entity tag")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let mut headers = card_headers(port);
+    headers.push(("if-none-match", etag));
+    let revalidated = get(port, &path, &headers).await;
+    assert_eq!(revalidated.status, 304, "{}", revalidated.body);
+    assert!(revalidated.body.is_empty(), "{}", revalidated.body);
+
+    // A workspace that is not registered has no card.
+    let response = get(
+        port,
+        "/mcp/w/no-such-workspace/server-card",
+        &card_headers(port),
+    )
+    .await;
+    assert_eq!(response.status, 404, "{}", response.body);
+
+    // The card is read with GET; the endpoint itself takes the POSTs.
+    let response = post(port, &path, &card_headers(port), "").await;
+    assert_eq!(response.status, 405, "{}", response.body);
+
+    // A page in the user's browser has no business reading it, so the loopback
+    // guards still apply and no CORS header invites one.
+    let mut headers = card_headers(port);
+    headers.push(("origin", "https://evil.example.com".to_string()));
+    let response = get(port, &path, &headers).await;
+    assert_eq!(response.status, 403, "{}", response.body);
+    assert!(
+        response
+            .headers
+            .get("access-control-allow-origin")
+            .is_none(),
+        "The card should not be offered to cross-origin readers"
+    );
 }
 
 #[tokio::test]

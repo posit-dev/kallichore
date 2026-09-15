@@ -62,6 +62,22 @@ impl HttpResponse {
 
 /// POST a body to the MCP listener with exactly the headers given.
 pub async fn post(port: u16, path: &str, headers: &[(&str, String)], body: &str) -> HttpResponse {
+    send("POST", port, path, headers, body).await
+}
+
+/// GET a path from the MCP listener with exactly the headers given.
+pub async fn get(port: u16, path: &str, headers: &[(&str, String)]) -> HttpResponse {
+    send("GET", port, path, headers, "").await
+}
+
+/// Make one request to the MCP listener, with no headers but the ones given.
+async fn send(
+    method: &str,
+    port: u16,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &str,
+) -> HttpResponse {
     let stream = TcpStream::connect(("127.0.0.1", port))
         .await
         .expect("Failed to connect to the MCP listener");
@@ -72,7 +88,7 @@ pub async fn post(port: u16, path: &str, headers: &[(&str, String)], body: &str)
         let _ = connection.await;
     });
 
-    let mut builder = Request::builder().method("POST").uri(path);
+    let mut builder = Request::builder().method(method).uri(path);
     for (name, value) in headers {
         builder = builder.header(
             HeaderName::from_bytes(name.as_bytes()).expect("Invalid header name"),

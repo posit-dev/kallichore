@@ -60,6 +60,17 @@ const FRONTEND_CONNECT_WAIT: Duration = Duration::from_secs(15);
 /// How long a window has to answer a command request once delivered.
 const FRONTEND_REPLY_WAIT: Duration = Duration::from_secs(45);
 
+/// The implementation name agents see, which the server card's reverse-DNS name
+/// qualifies rather than replaces.
+pub const SERVER_NAME: &str = "positron";
+
+/// The server's display name.
+pub const SERVER_TITLE: &str = "Positron";
+
+/// What the server offers, in one line. Reported at `initialize` and repeated
+/// in the server card, which must not contradict it.
+pub const SERVER_DESCRIPTION: &str = "The user's live Positron interpreter sessions and IDE";
+
 /// Guidance sent to the agent when it connects. Kept short: it is delivered
 /// once and clients truncate long instruction blocks.
 const INSTRUCTIONS: &str = "\
@@ -784,9 +795,9 @@ impl ServerHandler for PositronMcpHandler {
     fn get_info(&self) -> InitializeResult {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
-                Implementation::new("positron", env!("CARGO_PKG_VERSION"))
-                    .with_title("Positron")
-                    .with_description("The user's live Positron interpreter sessions and IDE"),
+                Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION"))
+                    .with_title(SERVER_TITLE)
+                    .with_description(SERVER_DESCRIPTION),
             )
             .with_instructions(INSTRUCTIONS)
     }
