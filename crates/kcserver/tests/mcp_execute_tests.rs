@@ -75,10 +75,20 @@ async fn start_session(
     client: &Box<dyn ApiNoContext<ClientContext> + Send + Sync>,
     python_cmd: &str,
 ) -> String {
+    start_owned_session(client, python_cmd, None).await
+}
+
+/// As [`start_session`], for a session an MCP workspace owns.
+async fn start_owned_session(
+    client: &Box<dyn ApiNoContext<ClientContext> + Send + Sync>,
+    python_cmd: &str,
+    workspace_id: Option<&str>,
+) -> String {
     for attempt in 1..=3 {
         let session_id = format!("mcp-exec-{}", Uuid::new_v4());
-        create_session_with_client(client, create_test_session(session_id.clone(), python_cmd))
-            .await;
+        let mut session = create_test_session(session_id.clone(), python_cmd);
+        session.workspace_id = workspace_id.map(|id| id.to_string());
+        create_session_with_client(client, session).await;
 
         match client
             .start_session(session_id.clone())
@@ -196,6 +206,68 @@ async fn collect_until(
             Err(_) => return collected,
         }
     }
+}
+
+#[tokio::test]
+async fn test_a_kernel_is_given_its_workspaces_mcp_endpoint() {
+    let python_cmd = require_ipykernel!();
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+
+    // The workspace has to be registered before the kernel launches, since the
+    // endpoint is resolved as the process starts.
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let session_id = start_owned_session(&client, &python_cmd, Some(&workspace.workspace_id)).await;
+
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
+    agent.initialize().await;
+
+    let result = agent
+        .call_tool(
+            "execute_code",
+            json!({
+                // One line: rustfmt reflows a multi-line literal and the
+                // indentation it adds is a Python syntax error.
+                "code": "import os; print(os.environ['POSITRON_MCP_URL']); print(os.environ['POSITRON_MCP_TOKEN'])",
+                "session_id": session_id,
+            }),
+        )
+        .await;
+    assert!(!result.is_error, "{:?}", result);
+    assert_eq!(
+        result.field("stdout").as_str().unwrap().trim(),
+        format!(
+            "http://127.0.0.1:{}/mcp/w/{}/s/{}\n{}",
+            workspace.port, workspace.workspace_id, session_id, workspace.token
+        ),
+        "{:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn test_a_kernel_with_no_workspace_gets_no_mcp_endpoint() {
+    let python_cmd = require_ipykernel!();
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+    server.register_mcp_workspace("Test Workspace", None).await;
+    let session_id = start_session(&client, &python_cmd).await;
+    let (_workspace_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
+
+    let result = agent
+        .call_tool(
+            "execute_code",
+            json!({
+                "code": "import os; print([k for k in os.environ if k.startswith('POSITRON_MCP')])",
+                "session_id": session_id,
+            }),
+        )
+        .await;
+    assert_eq!(result.field("stdout").as_str().unwrap().trim(), "[]");
 }
 
 #[tokio::test]

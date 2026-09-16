@@ -93,6 +93,15 @@ changing settings), call list_positron_commands to find a command, then \
 run_positron_command. These need Positron connected; the kernel tools do not. \
 No tool ever starts an interpreter on its own.";
 
+/// Added for a client running inside one of the workspace's own kernels, which
+/// is the one thing about its situation it cannot work out for itself.
+const CALLER_INSTRUCTIONS: &str = "\n\n\
+You are running inside one of these sessions yourself, and list_sessions marks \
+it is_your_own_session. Every tool works from there except execute_code and \
+evaluate_code aimed at that one session: it is busy waiting for whatever you do \
+here, so code sent to it would never run. Do that work inline in the code you \
+are already running instead.";
+
 /// Serves MCP tool calls for one registered workspace.
 #[derive(Clone)]
 pub struct PositronMcpHandler {
@@ -101,6 +110,12 @@ pub struct PositronMcpHandler {
     /// The workspace every call is answered for. Fixed when the handler is
     /// built, so no tool can reach another workspace by mistake.
     workspace_id: String,
+
+    /// The session the client is running in, when it reached us at an endpoint
+    /// that named one. Set for a client inside one of the workspace's kernels,
+    /// such as an `ellmer` or `chatlas` agent the user started in their
+    /// console; never set for an agent outside.
+    caller_session_id: Option<String>,
 }
 
 /// Arguments accepted by `execute_code` and `evaluate_code`.
@@ -164,11 +179,17 @@ pub struct NoParams {}
 
 #[tool_router]
 impl PositronMcpHandler {
-    /// Create a handler answering for one workspace.
-    pub fn new(state: Arc<McpState>, workspace_id: String) -> Self {
+    /// Create a handler answering for one workspace, and optionally for one
+    /// caller within it.
+    pub fn new(
+        state: Arc<McpState>,
+        workspace_id: String,
+        caller_session_id: Option<String>,
+    ) -> Self {
         Self {
             state,
             workspace_id,
+            caller_session_id,
         }
     }
 
@@ -178,7 +199,9 @@ impl PositronMcpHandler {
                        attached to, with their language, status, working directory, and which one \
                        is in the foreground. Call this before running code so you target the \
                        right session. Sessions belonging to the user's other workspaces are not \
-                       listed and cannot be reached. Never starts a session.",
+                       listed and cannot be reached. A session marked is_your_own_session is the \
+                       one you are running inside, which is the one session you cannot run code \
+                       in. Never starts a session.",
         annotations(title = "List sessions", read_only_hint = true)
     )]
     async fn list_sessions(
@@ -198,7 +221,7 @@ impl PositronMcpHandler {
         let mut entries = Vec::with_capacity(sessions.len());
         for session in sessions.iter() {
             let active = session.as_active_session().await;
-            entries.push(json!({
+            let mut entry = json!({
                 "session_id": active.session_id,
                 "display_name": active.display_name,
                 "language": active.language,
@@ -207,7 +230,13 @@ impl PositronMcpHandler {
                 "working_directory": active.working_directory,
                 "queue_length": active.execution_queue.length,
                 "is_foreground": Some(&active.session_id) == foreground.as_ref(),
-            }));
+            });
+            // Marked only on the one session it applies to, so a listing for an
+            // agent outside the kernels looks exactly as it always has.
+            if self.is_caller(&active.session_id) {
+                entry["is_your_own_session"] = json!(true);
+            }
+            entries.push(entry);
         }
 
         let mut body = json!({
@@ -495,6 +524,26 @@ impl PositronMcpHandler {
         };
         let session_id = session.connection.session_id.clone();
 
+        // Running code is the one thing a client inside a kernel cannot ask of
+        // its own session: that session is executing the call it is waiting on,
+        // so the code would queue behind it and the only way out would be the
+        // timeout interrupting the client's own work. Every other tool is
+        // fine from there, including interrupting.
+        if self.is_caller(&session_id) {
+            let body = json!({
+                "status": "error",
+                "code": "SESSION_IS_CALLER",
+                "session_id": session_id,
+                "message": format!(
+                    "Session '{}' is the one you are running in, so it is busy waiting for this \
+                     call and cannot run your code. Run the code inline instead, or name another \
+                     session; list_sessions marks this one is_your_own_session.",
+                    session_id
+                ),
+            });
+            return Ok(self.error(body).await);
+        }
+
         // A queued evaluation looks like a hang to an agent, which then
         // retries. Refuse instead, unless it asked to wait.
         if inspecting && !params.wait.unwrap_or(false) {
@@ -602,6 +651,7 @@ impl PositronMcpHandler {
     /// reported; otherwise the only session, if there is exactly one. Sessions
     /// are never started implicitly, and only the calling workspace's own
     /// sessions are ever candidates.
+    ///
     async fn resolve_session(&self, requested: Option<String>) -> Result<KernelSession, Value> {
         let (sessions, elsewhere) = self.visible_sessions().await;
 
@@ -688,6 +738,11 @@ impl PositronMcpHandler {
                 }))
             }
         }
+    }
+
+    /// Whether a session is the one this client is running in.
+    fn is_caller(&self, session_id: &str) -> bool {
+        self.caller_session_id.as_deref() == Some(session_id)
     }
 
     /// The sessions the calling workspace can reach, and how many of the
@@ -799,7 +854,10 @@ impl ServerHandler for PositronMcpHandler {
                     .with_title(SERVER_TITLE)
                     .with_description(SERVER_DESCRIPTION),
             )
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(match &self.caller_session_id {
+                Some(_) => format!("{}{}", INSTRUCTIONS, CALLER_INSTRUCTIONS),
+                None => INSTRUCTIONS.to_string(),
+            })
     }
 
     /// Announce the agent, then negotiate as the default implementation does.

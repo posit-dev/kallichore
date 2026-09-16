@@ -186,6 +186,13 @@ impl McpAgent {
         }
     }
 
+    /// Talk to the endpoint as a client running inside one of the workspace's
+    /// kernels does: the same workspace and token, with its own session named.
+    pub fn in_session(mut self, session_id: &str) -> Self {
+        self.path = format!("{}/s/{}", self.path, session_id);
+        self
+    }
+
     /// Set the name this agent reports in `clientInfo`.
     pub fn named(mut self, name: &str) -> Self {
         self.name = name.to_string();

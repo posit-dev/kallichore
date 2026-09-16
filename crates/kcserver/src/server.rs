@@ -1365,6 +1365,7 @@ where
             key,
             self.idle_nudge_tx.clone(),
             self.reserved_ports.clone(),
+            Arc::downgrade(&self.mcp),
         )
         .await
         {

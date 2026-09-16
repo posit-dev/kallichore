@@ -19,6 +19,13 @@
 //! `/mcp/w/<workspace_id>`, with its own token, its own protocol sessions, and
 //! a view restricted to that workspace's sessions and commands. Each endpoint
 //! describes itself at `/mcp/w/<workspace_id>/server-card`.
+//!
+//! The supervisor publishes a workspace's endpoint into the environment of the
+//! kernels it starts for that workspace, because an MCP client is as likely to
+//! be a library the user loaded in their console as a coding agent in a
+//! terminal. Such a client is handed an endpoint that names its own session, so
+//! it gets its own handler and the server can tell it apart from an agent
+//! outside; see [`listener::session_endpoint_url`].
 
 pub mod auth;
 pub mod card;
@@ -40,6 +47,12 @@ use tokio_util::sync::CancellationToken;
 use crate::kernel_session::KernelSession;
 use handler::PositronMcpHandler;
 use workspaces::WorkspaceRegistry;
+
+/// The variable a kernel reads its workspace's MCP endpoint from.
+pub const MCP_URL_VAR: &str = "POSITRON_MCP_URL";
+
+/// The variable a kernel reads its workspace's bearer token from.
+pub const MCP_TOKEN_VAR: &str = "POSITRON_MCP_TOKEN";
 
 /// One workspace's MCP endpoint.
 type WorkspaceService = StreamableHttpService<PositronMcpHandler, LocalSessionManager>;
@@ -68,8 +81,9 @@ pub struct McpState {
     /// registrations racing cannot each open a port.
     listener: tokio::sync::Mutex<Option<ListenerHandle>>,
 
-    /// The HTTP service behind each workspace's endpoint, built on first use.
-    services: tokio::sync::Mutex<HashMap<String, WorkspaceService>>,
+    /// The HTTP service behind each endpoint, built on first use, keyed by the
+    /// workspace and by the session a caller named as its own.
+    services: tokio::sync::Mutex<HashMap<(String, Option<String>), WorkspaceService>>,
 }
 
 impl McpState {
@@ -134,33 +148,53 @@ impl McpState {
     ///
     /// Each workspace gets its own service, so the handler knows which one it
     /// is answering for without inspecting every request, and protocol sessions
-    /// belong to one workspace and go away with it.
+    /// belong to one workspace and go away with it. A caller that named the
+    /// session it runs in gets a service of its own for the same reason: the
+    /// handler then knows which session not to run code in.
     ///
     /// Returns None when the listener is not running.
-    pub async fn service_for(self: &Arc<Self>, workspace_id: &str) -> Option<WorkspaceService> {
+    pub async fn service_for(
+        self: &Arc<Self>,
+        workspace_id: &str,
+        caller_session_id: Option<&str>,
+    ) -> Option<WorkspaceService> {
+        let key = (
+            workspace_id.to_string(),
+            caller_session_id.map(str::to_string),
+        );
         let mut services = self.services.lock().await;
-        if let Some(existing) = services.get(workspace_id) {
+        if let Some(existing) = services.get(&key) {
             return Some(existing.clone());
         }
 
         let cancel = self.listener.lock().await.as_ref()?.cancel.child_token();
         let state = self.clone();
         let id = workspace_id.to_string();
+        let caller = caller_session_id.map(str::to_string);
         let service = StreamableHttpService::new(
-            move || Ok(PositronMcpHandler::new(state.clone(), id.clone())),
+            move || {
+                Ok(PositronMcpHandler::new(
+                    state.clone(),
+                    id.clone(),
+                    caller.clone(),
+                ))
+            },
             Arc::new(LocalSessionManager::default()),
             // Sessions are kept for pre-2026-07-28 clients. Those clients
             // report who they are only in the initialize handshake, and the
             // agent's name is what attributes executions in the user's console.
             StreamableHttpServerConfig::default().with_cancellation_token(cancel),
         );
-        services.insert(workspace_id.to_string(), service.clone());
+        services.insert(key, service.clone());
         Some(service)
     }
 
-    /// Drop a workspace's endpoint, ending its agents' protocol sessions.
+    /// Drop a workspace's endpoints, ending its agents' protocol sessions.
     pub async fn drop_service(&self, workspace_id: &str) {
-        self.services.lock().await.remove(workspace_id);
+        self.services
+            .lock()
+            .await
+            .retain(|(workspace, _), _| workspace != workspace_id);
     }
 
     /// The port the listener is bound to, if it is running.

@@ -26,7 +26,7 @@ use rmcp::model::ProtocolVersion;
 use serde_json::{json, Value};
 
 use super::handler::{SERVER_DESCRIPTION, SERVER_NAME, SERVER_TITLE};
-use super::listener::endpoint_url;
+use super::listener::{endpoint_url, session_endpoint_url};
 
 /// The schema a v1 card declares itself against.
 const CARD_SCHEMA: &str =
@@ -47,7 +47,18 @@ const WEBSITE_URL: &str = "https://positron.posit.co";
 /// sees once connected -- but they must not contradict the live server, so the
 /// identity here is the same one `initialize` reports and the protocol versions
 /// are the ones the handler will actually negotiate.
-pub fn server_card(port: u16, workspace_id: &str, display_name: &str) -> Value {
+pub fn server_card(
+    port: u16,
+    workspace_id: &str,
+    display_name: &str,
+    caller: Option<&str>,
+) -> Value {
+    // A card names the endpoint it was read from, so a kernel's client is told
+    // the URL that identifies it rather than the workspace's plain one.
+    let url = match caller {
+        Some(session_id) => session_endpoint_url(port, workspace_id, session_id),
+        None => endpoint_url(port, workspace_id),
+    };
     json!({
         "$schema": CARD_SCHEMA,
         // Reverse-DNS, as the card format requires; `serverInfo` reports the
@@ -59,7 +70,7 @@ pub fn server_card(port: u16, workspace_id: &str, display_name: &str) -> Value {
         "websiteUrl": WEBSITE_URL,
         "remotes": [{
             "type": "streamable-http",
-            "url": endpoint_url(port, workspace_id),
+            "url": url,
             "headers": [{
                 "name": "Authorization",
                 "description": "Bearer token for this workspace, which Positron publishes to its terminals as POSITRON_MCP_TOKEN",
@@ -93,7 +104,7 @@ mod tests {
     #[test]
     fn describes_the_workspace_endpoint() {
         assert_eq!(
-            server_card(39000, "my-project-a1b2c3", "my-project"),
+            server_card(39000, "my-project-a1b2c3", "my-project", None),
             json!({
                 "$schema": CARD_SCHEMA,
                 "name": "co.posit/positron",
@@ -121,6 +132,15 @@ mod tests {
                     },
                 },
             })
+        );
+    }
+
+    #[test]
+    fn names_the_endpoint_it_was_read_from() {
+        let card = server_card(39000, "my-project-a1b2c3", "my-project", Some("python-1"));
+        assert_eq!(
+            card["remotes"][0]["url"],
+            json!("http://127.0.0.1:39000/mcp/w/my-project-a1b2c3/s/python-1")
         );
     }
 }

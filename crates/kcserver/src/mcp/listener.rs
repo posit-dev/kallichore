@@ -18,6 +18,12 @@
 //! another's token is refused loudly instead of quietly working on the wrong
 //! sessions.
 //!
+//! A workspace's endpoint may carry a further `/s/<session-id>`, which is how a
+//! client running inside one of the workspace's kernels says which session it
+//! is. That is a hint the caller volunteers about itself, not a permission: the
+//! token still decides the workspace, and naming a session can only narrow what
+//! the caller may do.
+//!
 //! Each endpoint also serves its [server card](super::card) at
 //! `/server-card`, the one request that needs no token.
 
@@ -50,6 +56,10 @@ const MCP_PATH_PREFIX: &str = "/mcp/w/";
 /// The path rmcp's service expects to see once the workspace has been resolved.
 const MCP_PATH: &str = "/mcp";
 
+/// The path segment, following a workspace ID, under which a caller names the
+/// session it is running in.
+const CALLER_PATH_SEGMENT: &str = "/s/";
+
 /// The response body type shared with rmcp's Streamable HTTP service.
 type McpBody = BoxBody<Bytes, Infallible>;
 
@@ -59,6 +69,22 @@ pub fn endpoint_url(port: u16, workspace_id: &str) -> String {
     format!(
         "http://127.0.0.1:{}{}{}",
         port, MCP_PATH_PREFIX, workspace_id
+    )
+}
+
+/// The URL handed to a kernel: the workspace's endpoint, with the kernel's own
+/// session named.
+///
+/// A client inside a kernel reaches the same workspace with the same token as
+/// any other agent. What the extra segment buys is that the server can tell
+/// when such a client asks to run code in the session it is itself running in,
+/// which would queue behind the call still waiting for an answer.
+pub fn session_endpoint_url(port: u16, workspace_id: &str, session_id: &str) -> String {
+    format!(
+        "{}{}{}",
+        endpoint_url(port, workspace_id),
+        CALLER_PATH_SEGMENT,
+        session_id
     )
 }
 
@@ -140,21 +166,13 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
         Box::pin(async move {
             log::debug!("MCP {} {}", request.method(), request.uri().path());
 
-            let addressed = request
+            let Some(endpoint) = request
                 .uri()
                 .path()
                 .strip_prefix(MCP_PATH_PREFIX)
-                .map(|rest| rest.trim_end_matches('/'));
-
-            // The card is read before a client has a token, so it is routed
-            // ahead of the bearer check.
-            if let Some(workspace_id) =
-                addressed.and_then(|rest| rest.strip_suffix(CARD_PATH_SUFFIX))
-            {
-                return Ok(card_response(&state, &request, workspace_id).await);
-            }
-
-            let Some(addressed) = addressed.filter(|id| !id.is_empty()) else {
+                .map(|rest| rest.trim_end_matches('/'))
+                .filter(|rest| !rest.is_empty())
+            else {
                 log::warn!(
                     "Rejecting MCP request: no endpoint at {}",
                     request.uri().path()
@@ -164,6 +182,29 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                     "Not found; a workspace's MCP endpoint is at /mcp/w/<workspace-id>",
                 ));
             };
+
+            // A card is read at whichever endpoint the reader holds, so its
+            // suffix comes off before the endpoint itself is taken apart.
+            let (endpoint, card) = match endpoint.strip_suffix(CARD_PATH_SUFFIX) {
+                Some(endpoint) => (endpoint, true),
+                None => (endpoint, false),
+            };
+
+            // A caller may name the session it is running in after the
+            // workspace; see [`session_endpoint_url`].
+            let (addressed, caller) = match endpoint.split_once(CALLER_PATH_SEGMENT) {
+                Some((workspace, session)) if !session.is_empty() => {
+                    (workspace, Some(session.to_string()))
+                }
+                Some((workspace, _)) => (workspace, None),
+                None => (endpoint, None),
+            };
+
+            // The card is read before a client has a token, so it is routed
+            // ahead of the bearer check.
+            if card {
+                return Ok(card_response(&state, &request, addressed, caller.as_deref()).await);
+            }
             let addressed = addressed.to_string();
 
             let token = match check_request(request.headers()) {
@@ -202,7 +243,8 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                 ));
             }
 
-            let Some(mut service) = state.service_for(&workspace_id).await else {
+            let Some(mut service) = state.service_for(&workspace_id, caller.as_deref()).await
+            else {
                 log::warn!("Rejecting MCP request: the listener is shutting down");
                 return Ok(status_response(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -237,6 +279,7 @@ async fn card_response(
     state: &Arc<McpState>,
     request: &Request<Incoming>,
     workspace_id: &str,
+    caller: Option<&str>,
 ) -> Response<McpBody> {
     if request.method() != Method::GET {
         return status_response(
@@ -265,7 +308,7 @@ async fn card_response(
         );
     };
 
-    let card = server_card(port, workspace_id, &display_name).to_string();
+    let card = server_card(port, workspace_id, &display_name, caller).to_string();
     let etag = entity_tag(&card);
     let unchanged = request
         .headers()

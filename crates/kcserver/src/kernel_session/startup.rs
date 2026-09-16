@@ -11,10 +11,12 @@
 use kallichore_api::models::{self, StartupError};
 use kcshared::kernel_info::KernelInfoReply;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::{fs, process::Stdio};
 use tokio::sync::RwLock;
 
+use crate::mcp::listener::session_endpoint_url;
+use crate::mcp::{McpState, MCP_TOKEN_VAR, MCP_URL_VAR};
 use crate::{
     connection_file::ConnectionFile, error::KSError, kernel_state::KernelState,
     startup_status::StartupStatus,
@@ -35,6 +37,10 @@ pub struct StartupCoordinator {
 
     /// Shared kernel state
     pub state: Arc<RwLock<KernelState>>,
+
+    /// The MCP server, for the endpoint this session's kernel is given. Weak
+    /// because the MCP server holds the sessions.
+    pub mcp: Weak<McpState>,
 
     /// Kernel command line arguments
     pub argv: Vec<String>,
@@ -127,7 +133,8 @@ impl StartupCoordinator {
         let resolver = EnvironmentResolver::new(env_var_actions);
 
         // Resolve the environment
-        let resolved_env = resolver.resolve();
+        let mut resolved_env = resolver.resolve();
+        self.apply_mcp_environment(&mut resolved_env).await;
 
         // Store the resolved environment back in the kernel state
         {
@@ -136,6 +143,58 @@ impl StartupCoordinator {
         }
 
         Ok(resolved_env)
+    }
+
+    /// Give the kernel the MCP endpoint of the workspace that owns it, or take
+    /// away any it would otherwise have inherited.
+    ///
+    /// An MCP client is as likely to be a library the user loads in their
+    /// console -- `ellmer`, `chatlas` -- as an agent in a terminal, and such a
+    /// client has no other way to find the workspace it is sitting in. What it
+    /// gets is the same endpoint and the same token as any other agent, so it
+    /// can drive the IDE exactly as one can, plus the name of its own session
+    /// so the server knows not to run code back into it.
+    ///
+    /// The variables are cleared first because Positron publishes them into the
+    /// environment of the extension host, which is what starts the supervisor,
+    /// so they can arrive here by inheritance. An inherited pair names whichever
+    /// workspace's window happened to start the supervisor, which is not
+    /// necessarily the one this session belongs to; a session with no owner at
+    /// all must not be handed a credential by accident. The supervisor holds the
+    /// live token and knows who owns the session, so it is the only honest
+    /// source, and it overrides.
+    ///
+    /// Resolved at every launch rather than at session creation, so a restarted
+    /// kernel picks up a token issued since, and a session that predates the
+    /// workspace's registration gets one on its next restart.
+    async fn apply_mcp_environment(&self, env: &mut HashMap<String, String>) {
+        env.remove(MCP_URL_VAR);
+        env.remove(MCP_TOKEN_VAR);
+
+        let Some(workspace_id) = self.model.workspace_id.as_deref() else {
+            return;
+        };
+        let Some(mcp) = self.mcp.upgrade() else {
+            return;
+        };
+        let (Some(port), Some(token)) = (mcp.port().await, mcp.registry.token(workspace_id).await)
+        else {
+            log::info!(
+                "[session {}] MCP workspace '{}' is no longer serving; the kernel gets no endpoint",
+                self.session_id,
+                workspace_id
+            );
+            return;
+        };
+
+        let url = session_endpoint_url(port, workspace_id, &self.session_id);
+        log::info!(
+            "[session {}] Kernel can reach its workspace's MCP endpoint at {}",
+            self.session_id,
+            url
+        );
+        env.insert(MCP_URL_VAR.to_string(), url);
+        env.insert(MCP_TOKEN_VAR.to_string(), token);
     }
 
     /// Build the command to start the kernel.
@@ -321,9 +380,7 @@ impl StartupCoordinator {
             // don't clobber a status the iopub stream may have already set.
             if matches!(
                 state.status,
-                models::Status::Uninitialized
-                    | models::Status::Starting
-                    | models::Status::Ready
+                models::Status::Uninitialized | models::Status::Starting | models::Status::Ready
             ) {
                 state
                     .set_status(

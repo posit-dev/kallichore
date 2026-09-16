@@ -19,7 +19,7 @@ mod shell_wrapper;
 mod startup;
 mod utils;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Utc};
@@ -30,7 +30,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     connection_file::ConnectionFile, kernel_connection::KernelConnection,
-    kernel_state::KernelState, startup_status::StartupStatus,
+    kernel_state::KernelState, mcp::McpState, startup_status::StartupStatus,
 };
 
 use connection::ConnectionManager;
@@ -89,6 +89,11 @@ pub struct KernelSession {
 
     /// The exit event; fires when the kernel process exits
     pub exit_event: Arc<Event>,
+
+    /// The MCP server, whose endpoint the kernel is given when the session
+    /// belongs to a registered workspace. Weak because the MCP server holds
+    /// the sessions.
+    pub mcp: Weak<McpState>,
 }
 
 impl KernelSession {
@@ -98,6 +103,7 @@ impl KernelSession {
         key: String,
         idle_nudge_tx: tokio::sync::mpsc::Sender<Option<u32>>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
+        mcp: Weak<McpState>,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
@@ -139,6 +145,7 @@ impl KernelSession {
             interrupt_event_handle,
             exit_event: Arc::new(Event::new()),
             reserved_ports,
+            mcp,
         };
         Ok(kernel_session)
     }
@@ -154,6 +161,7 @@ impl KernelSession {
             session_id: self.connection.session_id.clone(),
             model: self.model.clone(),
             state: self.state.clone(),
+            mcp: self.mcp.clone(),
             argv: self.argv.clone(),
             #[cfg(windows)]
             interrupt_event_handle: self.interrupt_event_handle,

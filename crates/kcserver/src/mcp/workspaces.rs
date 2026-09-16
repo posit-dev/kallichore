@@ -274,6 +274,16 @@ impl WorkspaceRegistry {
         found
     }
 
+    /// A workspace's bearer token, for handing to a process the supervisor
+    /// starts on its behalf. Never logged, and never sent to an agent.
+    pub async fn token(&self, workspace_id: &str) -> Option<String> {
+        self.workspaces
+            .read()
+            .await
+            .get(workspace_id)
+            .map(|workspace| workspace.token.clone())
+    }
+
     /// Attach a newly connected channel.
     ///
     /// Returns the channel's generation, which must be handed back to

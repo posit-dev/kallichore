@@ -848,6 +848,80 @@ async fn test_sessions_belong_to_the_workspace_that_created_them() {
 }
 
 #[tokio::test]
+async fn test_a_client_inside_a_kernel_cannot_run_code_in_that_kernel() {
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("My Workspace", None).await;
+    let inside = create_session(
+        &server,
+        "session-running-the-client",
+        Some(&workspace.workspace_id),
+    )
+    .await;
+    let other = create_session(&server, "another-session", Some(&workspace.workspace_id)).await;
+
+    // The endpoint the supervisor put in that kernel's environment, which names
+    // the kernel's own session.
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    )
+    .in_session(&inside);
+    agent.initialize().await;
+
+    // Its own session is listed, marked, and refused: code sent there would
+    // queue behind the cell still waiting for this call to return.
+    let result = agent.call_tool("list_sessions", json!({})).await;
+    let listed: Vec<Value> = result
+        .field("sessions")
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|session| json!([session["session_id"], session["is_your_own_session"]]))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![json!([inside, true]), json!([other, Value::Null])],
+        "{:?}",
+        result
+    );
+
+    let result = agent
+        .call_tool("execute_code", json!({ "code": "1", "session_id": inside }))
+        .await;
+    assert!(result.is_error, "{:?}", result);
+    assert_eq!(result.field("code"), &json!("SESSION_IS_CALLER"));
+
+    // Only running code is refused. Everything else about its own session is
+    // ordinary business, because nothing else waits on that session's turn.
+    let result = agent
+        .call_tool("interrupt_session", json!({ "session_id": inside }))
+        .await;
+    assert_ne!(
+        result.structured.get("code"),
+        Some(&json!("SESSION_IS_CALLER")),
+        "{:?}",
+        result
+    );
+
+    // The other session is reachable from inside a kernel like any other. It
+    // has no kernel to answer, so this ends in the timeout; a short one keeps
+    // the test quick, and what matters is which error comes back.
+    let result = agent
+        .call_tool(
+            "execute_code",
+            json!({ "code": "1", "session_id": other, "timeout_s": 1 }),
+        )
+        .await;
+    assert_ne!(
+        result.structured.get("code"),
+        Some(&json!("SESSION_IS_CALLER")),
+        "{:?}",
+        result
+    );
+}
+
+#[tokio::test]
 async fn test_a_workspace_reaches_sessions_it_did_not_create_but_not_another_ones() {
     let server = TestServer::start().await;
     let first = server.register_mcp_workspace("My Workspace", None).await;
