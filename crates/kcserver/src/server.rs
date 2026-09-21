@@ -10,6 +10,7 @@
 
 #![allow(unused_imports)]
 
+use crate::process_control;
 use crate::resource_monitor::{self, ResourceMonitorConfig};
 use crate::websocket_service::ApiWebsocketExt;
 use anyhow::anyhow;
@@ -41,7 +42,6 @@ use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
-use sysinfo::{Pid, System};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -923,8 +923,7 @@ impl<C> Server<C> {
                         // If we have a positive client PID, check to see if the
                         // process is still running. If it is, skip the idle check.
                         if client_pid > 1 {
-                            let system = System::new_all();
-                            if system.process(Pid::from_u32(client_pid)).is_some() {
+                            if process_control::is_running(client_pid) {
                                 log::info!("Skipping idle check; client process {} still running.", client_pid);
                                 continue;
                             }
@@ -1822,27 +1821,16 @@ where
         match pid {
             Some(pid) => {
                 // Kill the process
-                let mut system = System::new();
-                let process_id = Pid::from_u32(pid);
-                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[process_id]));
-                if let Some(process) = system.process(process_id) {
-                    if process.kill() {
-                        // Clean up any domain sockets associated with this session
-                        self.cleanup_session_domain_sockets(&session_id);
-                        Ok(KillSessionResponse::Killed(serde_json::Value::Null))
-                    } else {
-                        let err = KSError::ProcessNotFound(pid, session_id.clone());
-                        err.log();
-                        Ok(KillSessionResponse::KillFailed(err.to_json(Some(
-                            String::from("Failed to send kill signal to process"),
-                        ))))
-                    }
+                if process_control::terminate(pid) {
+                    // Clean up any domain sockets associated with this session
+                    self.cleanup_session_domain_sockets(&session_id);
+                    Ok(KillSessionResponse::Killed(serde_json::Value::Null))
                 } else {
                     let err = KSError::ProcessNotFound(pid, session_id.clone());
                     err.log();
-                    return Ok(KillSessionResponse::KillFailed(
-                        err.to_json(Some(String::from("Could not look up process details"))),
-                    ));
+                    Ok(KillSessionResponse::KillFailed(err.to_json(Some(
+                        String::from("Failed to send kill signal to process"),
+                    ))))
                 }
             }
             None => {

@@ -27,6 +27,7 @@ mod jupyter_messages;
 mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
+mod process_control;
 mod process_metrics;
 mod process_tree;
 mod registration_file;
