@@ -179,6 +179,35 @@ Example usage:
 - TCP WebSocket: `ws://localhost:8080/sessions/{session_id}/channels`
 - Unix Socket WebSocket: `ws+unix:/path/to/socket:/sessions/{session_id}/channels` (conceptual - actual connection via domain socket path)
 
+## Resource Monitoring
+
+kcserver samples CPU, memory and thread counts for each kernel session and pushes them to
+connected clients. Two options control it:
+
+- `--resource-sample-interval <MS>`: how often to sample. `0` disables sampling entirely.
+  Defaults to 1000 ms. Also adjustable at runtime through the server configuration API.
+- `--resource-include-children <true|false>`: whether a session's child processes count
+  towards its reported usage. Defaults to `true`. With `false`, only the kernel process
+  itself is measured and no child enumeration happens at all.
+
+The monitor never enumerates the system process table. Both the tree walk
+(`process_tree.rs`) and the per-process sampling (`process_metrics.rs`) touch only the PIDs
+belonging to a session:
+
+- **Linux**: children come from `/proc/[pid]/task/[tid]/children`; metrics come from a single
+  read of `/proc/[pid]/stat`.
+- **macOS**: children come from `proc_listchildpids()`; metrics come from `proc_pid_rusage`
+  (`ri_phys_footprint`, to match Activity Monitor) and `proc_pidinfo`. Note that libproc
+  reports CPU times in Mach absolute time units, which are *not* nanoseconds on Apple
+  silicon.
+- **Windows**: each kernel is placed in its own job object nested inside the supervisor job
+  (see `kernel_session/job_object.rs`), and job membership gives the process list without a
+  snapshot. Metrics come from `GetProcessTimes` and `GetProcessMemoryInfo`.
+
+Deliberately **not** used: `sysinfo`'s `refresh_processes_specifics`. Despite taking a PID
+filter, it enumerates every process on the system first and filters afterwards, on all three
+platforms.
+
 ## Testing
 
 ### Running Tests
