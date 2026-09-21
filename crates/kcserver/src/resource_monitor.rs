@@ -89,11 +89,14 @@ impl CpuTracker {
 /// * `config` - Initial monitor settings
 /// * `interval_update_rx` - Receiver for interval update requests
 /// * `current_interval` - Shared storage for the current interval value
+/// * `include_children` - Shared storage for whether child processes count
+///   towards a session's usage; re-read on every tick
 pub fn start_global_resource_monitor(
     kernel_sessions: Arc<RwLock<Vec<KernelSession>>>,
     config: ResourceMonitorConfig,
     mut interval_update_rx: mpsc::Receiver<u64>,
     current_interval: Arc<RwLock<u64>>,
+    include_children: Arc<RwLock<bool>>,
 ) {
     // Don't start if monitoring is disabled
     if config.sample_interval_ms == 0 {
@@ -187,6 +190,13 @@ pub fn start_global_resource_monitor(
                     // measures against the same elapsed time
                     let now = Instant::now();
 
+                    // Re-read the child process setting so it can be changed
+                    // at runtime; every session in this tick uses the same value
+                    let include_children = include_children
+                        .read()
+                        .map(|guard| *guard)
+                        .unwrap_or(config.include_children);
+
                     // Sessions we sampled on this tick; anything else has its
                     // CPU tracker discarded below
                     let mut sampled_sessions = HashSet::new();
@@ -211,7 +221,7 @@ pub fn start_global_resource_monitor(
                         // Release the state lock before collecting metrics
                         drop(state_guard);
 
-                        let pids = if config.include_children {
+                        let pids = if include_children {
                             process_tree::get_process_tree(&session_id, pid)
                         } else {
                             HashSet::from([pid])

@@ -188,7 +188,8 @@ connected clients. Two options control it:
   Defaults to 1000 ms. Also adjustable at runtime through the server configuration API.
 - `--resource-include-children <true|false>`: whether a session's child processes count
   towards its reported usage. Defaults to `true`. With `false`, only the kernel process
-  itself is measured and no child enumeration happens at all.
+  itself is measured and no child enumeration happens at all. Also adjustable at runtime
+  through the server configuration API.
 
 The monitor never enumerates the system process table. Both the tree walk
 (`process_tree.rs`) and the per-process sampling (`process_metrics.rs`) touch only the PIDs

@@ -616,6 +616,9 @@ pub struct Server<C> {
     resource_sample_interval_ms: Arc<RwLock<u64>>,
     // Channel to signal changes to resource sampling interval
     resource_interval_update_tx: Sender<u64>,
+    // Shared, thread-safe storage for whether child processes count towards a
+    // session's reported resource usage
+    resource_include_children: Arc<RwLock<bool>>,
     // Track whether this server is using Unix domain sockets
     #[cfg(unix)]
     #[allow(dead_code)]
@@ -669,6 +672,7 @@ impl<C> Server<C> {
 
         // Create shared storage and channel for resource sampling interval
         let shared_resource_interval = Arc::new(RwLock::new(resource_config.sample_interval_ms));
+        let shared_include_children = Arc::new(RwLock::new(resource_config.include_children));
         let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
 
         // Start the global resource monitor
@@ -677,6 +681,7 @@ impl<C> Server<C> {
             resource_config,
             resource_interval_update_rx,
             shared_resource_interval.clone(),
+            shared_include_children.clone(),
         );
 
         Server {
@@ -693,6 +698,7 @@ impl<C> Server<C> {
             idle_config_update_tx,
             resource_sample_interval_ms: shared_resource_interval,
             resource_interval_update_tx,
+            resource_include_children: shared_include_children,
             uses_domain_sockets,
             #[cfg(unix)]
             active_domain_sockets: Arc::new(RwLock::new(vec![])),
@@ -732,6 +738,7 @@ impl<C> Server<C> {
 
         // Create shared storage and channel for resource sampling interval
         let shared_resource_interval = Arc::new(RwLock::new(resource_config.sample_interval_ms));
+        let shared_include_children = Arc::new(RwLock::new(resource_config.include_children));
         let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
 
         // Start the global resource monitor
@@ -740,6 +747,7 @@ impl<C> Server<C> {
             resource_config,
             resource_interval_update_rx,
             shared_resource_interval.clone(),
+            shared_include_children.clone(),
         );
 
         Server {
@@ -756,6 +764,7 @@ impl<C> Server<C> {
             idle_config_update_tx,
             resource_sample_interval_ms: shared_resource_interval,
             resource_interval_update_tx,
+            resource_include_children: shared_include_children,
             uses_named_pipes,
         }
     }
@@ -789,6 +798,7 @@ impl<C> Server<C> {
 
         // Create shared storage and channel for resource sampling interval
         let shared_resource_interval = Arc::new(RwLock::new(resource_config.sample_interval_ms));
+        let shared_include_children = Arc::new(RwLock::new(resource_config.include_children));
         let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
 
         // Start the global resource monitor
@@ -797,6 +807,7 @@ impl<C> Server<C> {
             resource_config,
             resource_interval_update_rx,
             shared_resource_interval.clone(),
+            shared_include_children.clone(),
         );
 
         Server {
@@ -813,6 +824,7 @@ impl<C> Server<C> {
             idle_config_update_tx,
             resource_sample_interval_ms: shared_resource_interval,
             resource_interval_update_tx,
+            resource_include_children: shared_include_children,
         }
     }
 
@@ -2301,6 +2313,12 @@ where
             Some(*resource_interval_guard as i32)
         };
 
+        // Read the resource_include_children flag from the shared value
+        let include_children = {
+            let include_children_guard = self.resource_include_children.read().unwrap();
+            Some(*include_children_guard)
+        };
+
         // Convert log_level from String to ServerConfigurationLogLevel
         let log_level_enum =
             self.log_level
@@ -2320,6 +2338,7 @@ where
                 models::ServerConfiguration {
                     idle_shutdown_hours: idle_hours,
                     resource_sample_interval_ms: resource_interval,
+                    resource_include_children: include_children,
                     log_level: log_level_enum,
                 },
             ),
@@ -2415,6 +2434,24 @@ where
 
             // Note: The shared storage is updated by the resource monitor task itself
             // when it receives the update message, so we don't need to update it here
+        }
+
+        // Check if resource_include_children is provided in the configuration
+        if let Some(include_children) = configuration.resource_include_children {
+            // The resource monitor reads this on each tick, so updating the
+            // shared value is all that's needed to take effect.
+            let mut include_children_guard = self.resource_include_children.write().unwrap();
+            if *include_children_guard != include_children {
+                log::info!(
+                    "Updating resource monitor to {} child processes in session usage",
+                    if include_children {
+                        "include"
+                    } else {
+                        "exclude"
+                    }
+                );
+                *include_children_guard = include_children;
+            }
         }
 
         // Return success
