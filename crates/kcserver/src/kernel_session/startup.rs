@@ -308,6 +308,8 @@ impl StartupCoordinator {
 
         // Spawn the process
         let mut child = match cmd
+            .env_remove(MCP_URL_VAR)
+            .env_remove(MCP_TOKEN_VAR)
             .envs(resolved_env)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -48,14 +48,14 @@ pub struct ExecuteOptions {
     /// Whether to abort queued executions when this one fails.
     pub stop_on_error: bool,
 
-    /// How long to wait before giving up and interrupting the kernel.
+    /// How long to wait before abandoning the execution.
     pub timeout: Option<Duration>,
 
     /// Who requested the execution, when it isn't the connected client.
     pub attribution: Option<ExecutionAttribution>,
 
-    /// Cancelled when the caller no longer wants the result. The kernel is
-    /// then interrupted, as it is on a timeout.
+    /// Cancelled when the caller no longer wants the result. The execution is
+    /// then abandoned, as it is on a timeout.
     pub cancel: Option<CancellationToken>,
 
     /// Receives the text of each stream message as it arrives.
@@ -71,11 +71,11 @@ pub enum ExecuteError {
     /// The request could not be handed to the kernel.
     SendFailed(String),
 
-    /// Execution did not complete within the requested timeout. The kernel has
-    /// been interrupted.
+    /// Execution did not complete within the requested timeout, and has been
+    /// abandoned.
     Timeout,
 
-    /// The caller cancelled the execution. The kernel has been interrupted.
+    /// The caller cancelled the execution, and it has been abandoned.
     Cancelled,
 
     /// The kernel's message channel closed while the execution was in flight.
@@ -160,7 +160,28 @@ impl KernelSession {
             result,
             Err(ExecuteError::Timeout) | Err(ExecuteError::Cancelled)
         ) {
-            // Interrupt the kernel so abandoned code stops consuming resources
+            self.abandon(&msg_id).await;
+        }
+
+        result
+    }
+
+    /// Stop an execution nobody is waiting for: withdraw it if it is still
+    /// queued, or interrupt the kernel if it is running. Code it was queued
+    /// behind is left alone.
+    async fn abandon(&self, msg_id: &str) {
+        let running = {
+            let mut state = self.state.write().await;
+            let queue = &mut state.execution_queue;
+            if queue.remove_pending(msg_id) {
+                return;
+            }
+            queue
+                .active
+                .as_ref()
+                .is_some_and(|active| active.header.msg_id == msg_id)
+        };
+        if running {
             if let Err(e) = self.interrupt().await {
                 log::warn!(
                     "Failed to interrupt kernel after abandoning execution: {}",
@@ -168,8 +189,6 @@ impl KernelSession {
                 );
             }
         }
-
-        result
     }
 
     /// Wait for a kernel that is still coming up to become runnable.

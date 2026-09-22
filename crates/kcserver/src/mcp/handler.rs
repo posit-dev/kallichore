@@ -700,7 +700,7 @@ impl PositronMcpHandler {
                 json!({
                     "status": "timed_out",
                     "message": format!(
-                        "Execution did not finish within {} seconds; the session was interrupted.",
+                        "Execution did not finish within {} seconds and was stopped.",
                         timeout_s
                     ),
                 }),
@@ -730,7 +730,7 @@ impl PositronMcpHandler {
                 json!({
                     "status": "interrupted",
                     "code": "CANCELLED",
-                    "message": "The call was cancelled; the session was interrupted.",
+                    "message": "The call was cancelled and the execution stopped.",
                 }),
                 Vec::new(),
                 true,
