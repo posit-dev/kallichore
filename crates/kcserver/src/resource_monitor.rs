@@ -197,11 +197,14 @@ pub fn start_global_resource_monitor(
                         .map(|guard| *guard)
                         .unwrap_or(config.include_children);
 
-                    // Sessions we sampled on this tick; anything else has its
-                    // CPU tracker discarded below
-                    let mut sampled_sessions = HashSet::new();
+                    // Sessions that still exist on this tick; anything else
+                    // has its CPU tracker discarded below. A session that is
+                    // merely skipped below keeps its tracker, so a transient
+                    // skip doesn't cost it its CPU baseline.
+                    let mut live_sessions = HashSet::new();
 
                     for (session_id, state, ws_json_tx) in session_data {
+                        live_sessions.insert(session_id.clone());
                         // Read the kernel state (tokio::sync::RwLock)
                         let state_guard = state.read().await;
 
@@ -246,8 +249,6 @@ pub fn start_global_resource_monitor(
                             .or_default()
                             .usage_percent(&samples, now);
 
-                        sampled_sessions.insert(session_id.clone());
-
                         // Create the resource update message
                         let update = ResourceUpdate {
                             cpu_percent,
@@ -283,7 +284,7 @@ pub fn start_global_resource_monitor(
                     }
 
                     // Drop trackers for sessions that have gone away
-                    trackers.retain(|session_id, _| sampled_sessions.contains(session_id));
+                    trackers.retain(|session_id, _| live_sessions.contains(session_id));
                 }
                 Some(new_interval_ms) = interval_update_rx.recv() => {
                     log::info!(

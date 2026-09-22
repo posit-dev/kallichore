@@ -47,7 +47,8 @@ pub fn assign_to_jobs(session_id: &str, child: &tokio::process::Child) {
 }
 
 /// Release the per-session job object held for a kernel, if any. Called when
-/// the session is deleted.
+/// the kernel process exits, and again when the session is deleted; releasing
+/// a session that holds no job is a no-op.
 ///
 /// This does not terminate anything: the per-session job sets no limits.
 #[allow(unused_variables)]

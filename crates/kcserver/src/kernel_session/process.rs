@@ -87,6 +87,9 @@ impl ProcessMonitor {
             status
         );
 
+        // The kernel's accounting job has nothing left in it now.
+        super::job_object::release_session_job(&self.session_id);
+
         // Check the kernel state. If we were still in the Starting state when
         // the process exited, that's bad.
         {

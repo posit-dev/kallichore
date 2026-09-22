@@ -870,6 +870,7 @@ fn main() {
             let config = ServerConfiguration {
                 idle_shutdown_hours: Some(hours),
                 resource_sample_interval_ms: None,
+                resource_include_children: None,
                 log_level: None,
             };
 

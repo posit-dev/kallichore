@@ -109,7 +109,9 @@ mod windows_impl {
     }
 }
 
-#[cfg(test)]
+// These drive real processes through `sleep`, which Windows runners do not
+// have.
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::*;
 
