@@ -206,8 +206,8 @@ separate from the main API transport, because agents need a URL.
   and the claim outlive the window going away.
 - Kernel tools (`list_sessions`, `execute_code`, `evaluate_code`, `interrupt_session`) are answered
   inside `kcserver` and keep working when Positron is disconnected.
-- Command tools (`list_positron_commands`, `run_positron_command`) are brokered to a window over
-  `GET /mcp/workspaces/{id}/channel`, a WebSocket that works on all three transports. The command
+- Command tools (`list_positron_commands`, `run_positron_command`, `get_plot`) are brokered to a
+  window over `GET /mcp/workspaces/{id}/channel`, a WebSocket that works on all three transports. The command
   catalog is cached, so searching works while disconnected; running does not. Positron keeps the
   workspace ID in workspace-scoped state, so two windows onto one workspace share a record and
   attach a frontend channel each; commands go to whichever of them reported focus last, and move
@@ -226,6 +226,13 @@ separate from the main API transport, because agents need a URL.
   again after a refusal, and answers the handshake, tool list, and tool calls itself while no
   endpoint answers, so an agent never has to reconnect. Stdout carries the protocol; logs go to
   stderr. A request is retried only when it never reached a handler.
+- Connected agents are known through presence: for as long as it runs, the bridge holds
+  `GET /mcp/w/<id>/presence` open, describing itself in the query string (`name`, `version`,
+  `pid`, `cwd`). The workspace lists it while the response is open and drops it when the
+  connection closes, however the bridge died. The list is in `serverStatus.mcp.workspaces[].clients`
+  and is pushed to windows as `clients_changed` on the frontend channel, on attach and on every
+  change. Deregistering a workspace ends its presence streams; bridges reopen them wherever the
+  endpoint reappears. Direct HTTP clients have no presence and are not listed.
 
 Code lives in `crates/kcserver/src/mcp/` (`listener.rs`, `handler.rs`, `workspaces.rs`, `auth.rs`,
 `channel.rs`, `stdio_bridge.rs`), with shared frontend-channel message types in `crates/kcshared/src/mcp_frontend.rs`.

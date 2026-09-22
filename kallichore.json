@@ -1651,11 +1651,58 @@
           "connected": {
             "type": "boolean",
             "description": "Whether any of the workspace's windows is currently connected"
+          },
+          "clients": {
+            "type": "array",
+            "description": "The agents connected to the workspace through the stdio bridge",
+            "items": {
+              "$ref": "#/components/schemas/mcpClient"
+            }
           }
         },
         "required": [
+          "clients",
           "connected",
           "display_name",
+          "id"
+        ]
+      },
+      "mcpClient": {
+        "type": "object",
+        "description": "An agent connected to a workspace through the stdio bridge",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Identifies the client within its workspace"
+          },
+          "name": {
+            "type": "string",
+            "description": "The agent's name, from the MCP clientInfo"
+          },
+          "version": {
+            "type": "string",
+            "description": "The agent's version, from the MCP clientInfo"
+          },
+          "pid": {
+            "type": "integer",
+            "description": "The process ID of the bridge"
+          },
+          "working_directory": {
+            "type": "string",
+            "description": "The bridge's working directory, normally the agent's"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The session the client is running inside, for a client in a kernel"
+          },
+          "connected_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the client connected"
+          }
+        },
+        "required": [
+          "connected_at",
           "id"
         ]
       },

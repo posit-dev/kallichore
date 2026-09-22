@@ -33,9 +33,15 @@
 //! to reconnect. While no endpoint answers, the bridge answers by itself: the
 //! handshake succeeds, the tool list is the real one, and every tool call
 //! explains that Positron is not reachable.
+//!
+//! For as long as it runs, the bridge also holds the endpoint's presence
+//! stream open, which is how the workspace knows which agents are connected.
+//! The stream closes when the bridge exits, however it exits, and the bridge
+//! reopens it wherever the endpoint moves.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,10 +60,10 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 
 use super::handler::{server_info, PositronMcpHandler, INSTRUCTIONS};
-use super::listener::{CALLER_PATH_SEGMENT, MCP_PATH_PREFIX};
+use super::listener::{CALLER_PATH_SEGMENT, MCP_PATH_PREFIX, PRESENCE_PATH_SUFFIX};
 use super::{MCP_TOKEN_VAR, MCP_URL_VAR};
 
 /// The index Positron keeps in the connections directory.
@@ -72,6 +78,9 @@ const PROTOCOL_HEADER: &str = "mcp-protocol-version";
 /// Where a 2026-07-28 request names its protocol version.
 const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 
+/// Where a 2026-07-28 request names its client.
+const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
+
 /// The first protocol revision whose results carry `resultType`.
 const RESULT_TYPE_VERSION: &str = "2026-07-28";
 
@@ -81,6 +90,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long to spend ending the protocol session on the way out.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How soon to look for the endpoint again after the presence stream ends.
+const PRESENCE_RETRY_MIN: Duration = Duration::from_secs(1);
+
+/// The longest the bridge waits between attempts to reopen the presence stream
+/// while no endpoint answers.
+const PRESENCE_RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// How the bridge was asked to find its workspace.
 #[derive(Debug, Default, Clone)]
@@ -118,6 +134,8 @@ pub async fn run(options: BridgeOptions) -> std::io::Result<()> {
     let bridge = Arc::new(Bridge {
         link: Mutex::new(Link::new(Resolver::from_environment(options))),
         out: tx,
+        presence_started: AtomicBool::new(false),
+        presence: std::sync::Mutex::new(None),
     });
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -150,14 +168,22 @@ pub async fn run(options: BridgeOptions) -> std::io::Result<()> {
             Some("initialize") if message.get("id").is_some() => bridge.initialize(message).await,
             Some(_) if message.get("id").is_none() => bridge.notify(message).await,
             _ => {
+                if let Some(info) = request_client_info(&message) {
+                    bridge.link.lock().await.request_client_info = Some(info);
+                }
                 let bridge = bridge.clone();
                 requests.spawn(async move { bridge.request(message).await });
             }
         }
+
+        // Presence waits for the first message, which is where the client
+        // says who it is.
+        bridge.start_presence();
     }
 
     // Answer everything already asked before leaving.
     while requests.join_next().await.is_some() {}
+    bridge.stop_presence().await;
     bridge.close().await;
     drop(bridge);
     let _ = writer.await;
@@ -424,6 +450,10 @@ struct Link {
     /// The protocol version the handshake settled on.
     protocol_version: Option<String>,
 
+    /// The client's name and version as a 2026-07-28 request carries them,
+    /// for a client that never sends `initialize`.
+    request_client_info: Option<ClientInfo>,
+
     /// Why the last attempt to connect failed.
     offline: Offline,
 }
@@ -438,6 +468,7 @@ impl Link {
             handshake: None,
             initialized: false,
             protocol_version: None,
+            request_client_info: None,
             offline: Offline::NoWorkspace,
         }
     }
@@ -506,6 +537,15 @@ impl Link {
         false
     }
 
+    /// Who the client says it is, from its handshake or its requests.
+    fn client_info(&self) -> Option<ClientInfo> {
+        self.handshake
+            .as_ref()
+            .and_then(|handshake| handshake.pointer("/params/clientInfo"))
+            .and_then(ClientInfo::from_json)
+            .or_else(|| self.request_client_info.clone())
+    }
+
     /// Adopt an endpoint that answered.
     fn connected(&mut self, endpoint: Endpoint) {
         log::info!(
@@ -541,6 +581,12 @@ type Output = mpsc::UnboundedSender<String>;
 struct Bridge {
     link: Mutex<Link>,
     out: Output,
+
+    /// Whether the presence keeper has been started.
+    presence_started: AtomicBool,
+
+    /// The presence keeper, stopped as the bridge leaves.
+    presence: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Bridge {
@@ -641,6 +687,70 @@ impl Bridge {
         let offline = link.offline;
         if let Some(reply) = offline_reply(&message, offline, &mut link.protocol_version) {
             self.send(&reply);
+        }
+    }
+
+    /// Start holding the presence stream, if that has not already begun.
+    fn start_presence(self: &Arc<Self>) {
+        if self.presence_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let keeper = tokio::spawn(self.clone().keep_presence());
+        *self.presence.lock().unwrap() = Some(keeper);
+    }
+
+    /// Stop holding the presence stream, which takes the client off the
+    /// workspace's list at once rather than when the process exits.
+    async fn stop_presence(&self) {
+        let keeper = self.presence.lock().unwrap().take();
+        if let Some(keeper) = keeper {
+            keeper.abort();
+            let _ = keeper.await;
+        }
+    }
+
+    /// Hold the endpoint's presence stream open for the life of the bridge,
+    /// following the endpoint wherever it moves.
+    ///
+    /// Connects if no request has yet, so a client that sits idle is still
+    /// listed, and a client started before Positron appears once Positron
+    /// does. When the stream ends, the endpoint it was held on is taken as
+    /// stale and resolved again.
+    async fn keep_presence(self: Arc<Self>) {
+        let mut stale = None;
+        let mut delay = PRESENCE_RETRY_MIN;
+        loop {
+            let target = {
+                let mut link = self.link.lock().await;
+                if link.upstream.is_none() || stale == Some(link.generation) {
+                    link.connect(None).await;
+                }
+                let generation = link.generation;
+                let client_info = link.client_info();
+                let working_dir = link.resolver.working_dir.clone();
+                link.upstream
+                    .clone()
+                    .map(|endpoint| (endpoint, generation, client_info, working_dir))
+            };
+
+            let held = match &target {
+                Some((endpoint, _, client_info, working_dir)) => {
+                    hold_presence(endpoint, client_info.as_ref(), working_dir.as_deref()).await
+                }
+                None => false,
+            };
+            stale = target.map(|(_, generation, _, _)| generation);
+
+            // A stream that was held ended because the server went away, which
+            // is usually a moment's work; one that could not be opened is
+            // retried less and less often.
+            let wait = if held { PRESENCE_RETRY_MIN } else { delay };
+            delay = if held {
+                PRESENCE_RETRY_MIN
+            } else {
+                (delay * 2).min(PRESENCE_RETRY_MAX)
+            };
+            tokio::time::sleep(wait).await;
         }
     }
 
@@ -792,6 +902,99 @@ async fn post(
         answered,
         session_id: issued_session,
     }
+}
+
+/// A client's name and version, from its MCP `clientInfo`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClientInfo {
+    name: String,
+    version: Option<String>,
+}
+
+impl ClientInfo {
+    fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            name: value.get("name")?.as_str()?.to_string(),
+            version: value
+                .get("version")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+    }
+}
+
+/// The client a 2026-07-28 request names for itself.
+fn request_client_info(message: &Value) -> Option<ClientInfo> {
+    ClientInfo::from_json(message.get("params")?.get("_meta")?.get(META_CLIENT_INFO)?)
+}
+
+/// Open an endpoint's presence stream and hold it until it ends.
+///
+/// Returns whether the stream was opened, as opposed to refused.
+async fn hold_presence(
+    endpoint: &Endpoint,
+    client_info: Option<&ClientInfo>,
+    working_dir: Option<&Path>,
+) -> bool {
+    let mut query = vec![("pid", std::process::id().to_string())];
+    if let Some(info) = client_info {
+        query.push(("name", info.name.clone()));
+        if let Some(version) = &info.version {
+            query.push(("version", version.clone()));
+        }
+    }
+    if let Some(dir) = working_dir {
+        query.push(("cwd", dir.to_string_lossy().to_string()));
+    }
+    let query: Vec<String> = query
+        .into_iter()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                key,
+                percent_encoding::utf8_percent_encode(&value, percent_encoding::NON_ALPHANUMERIC)
+            )
+        })
+        .collect();
+    let path = format!(
+        "{}{}?{}",
+        endpoint.path.trim_end_matches('/'),
+        PRESENCE_PATH_SUFFIX,
+        query.join("&")
+    );
+
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(path)
+        .header(HOST, format!("{}:{}", endpoint.host, endpoint.port))
+        .header(AUTHORIZATION, format!("Bearer {}", endpoint.token))
+        .header(hyper::header::ACCEPT, "text/event-stream")
+        .body(Full::new(Bytes::new()));
+    let Ok(request) = request else {
+        return false;
+    };
+    let response = match send(endpoint, request).await {
+        Ok(response) => response,
+        Err(Status::Refused(reason) | Status::Failed(reason)) => {
+            log::debug!("Could not open the presence stream: {}", reason);
+            return false;
+        }
+        Err(Status::Done) => return false,
+    };
+    if response.status() != StatusCode::OK {
+        log::debug!("The presence stream was refused: {}", response.status());
+        return false;
+    }
+
+    log::debug!("Holding the presence stream");
+    let mut body = response.into_body();
+    while let Some(frame) = body.frame().await {
+        if frame.is_err() {
+            break;
+        }
+    }
+    log::debug!("The presence stream ended");
+    true
 }
 
 /// A request to an endpoint with the headers every request carries.

@@ -21,6 +21,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
+use kallichore_api::models::McpClient;
 use kcshared::mcp_frontend::{
     CommandReply, CommandRequest, FrontendMessage, ServerFrontendMessage,
 };
@@ -385,6 +386,17 @@ impl StdioAgent {
         self
     }
 
+    /// The bridge's process ID.
+    pub fn pid(&self) -> u32 {
+        self.child.id().expect("The bridge has exited")
+    }
+
+    /// Kill the bridge outright, as an agent that crashes takes its servers
+    /// with it, and wait for it to die.
+    pub async fn kill(mut self) {
+        self.child.kill().await.expect("Failed to kill the bridge");
+    }
+
     /// Write one message to the bridge.
     pub async fn send(&mut self, message: Value) {
         use tokio::io::AsyncWriteExt;
@@ -510,6 +522,7 @@ fn expect_result(response: Value) -> Value {
 pub struct SimulatedFrontend {
     outbound: mpsc::UnboundedSender<FrontendMessage>,
     requests: mpsc::UnboundedReceiver<CommandRequest>,
+    clients: mpsc::UnboundedReceiver<Vec<McpClient>>,
     closer: mpsc::UnboundedSender<()>,
 }
 
@@ -529,6 +542,7 @@ impl SimulatedFrontend {
         let (mut sink, mut source) = stream.split();
         let (outbound, mut outbound_rx) = mpsc::unbounded_channel::<FrontendMessage>();
         let (request_tx, requests) = mpsc::unbounded_channel::<CommandRequest>();
+        let (clients_tx, clients) = mpsc::unbounded_channel::<Vec<McpClient>>();
         let (closer, mut close_rx) = mpsc::unbounded_channel::<()>();
 
         tokio::spawn(async move {
@@ -554,6 +568,9 @@ impl SimulatedFrontend {
                                     ServerFrontendMessage::CommandRequest(request) => {
                                         let _ = request_tx.send(request);
                                     }
+                                    ServerFrontendMessage::ClientsChanged(changed) => {
+                                        let _ = clients_tx.send(changed.clients);
+                                    }
                                 }
                             }
                             Some(Ok(_)) => {}
@@ -567,6 +584,7 @@ impl SimulatedFrontend {
         Self {
             outbound,
             requests,
+            clients,
             closer,
         }
     }
@@ -584,6 +602,25 @@ impl SimulatedFrontend {
             .await
             .expect("Timed out waiting for a command request")
             .expect("Frontend channel closed")
+    }
+
+    /// Wait until the supervisor reports a client list that satisfies `done`,
+    /// returning it.
+    pub async fn wait_for_clients(
+        &mut self,
+        timeout: Duration,
+        done: impl Fn(&[McpClient]) -> bool,
+    ) -> Vec<McpClient> {
+        tokio::time::timeout(timeout, async {
+            loop {
+                let clients = self.clients.recv().await.expect("Frontend channel closed");
+                if done(&clients) {
+                    return clients;
+                }
+            }
+        })
+        .await
+        .expect("Timed out waiting for the client list")
     }
 
     /// Answer a brokered command request.

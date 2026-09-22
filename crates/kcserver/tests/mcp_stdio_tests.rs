@@ -16,13 +16,13 @@
 mod common;
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::mcp::{SimulatedFrontend, StdioAgent};
 use common::test_utils::{create_session_with_client, create_test_session};
 use common::TestServer;
-use kallichore_api::models::{McpWorkspace, McpWorkspaceRegistration};
-use kallichore_api::DeregisterMcpWorkspaceResponse;
+use kallichore_api::models::{McpClient, McpWorkspace, McpWorkspaceRegistration};
+use kallichore_api::{DeregisterMcpWorkspaceResponse, ServerStatusResponse};
 use kcshared::mcp_frontend::{CommandReply, FrontendHello, FrontendMessage};
 use kcshared::port_picker::pick_unused_tcp_port;
 use serde_json::{json, Value};
@@ -98,6 +98,24 @@ async fn attached_workspace(agent: &mut StdioAgent) -> Value {
     result.field("workspace")["id"].clone()
 }
 
+/// The names of the clients in a list.
+fn names(clients: &[McpClient]) -> Vec<&str> {
+    clients
+        .iter()
+        .map(|client| client.name.as_deref().unwrap_or(""))
+        .collect()
+}
+
+/// The clients the supervisor's status lists for its only workspace.
+async fn listed_clients(server: &TestServer) -> Vec<McpClient> {
+    let client = server.create_client().await;
+    let status = match client.server_status().await.unwrap() {
+        ServerStatusResponse::ServerStatusAndInformation(status) => status,
+        other => panic!("Unexpected status response: {:?}", other),
+    };
+    status.mcp.unwrap().workspaces[0].clients.clone()
+}
+
 /// A token of the shape the server issues.
 fn fake_token() -> String {
     "ab".repeat(32)
@@ -130,7 +148,7 @@ async fn test_bridge_relays_using_the_environment() {
     );
 
     let tools = agent.tool_names().await;
-    assert_eq!(tools.len(), 6, "{:?}", tools);
+    assert_eq!(tools.len(), 7, "{:?}", tools);
 
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert!(!result.is_error, "{:?}", result);
@@ -196,7 +214,7 @@ async fn test_bridge_finds_the_workspace_by_folder() {
     // says why nothing works rather than failing to start.
     let mut agent = StdioAgent::spawn(&args, &[], &elsewhere);
     agent.initialize().await;
-    assert_eq!(agent.tool_names().await.len(), 6);
+    assert_eq!(agent.tool_names().await.len(), 7);
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert!(result.is_error, "{:?}", result);
     assert_eq!(result.field("code"), &json!("NO_WORKSPACE"));
@@ -371,7 +389,7 @@ async fn test_bridge_started_before_positron_connects_when_it_arrives() {
         "{}",
         info
     );
-    assert_eq!(agent.tool_names().await.len(), 6);
+    assert_eq!(agent.tool_names().await.len(), 7);
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert!(result.is_error, "{:?}", result);
     assert_eq!(result.field("code"), &json!("POSITRON_NOT_RUNNING"));
@@ -416,4 +434,163 @@ async fn test_a_bridge_inside_a_kernel_cannot_run_code_in_that_kernel() {
         .await;
     assert!(result.is_error, "{:?}", result);
     assert_eq!(result.field("code"), &json!("SESSION_IS_CALLER"));
+}
+
+#[tokio::test]
+async fn test_connected_bridges_are_listed_while_they_run() {
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("Listed", None).await;
+    let mut window = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
+    window
+        .wait_for_clients(Duration::from_secs(5), |clients| clients.is_empty())
+        .await;
+
+    let cwd = tempfile::tempdir().unwrap();
+    let env = [
+        ("POSITRON_MCP_URL", workspace.url.as_str()),
+        ("POSITRON_MCP_TOKEN", workspace.token.as_str()),
+    ];
+    let mut claude = StdioAgent::spawn(&[], &env, cwd.path()).named("claude-code");
+    claude.initialize().await;
+
+    let listed = window
+        .wait_for_clients(Duration::from_secs(10), |clients| clients.len() == 1)
+        .await;
+    let expected_dir = std::fs::canonicalize(cwd.path()).unwrap();
+    assert_eq!(
+        (
+            listed[0].name.as_deref(),
+            listed[0].version.as_deref(),
+            listed[0].pid,
+            listed[0].working_directory.as_deref().map(Path::new),
+        ),
+        (
+            Some("claude-code"),
+            Some("1.0.0"),
+            Some(claude.pid() as i32),
+            Some(expected_dir.as_path()),
+        )
+    );
+    assert_eq!(names(&listed_clients(&server).await), vec!["claude-code"]);
+
+    let mut codex = StdioAgent::spawn(&[], &env, cwd.path()).named("codex");
+    codex.initialize().await;
+    let listed = window
+        .wait_for_clients(Duration::from_secs(10), |clients| clients.len() == 2)
+        .await;
+    assert_eq!(names(&listed), vec!["claude-code", "codex"]);
+
+    // An agent that crashes takes its bridge with it without a word. The
+    // connection closing is enough to notice, well before the next keepalive.
+    let killed = Instant::now();
+    claude.kill().await;
+    let listed = window
+        .wait_for_clients(Duration::from_secs(10), |clients| clients.len() == 1)
+        .await;
+    assert_eq!(names(&listed), vec!["codex"]);
+    assert!(
+        killed.elapsed() < Duration::from_secs(5),
+        "A dead bridge should be noticed promptly, took {:?}",
+        killed.elapsed()
+    );
+
+    // One that shuts down cleanly leaves as it goes.
+    assert!(codex.shut_down().await.success());
+    window
+        .wait_for_clients(Duration::from_secs(5), |clients| clients.is_empty())
+        .await;
+}
+
+#[tokio::test]
+async fn test_an_idle_bridge_is_listed_once_positron_arrives() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let connections = root.path().join("connections");
+
+    let workspace_id = "idle-workspace-abc123";
+    let token = fake_token();
+    let dead_port = pick_unused_tcp_port().unwrap();
+    write_connections(
+        &connections,
+        &[Listed {
+            id: workspace_id,
+            url: format!("http://127.0.0.1:{}/mcp/w/{}", dead_port, workspace_id),
+            token: &token,
+            folders: vec![&folder],
+        }],
+    );
+
+    // The agent starts, shakes hands, and then does nothing at all.
+    let mut agent = StdioAgent::spawn(
+        &["--connections", connections.to_str().unwrap()],
+        &[],
+        &folder,
+    );
+    agent.initialize().await;
+
+    let server = TestServer::start().await;
+    let mut registration = McpWorkspaceRegistration::new("Idle".to_string());
+    registration.workspace_id = Some(workspace_id.to_string());
+    registration.token = Some(token.clone());
+    let workspace = server.register_mcp_workspace_as(registration).await;
+    write_connections(
+        &connections,
+        &[Listed::registered(&workspace, vec![&folder])],
+    );
+
+    let mut window = SimulatedFrontend::connect(server.base_url(), workspace_id).await;
+    let listed = window
+        .wait_for_clients(Duration::from_secs(45), |clients| clients.len() == 1)
+        .await;
+    assert_eq!(names(&listed), vec!["stdio-test-agent"]);
+}
+
+#[tokio::test]
+async fn test_a_bridge_rejoins_when_its_workspace_registers_again() {
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("Rejoined", None).await;
+
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let connections = root.path().join("connections");
+    write_connections(
+        &connections,
+        &[Listed::registered(&workspace, vec![&folder])],
+    );
+
+    let mut agent = StdioAgent::spawn(
+        &["--connections", connections.to_str().unwrap()],
+        &[],
+        &folder,
+    );
+    agent.initialize().await;
+    let mut window = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
+    window
+        .wait_for_clients(Duration::from_secs(10), |clients| clients.len() == 1)
+        .await;
+
+    // Turning the feature off ends the presence stream; turning it back on
+    // brings the bridge back without the agent doing anything.
+    let client = server.create_client().await;
+    match client
+        .deregister_mcp_workspace(workspace.workspace_id.clone())
+        .await
+        .unwrap()
+    {
+        DeregisterMcpWorkspaceResponse::WorkspaceDeregistered => {}
+        other => panic!("Unexpected deregistration response: {:?}", other),
+    }
+    let mut registration = McpWorkspaceRegistration::new("Rejoined".to_string());
+    registration.workspace_id = Some(workspace.workspace_id.clone());
+    registration.token = Some(workspace.token.clone());
+    let again = server.register_mcp_workspace_as(registration).await;
+    write_connections(&connections, &[Listed::registered(&again, vec![&folder])]);
+
+    let mut window = SimulatedFrontend::connect(server.base_url(), &again.workspace_id).await;
+    let listed = window
+        .wait_for_clients(Duration::from_secs(45), |clients| clients.len() == 1)
+        .await;
+    assert_eq!(names(&listed), vec!["stdio-test-agent"]);
 }

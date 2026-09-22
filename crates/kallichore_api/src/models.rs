@@ -2812,6 +2812,291 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
     }
 }
 
+/// An agent connected to a workspace through the stdio bridge
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct McpClient {
+    /// Identifies the client within its workspace
+    #[serde(rename = "id")]
+    pub id: i32,
+
+    /// The agent's name, from the MCP clientInfo
+    #[serde(rename = "name")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// The agent's version, from the MCP clientInfo
+    #[serde(rename = "version")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+
+    /// The process ID of the bridge
+    #[serde(rename = "pid")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i32>,
+
+    /// The bridge's working directory, normally the agent's
+    #[serde(rename = "working_directory")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+
+    /// The session the client is running inside, for a client in a kernel
+    #[serde(rename = "session_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+
+    /// When the client connected
+    #[serde(rename = "connected_at")]
+    pub connected_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl McpClient {
+    #[allow(clippy::new_without_default)]
+    pub fn new(id: i32, connected_at: chrono::DateTime<chrono::Utc>) -> McpClient {
+        McpClient {
+            id,
+            name: None,
+            version: None,
+            pid: None,
+            working_directory: None,
+            session_id: None,
+            connected_at,
+        }
+    }
+}
+
+/// Converts the McpClient value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for McpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("id".to_string()),
+            Some(self.id.to_string()),
+            self.name
+                .as_ref()
+                .map(|name| ["name".to_string(), name.to_string()].join(",")),
+            self.version
+                .as_ref()
+                .map(|version| ["version".to_string(), version.to_string()].join(",")),
+            self.pid
+                .as_ref()
+                .map(|pid| ["pid".to_string(), pid.to_string()].join(",")),
+            self.working_directory.as_ref().map(|working_directory| {
+                [
+                    "working_directory".to_string(),
+                    working_directory.to_string(),
+                ]
+                .join(",")
+            }),
+            self.session_id
+                .as_ref()
+                .map(|session_id| ["session_id".to_string(), session_id.to_string()].join(",")),
+            // Skipping non-primitive type connected_at in query parameter serialization
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a McpClient value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for McpClient {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub id: Vec<i32>,
+            pub name: Vec<String>,
+            pub version: Vec<String>,
+            pub pid: Vec<i32>,
+            pub working_directory: Vec<String>,
+            pub session_id: Vec<String>,
+            pub connected_at: Vec<chrono::DateTime<chrono::Utc>>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing McpClient".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "id" => intermediate_rep.id.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "name" => intermediate_rep.name.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "version" => intermediate_rep.version.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "pid" => intermediate_rep.pid.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "working_directory" => intermediate_rep.working_directory.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "session_id" => intermediate_rep.session_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "connected_at" => intermediate_rep.connected_at.push(
+                        <chrono::DateTime<chrono::Utc> as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing McpClient".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(McpClient {
+            id: intermediate_rep
+                .id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "id missing in McpClient".to_string())?,
+            name: intermediate_rep.name.into_iter().next(),
+            version: intermediate_rep.version.into_iter().next(),
+            pid: intermediate_rep.pid.into_iter().next(),
+            working_directory: intermediate_rep.working_directory.into_iter().next(),
+            session_id: intermediate_rep.session_id.into_iter().next(),
+            connected_at: intermediate_rep
+                .connected_at
+                .into_iter()
+                .next()
+                .ok_or_else(|| "connected_at missing in McpClient".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<McpClient> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<McpClient>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<McpClient>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for McpClient - value: {hdr_value} is invalid {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<McpClient> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <McpClient as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{value}' into McpClient - {err}"
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {hdr_value:?} to string: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<McpClient>>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<McpClient>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<Vec<McpClient>> {
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<McpClient> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <McpClient as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into McpClient - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct McpStatus {
@@ -3749,15 +4034,25 @@ pub struct McpWorkspaceStatus {
     /// Whether any of the workspace's windows is currently connected
     #[serde(rename = "connected")]
     pub connected: bool,
+
+    /// The agents connected to the workspace through the stdio bridge
+    #[serde(rename = "clients")]
+    pub clients: Vec<models::McpClient>,
 }
 
 impl McpWorkspaceStatus {
     #[allow(clippy::new_without_default)]
-    pub fn new(id: String, display_name: String, connected: bool) -> McpWorkspaceStatus {
+    pub fn new(
+        id: String,
+        display_name: String,
+        connected: bool,
+        clients: Vec<models::McpClient>,
+    ) -> McpWorkspaceStatus {
         McpWorkspaceStatus {
             id,
             display_name,
             connected,
+            clients,
         }
     }
 }
@@ -3774,6 +4069,7 @@ impl std::fmt::Display for McpWorkspaceStatus {
             Some(self.display_name.to_string()),
             Some("connected".to_string()),
             Some(self.connected.to_string()),
+            // Skipping non-primitive type clients in query parameter serialization
         ];
 
         write!(
@@ -3798,6 +4094,7 @@ impl std::str::FromStr for McpWorkspaceStatus {
             pub id: Vec<String>,
             pub display_name: Vec<String>,
             pub connected: Vec<bool>,
+            pub clients: Vec<Vec<models::McpClient>>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -3831,6 +4128,10 @@ impl std::str::FromStr for McpWorkspaceStatus {
                     "connected" => intermediate_rep.connected.push(
                         <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    "clients" => return std::result::Result::Err(
+                        "Parsing a container in this style is not supported in McpWorkspaceStatus"
+                            .to_string(),
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing McpWorkspaceStatus".to_string(),
@@ -3860,6 +4161,11 @@ impl std::str::FromStr for McpWorkspaceStatus {
                 .into_iter()
                 .next()
                 .ok_or_else(|| "connected missing in McpWorkspaceStatus".to_string())?,
+            clients: intermediate_rep
+                .clients
+                .into_iter()
+                .next()
+                .ok_or_else(|| "clients missing in McpWorkspaceStatus".to_string())?,
         })
     }
 }

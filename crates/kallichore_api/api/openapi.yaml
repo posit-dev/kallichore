@@ -1137,9 +1137,39 @@ components:
           active: true
           workspaces:
           - connected: true
+            clients:
+            - name: name
+              session_id: session_id
+              pid: 2
+              working_directory: working_directory
+              id: 3
+              connected_at: 2000-01-23T04:56:07.000+00:00
+              version: version
+            - name: name
+              session_id: session_id
+              pid: 2
+              working_directory: working_directory
+              id: 3
+              connected_at: 2000-01-23T04:56:07.000+00:00
+              version: version
             id: id
             display_name: display_name
           - connected: true
+            clients:
+            - name: name
+              session_id: session_id
+              pid: 2
+              working_directory: working_directory
+              id: 3
+              connected_at: 2000-01-23T04:56:07.000+00:00
+              version: version
+            - name: name
+              session_id: session_id
+              pid: 2
+              working_directory: working_directory
+              id: 3
+              connected_at: 2000-01-23T04:56:07.000+00:00
+              version: version
             id: id
             display_name: display_name
           request_count: 9
@@ -1402,6 +1432,21 @@ components:
     mcpWorkspaceStatus:
       example:
         connected: true
+        clients:
+        - name: name
+          session_id: session_id
+          pid: 2
+          working_directory: working_directory
+          id: 3
+          connected_at: 2000-01-23T04:56:07.000+00:00
+          version: version
+        - name: name
+          session_id: session_id
+          pid: 2
+          working_directory: working_directory
+          id: 3
+          connected_at: 2000-01-23T04:56:07.000+00:00
+          version: version
         id: id
         display_name: display_name
       properties:
@@ -1412,9 +1457,53 @@ components:
         connected:
           description: Whether any of the workspace's windows is currently connected
           type: boolean
+        clients:
+          description: The agents connected to the workspace through the stdio bridge
+          items:
+            $ref: "#/components/schemas/mcpClient"
+          type: array
       required:
+      - clients
       - connected
       - display_name
+      - id
+      type: object
+    mcpClient:
+      description: An agent connected to a workspace through the stdio bridge
+      example:
+        name: name
+        session_id: session_id
+        pid: 2
+        working_directory: working_directory
+        id: 3
+        connected_at: 2000-01-23T04:56:07.000+00:00
+        version: version
+      properties:
+        id:
+          description: Identifies the client within its workspace
+          type: integer
+        name:
+          description: "The agent's name, from the MCP clientInfo"
+          type: string
+        version:
+          description: "The agent's version, from the MCP clientInfo"
+          type: string
+        pid:
+          description: The process ID of the bridge
+          type: integer
+        working_directory:
+          description: "The bridge's working directory, normally the agent's"
+          type: string
+        session_id:
+          description: "The session the client is running inside, for a client in\
+            \ a kernel"
+          type: string
+        connected_at:
+          description: When the client connected
+          format: date-time
+          type: string
+      required:
+      - connected_at
       - id
       type: object
     mcpStatus:
@@ -1423,9 +1512,39 @@ components:
         active: true
         workspaces:
         - connected: true
+          clients:
+          - name: name
+            session_id: session_id
+            pid: 2
+            working_directory: working_directory
+            id: 3
+            connected_at: 2000-01-23T04:56:07.000+00:00
+            version: version
+          - name: name
+            session_id: session_id
+            pid: 2
+            working_directory: working_directory
+            id: 3
+            connected_at: 2000-01-23T04:56:07.000+00:00
+            version: version
           id: id
           display_name: display_name
         - connected: true
+          clients:
+          - name: name
+            session_id: session_id
+            pid: 2
+            working_directory: working_directory
+            id: 3
+            connected_at: 2000-01-23T04:56:07.000+00:00
+            version: version
+          - name: name
+            session_id: session_id
+            pid: 2
+            working_directory: working_directory
+            id: 3
+            connected_at: 2000-01-23T04:56:07.000+00:00
+            version: version
           id: id
           display_name: display_name
         request_count: 9

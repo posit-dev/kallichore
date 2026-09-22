@@ -35,13 +35,14 @@ use kcshared::mcp_frontend::{
 use serde_json::{json, Value};
 
 /// The tools the server is expected to publish.
-const EXPECTED_TOOLS: [&str; 6] = [
+const EXPECTED_TOOLS: [&str; 7] = [
     "list_sessions",
     "execute_code",
     "evaluate_code",
     "interrupt_session",
     "list_positron_commands",
     "run_positron_command",
+    "get_plot",
 ];
 
 /// Three commands standing in for a Positron catalog.
@@ -590,6 +591,56 @@ async fn test_run_positron_command_is_brokered_to_a_window() {
     assert!(result.is_error, "{:?}", result);
     assert_eq!(result.field("reason"), &json!("disabled"));
     assert_eq!(result.field("message"), &json!("No session is active"));
+}
+
+#[tokio::test]
+async fn test_get_plot_returns_the_current_plot_as_an_image() {
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
+    agent.initialize().await;
+
+    let mut channel = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
+    channel.send(FrontendMessage::Hello(FrontendHello::default()));
+
+    // The Plots pane shows a plot.
+    let call = tokio::spawn(async move {
+        let result = agent.call_tool("get_plot", json!({})).await;
+        (agent, result)
+    });
+    let request = channel.next_command(Duration::from_secs(10)).await;
+    channel.reply(CommandReply {
+        id: request.id,
+        ok: true,
+        result: Some(json!("data:image/png;base64,iVBORw0KGgo=")),
+        reason: None,
+        message: None,
+    });
+    let (mut agent, result) = call.await.expect("Tool call panicked");
+    assert!(!result.is_error, "{:?}", result);
+    let images = result.blocks("image");
+    assert_eq!(images.len(), 1, "{:?}", result);
+    assert_eq!(images[0]["mimeType"], json!("image/png"));
+    assert_eq!(images[0]["data"], json!("iVBORw0KGgo="));
+
+    // The Plots pane is empty.
+    let call = tokio::spawn(async move { agent.call_tool("get_plot", json!({})).await });
+    let request = channel.next_command(Duration::from_secs(10)).await;
+    channel.reply(CommandReply {
+        id: request.id,
+        ok: true,
+        result: None,
+        reason: None,
+        message: None,
+    });
+    let result = call.await.expect("Tool call panicked");
+    assert!(!result.is_error, "{:?}", result);
+    assert_eq!(result.field("status"), &json!("no_plot"));
+    assert!(result.blocks("image").is_empty());
 }
 
 #[tokio::test]

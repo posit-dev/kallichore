@@ -10,7 +10,8 @@
 //! connects a registered Positron window to the supervisor's MCP server.
 //!
 //! The frontend pushes its command catalog and foreground session over this
-//! channel; the supervisor brokers agent command requests back over it.
+//! channel; the supervisor brokers agent command requests back over it, and
+//! tells the frontend which agents are connected.
 
 use serde::{Deserialize, Serialize};
 
@@ -182,10 +183,21 @@ pub struct CommandRequest {
     pub deadline_ms: u64,
 }
 
+/// The agents connected to the workspace, sent when a window attaches and
+/// whenever an agent connects or disconnects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientsChanged {
+    /// Every agent connected through the stdio bridge, oldest first.
+    pub clients: Vec<kallichore_api::models::McpClient>,
+}
+
 /// Messages sent from the supervisor to the Positron frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerFrontendMessage {
     /// Run a Positron command on the agent's behalf.
     CommandRequest(CommandRequest),
+
+    /// The set of connected agents has changed.
+    ClientsChanged(ClientsChanged),
 }

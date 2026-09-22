@@ -11,9 +11,9 @@
 //! Kernel tools (`list_sessions`, `execute_code`, `evaluate_code`,
 //! `interrupt_session`) are answered entirely inside the supervisor and keep
 //! working when Positron is gone. Command tools (`list_positron_commands`,
-//! `run_positron_command`) are brokered to a window of the workspace that owns
-//! the calling agent's token; listing works from the cache while disconnected,
-//! running does not.
+//! `run_positron_command`, `get_plot`) are brokered to a window of the
+//! workspace that owns the calling agent's token; listing works from the cache
+//! while disconnected, the rest do not.
 //!
 //! Every tool is scoped to one workspace: a handler is built per workspace
 //! endpoint, and it sees only that workspace's sessions. A supervisor shared by
@@ -59,6 +59,10 @@ const FRONTEND_CONNECT_WAIT: Duration = Duration::from_secs(15);
 
 /// How long a window has to answer a command request once delivered.
 const FRONTEND_REPLY_WAIT: Duration = Duration::from_secs(45);
+
+/// The request the frontend answers with the Plots pane's current plot, as a
+/// data URI. Not in the command catalog: `get_plot` is its only caller.
+const CURRENT_PLOT_COMMAND: &str = "positron.mcp.getCurrentPlot";
 
 /// The implementation name agents see, which the server card's reverse-DNS name
 /// qualifies rather than replaces.
@@ -403,21 +407,108 @@ impl PositronMcpHandler {
     ) -> Result<CallToolResult, ErrorData> {
         self.state.note_request();
 
+        let started = std::time::Instant::now();
+        let outcome = self
+            .broker(
+                &context,
+                &params.command_id,
+                params.args.unwrap_or_default(),
+            )
+            .await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        Ok(match outcome {
+            Ok(result) => {
+                self.finish(
+                    json!({
+                        "status": "ok",
+                        "command_id": params.command_id,
+                        "result": result,
+                        "elapsed_ms": elapsed_ms,
+                    }),
+                    Vec::new(),
+                )
+                .await
+            }
+            Err(mut body) => {
+                body["command_id"] = json!(params.command_id);
+                body["elapsed_ms"] = json!(elapsed_ms);
+                self.error(body).await
+            }
+        })
+    }
+
+    #[tool(
+        name = "get_plot",
+        description = "Get the plot currently shown in Positron's Plots pane, as an image. Use \
+                       this to look at a plot the user made, or one your code drew with \
+                       execute_code. Plots in notebook output cells are not included. Requires \
+                       Positron to be connected.",
+        annotations(title = "Get the current plot", read_only_hint = true)
+    )]
+    async fn get_plot(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(_): Parameters<NoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.state.note_request();
+
+        let uri = match self
+            .broker(&context, CURRENT_PLOT_COMMAND, Vec::new())
+            .await
+        {
+            Ok(result) => result,
+            Err(body) => return Ok(self.error(body).await),
+        };
+        let Some((mime_type, data)) = uri
+            .as_ref()
+            .and_then(Value::as_str)
+            .and_then(decode_data_uri)
+        else {
+            return Ok(self
+                .finish(
+                    json!({
+                        "status": "no_plot",
+                        "message": "The Plots pane is not showing a plot.",
+                    }),
+                    Vec::new(),
+                )
+                .await);
+        };
+
+        Ok(self
+            .finish(
+                json!({ "status": "ok", "mime_type": mime_type }),
+                vec![ContentBlock::image(data.to_string(), mime_type.to_string())],
+            )
+            .await)
+    }
+}
+
+impl PositronMcpHandler {
+    /// Broker a command to a window of the workspace.
+    ///
+    /// Returns the command's result, or the error body to report.
+    async fn broker(
+        &self,
+        context: &RequestContext<RoleServer>,
+        command_id: &str,
+        args: Vec<Value>,
+    ) -> Result<Option<Value>, Value> {
         let request = CommandRequest {
             id: uuid::Uuid::new_v4().to_string(),
-            command_id: params.command_id.clone(),
-            args: params.args.unwrap_or_default(),
-            agent: agent_identity(&context),
+            command_id: command_id.to_string(),
+            args,
+            agent: agent_identity(context),
             deadline_ms: FRONTEND_REPLY_WAIT.as_millis() as u64,
         };
 
         log::info!(
-            "MCP run_positron_command '{}' on workspace '{}'",
-            params.command_id,
+            "MCP brokering '{}' to workspace '{}'",
+            command_id,
             self.workspace_id
         );
 
-        let started = std::time::Instant::now();
         let outcome = self
             .state
             .registry
@@ -428,76 +519,39 @@ impl PositronMcpHandler {
                 FRONTEND_REPLY_WAIT,
             )
             .await;
-        let elapsed_ms = started.elapsed().as_millis() as u64;
 
-        let (body, is_error) = match outcome {
-            CommandOutcome::Replied(reply) if reply.ok => (
-                json!({
-                    "status": "ok",
-                    "command_id": params.command_id,
-                    "result": reply.result,
-                    "elapsed_ms": elapsed_ms,
-                }),
-                false,
-            ),
-            CommandOutcome::Replied(reply) => (
-                json!({
-                    "status": "error",
-                    "command_id": params.command_id,
-                    "reason": reply.reason.unwrap_or_else(|| "error".to_string()),
-                    "message": reply.message,
-                    "elapsed_ms": elapsed_ms,
-                }),
-                true,
-            ),
-            CommandOutcome::Disconnected { since } => (
-                json!({
-                    "status": "error",
-                    "command_id": params.command_id,
-                    "reason": "POSITRON_DISCONNECTED",
-                    "message": "Positron is not connected, so IDE commands cannot run. The kernel \
-                                tools (list_sessions, execute_code, evaluate_code, \
-                                interrupt_session) still work. Ask the user to reopen Positron if \
-                                you need this command.",
-                    "positron_disconnected_since": since,
-                    "elapsed_ms": elapsed_ms,
-                }),
-                true,
-            ),
-            CommandOutcome::TimedOut => (
-                json!({
-                    "status": "error",
-                    "command_id": params.command_id,
-                    "reason": "timeout",
-                    "message": format!(
-                        "Positron did not answer within {} seconds",
-                        FRONTEND_REPLY_WAIT.as_secs()
-                    ),
-                    "elapsed_ms": elapsed_ms,
-                }),
-                true,
-            ),
-            CommandOutcome::UnknownWorkspace => (
-                json!({
-                    "status": "error",
-                    "command_id": params.command_id,
-                    "reason": "POSITRON_DISCONNECTED",
-                    "message": "The Positron workspace this token belongs to is no longer registered.",
-                    "elapsed_ms": elapsed_ms,
-                }),
-                true,
-            ),
-        };
-
-        Ok(if is_error {
-            self.error(body).await
-        } else {
-            self.finish(body, Vec::new()).await
-        })
+        match outcome {
+            CommandOutcome::Replied(reply) if reply.ok => Ok(reply.result),
+            CommandOutcome::Replied(reply) => Err(json!({
+                "status": "error",
+                "reason": reply.reason.unwrap_or_else(|| "error".to_string()),
+                "message": reply.message,
+            })),
+            CommandOutcome::Disconnected { since } => Err(json!({
+                "status": "error",
+                "reason": "POSITRON_DISCONNECTED",
+                "message": "Positron is not connected, so IDE commands cannot run. The kernel \
+                            tools (list_sessions, execute_code, evaluate_code, \
+                            interrupt_session) still work. Ask the user to reopen Positron if \
+                            you need this command.",
+                "positron_disconnected_since": since,
+            })),
+            CommandOutcome::TimedOut => Err(json!({
+                "status": "error",
+                "reason": "timeout",
+                "message": format!(
+                    "Positron did not answer within {} seconds",
+                    FRONTEND_REPLY_WAIT.as_secs()
+                ),
+            })),
+            CommandOutcome::UnknownWorkspace => Err(json!({
+                "status": "error",
+                "reason": "POSITRON_DISCONNECTED",
+                "message": "The Positron workspace this token belongs to is no longer registered.",
+            })),
+        }
     }
-}
 
-impl PositronMcpHandler {
     /// Shared body of `execute_code` and `evaluate_code`.
     ///
     /// The two differ only in `store_history`: an evaluation stays out of the
@@ -1064,6 +1118,11 @@ fn collect_images(
             images.push(ContentBlock::image(value.clone(), mime.clone()));
         }
     }
+}
+
+/// Split a base64 data URI into its MIME type and payload.
+fn decode_data_uri(uri: &str) -> Option<(&str, &str)> {
+    uri.strip_prefix("data:")?.split_once(";base64,")
 }
 
 /// Trim `text` to what is left of the budget, reporting whether it was cut.

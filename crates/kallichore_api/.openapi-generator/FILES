@@ -15,6 +15,7 @@ docs/ExecuteReplyStatus.md
 docs/ExecuteRequest.md
 docs/ExecutionQueue.md
 docs/InterruptMode.md
+docs/McpClient.md
 docs/McpStatus.md
 docs/McpWorkspace.md
 docs/McpWorkspaceCapabilities.md

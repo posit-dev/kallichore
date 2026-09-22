@@ -25,18 +25,21 @@
 //! the caller may do.
 //!
 //! Each endpoint also serves its [server card](super::card) at
-//! `/server-card`, the one request that needs no token.
+//! `/server-card`, the one request that needs no token, and a presence stream
+//! at `/presence`, which the stdio bridge holds open for as long as its agent
+//! runs so the workspace knows who is connected.
 
 use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
 use std::hash::{Hash, Hasher};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_NONE_MATCH};
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -47,6 +50,7 @@ use tower::Service as _;
 
 use super::auth::{check_loopback, check_request, AuthRejection};
 use super::card::{server_card, CARD_MEDIA_TYPE, CARD_PATH_SUFFIX};
+use super::workspaces::{ClientIdentity, ClientLease};
 use super::McpState;
 
 /// The path prefix under which each workspace's endpoint lives; the workspace
@@ -59,6 +63,13 @@ const MCP_PATH: &str = "/mcp";
 /// The path segment, following a workspace ID, under which a caller names the
 /// session it is running in.
 pub(crate) const CALLER_PATH_SEGMENT: &str = "/s/";
+
+/// The path, relative to a workspace's endpoint, of its presence stream.
+pub(crate) const PRESENCE_PATH_SUFFIX: &str = "/presence";
+
+/// How often a presence stream says it is still there. Writing is also how a
+/// connection whose far end vanished without closing it gets noticed.
+const PRESENCE_KEEPALIVE: Duration = Duration::from_secs(15);
 
 /// The response body type shared with rmcp's Streamable HTTP service.
 type McpBody = BoxBody<Bytes, Infallible>;
@@ -189,6 +200,10 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                 Some(endpoint) => (endpoint, true),
                 None => (endpoint, false),
             };
+            let (endpoint, presence) = match endpoint.strip_suffix(PRESENCE_PATH_SUFFIX) {
+                Some(endpoint) => (endpoint, true),
+                None => (endpoint, false),
+            };
 
             // A caller may name the session it is running in after the
             // workspace; see [`session_endpoint_url`].
@@ -241,6 +256,10 @@ impl hyper::service::Service<Request<Incoming>> for McpConnectionService {
                      from the same window, which its integrated terminals publish as \
                      POSITRON_MCP_URL and POSITRON_MCP_TOKEN.",
                 ));
+            }
+
+            if presence {
+                return Ok(presence_response(&state, &request, &workspace_id, caller).await);
             }
 
             let Some(mut service) = state.service_for(&workspace_id, caller.as_deref()).await
@@ -330,6 +349,98 @@ async fn card_response(
             .body(Full::new(Bytes::from(card)).boxed())
     };
     response.expect("Unable to build server card response")
+}
+
+/// Serve a presence stream: list the caller as a connected client for exactly
+/// as long as it keeps this response open.
+///
+/// The client describes itself in the query string: `name` and `version` from
+/// its MCP `clientInfo`, and the bridge's `pid` and `cwd`. The stream opens
+/// with a `connected` event carrying the client's ID and then sends only
+/// keepalive comments. It ends when the workspace goes away; when the client
+/// goes away, the connection closing drops the body, and with it the lease
+/// that keeps the client listed.
+async fn presence_response(
+    state: &Arc<McpState>,
+    request: &Request<Incoming>,
+    workspace_id: &str,
+    caller: Option<String>,
+) -> Response<McpBody> {
+    if request.method() != Method::GET {
+        return status_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "A presence stream is opened with GET",
+        );
+    }
+
+    let mut identity = ClientIdentity {
+        session_id: caller,
+        ..Default::default()
+    };
+    for (key, value) in query_pairs(request.uri().query().unwrap_or("")) {
+        match key.as_str() {
+            "name" => identity.name = Some(value),
+            "version" => identity.version = Some(value),
+            "pid" => identity.pid = value.parse().ok(),
+            "cwd" => identity.working_directory = Some(value),
+            _ => {}
+        }
+    }
+
+    let Some(lease) = state.registry.add_client(workspace_id, identity).await else {
+        return status_response(
+            StatusCode::NOT_FOUND,
+            "No such workspace; its window may have closed",
+        );
+    };
+
+    let greeting = format!(
+        "event: connected\ndata: {}\n\n",
+        serde_json::json!({ "client_id": lease.id() })
+    );
+    let cancel = lease.cancellation();
+    let stream = futures::stream::unfold(
+        (lease, Some(greeting)),
+        move |(lease, greeting): (ClientLease, Option<String>)| {
+            let cancel = cancel.clone();
+            async move {
+                if let Some(greeting) = greeting {
+                    return Some((Ok(Frame::data(Bytes::from(greeting))), (lease, None)));
+                }
+                tokio::select! {
+                    _ = cancel.cancelled() => None,
+                    _ = tokio::time::sleep(PRESENCE_KEEPALIVE) => Some((
+                        Ok(Frame::data(Bytes::from_static(b": keepalive\n\n"))),
+                        (lease, None),
+                    )),
+                }
+            }
+        },
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/event-stream")
+        .header(CACHE_CONTROL, "no-cache")
+        .body(StreamBody::new(stream).boxed())
+        .expect("Unable to build presence response")
+}
+
+/// The decoded key-value pairs of a query string.
+fn query_pairs(query: &str) -> Vec<(String, String)> {
+    let decode = |text: &str| {
+        percent_encoding::percent_decode_str(&text.replace('+', " "))
+            .decode_utf8_lossy()
+            .to_string()
+    };
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| match pair.split_once('=') {
+            Some((key, value)) => (decode(key), decode(value)),
+            None => (decode(pair), String::new()),
+        })
+        .collect()
 }
 
 /// An opaque validator for a card, so an unchanged one need not be sent twice.

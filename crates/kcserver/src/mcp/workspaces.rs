@@ -20,17 +20,25 @@
 //! and attach a frontend channel each; commands go to whichever of them the
 //! user last focused. A window with no folder open still gets a record of its
 //! own, so the mapping is close to, but not exactly, one per workspace.
+//!
+//! A record also knows which agents are connected to it. HTTP has no notion of
+//! a connected client, but the stdio bridge lives exactly as long as the agent
+//! that started it, and holds a presence connection open for that long; see
+//! [`WorkspaceRegistry::add_client`].
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use kallichore_api::models;
 use kcshared::mcp_frontend::{
-    AgentCommand, CommandReply, CommandRequest, FrontendMessage, ServerFrontendMessage,
+    AgentCommand, ClientsChanged, CommandReply, CommandRequest, FrontendMessage,
+    ServerFrontendMessage,
 };
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot, Notify, RwLock};
+use tokio_util::sync::CancellationToken;
 
 /// One attached window's channel.
 struct FrontendChannel {
@@ -58,6 +66,66 @@ struct Pending {
     reply: oneshot::Sender<CommandReply>,
 }
 
+/// An agent connected through the stdio bridge.
+struct Client {
+    info: models::McpClient,
+
+    /// Cancelled to end the client's presence connection, when its workspace
+    /// goes away.
+    cancel: CancellationToken,
+}
+
+/// Who a client connecting through the stdio bridge says it is.
+#[derive(Debug, Clone, Default)]
+pub struct ClientIdentity {
+    /// The agent's name, from the MCP `clientInfo`.
+    pub name: Option<String>,
+
+    /// The agent's version, from the MCP `clientInfo`.
+    pub version: Option<String>,
+
+    /// The bridge's process ID.
+    pub pid: Option<i32>,
+
+    /// The bridge's working directory.
+    pub working_directory: Option<String>,
+
+    /// The session the client runs inside, when it is in a kernel.
+    pub session_id: Option<String>,
+}
+
+/// A connected client's place in the registry. Dropping it, which happens when
+/// its presence connection closes for any reason, takes the client out again.
+pub struct ClientLease {
+    registry: Arc<WorkspaceRegistry>,
+    workspace_id: String,
+    id: i32,
+    cancel: CancellationToken,
+}
+
+impl ClientLease {
+    /// The client's ID within its workspace.
+    pub fn id(&self) -> i32 {
+        self.id
+    }
+
+    /// Cancelled when the workspace goes away and the connection should end.
+    pub fn cancellation(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+}
+
+impl Drop for ClientLease {
+    fn drop(&mut self) {
+        let registry = self.registry.clone();
+        let workspace_id = std::mem::take(&mut self.workspace_id);
+        let id = self.id;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move { registry.remove_client(&workspace_id, id).await });
+        }
+    }
+}
+
 /// A registered workspace.
 struct Workspace {
     display_name: String,
@@ -76,6 +144,10 @@ struct Workspace {
     next_focus_seq: u64,
     channels: Vec<FrontendChannel>,
     pending: HashMap<String, Pending>,
+
+    /// The agents connected through the stdio bridge, oldest first.
+    clients: Vec<Client>,
+    next_client_id: i32,
 }
 
 impl Workspace {
@@ -125,6 +197,26 @@ impl Workspace {
     fn take_focus_seq(&mut self) -> u64 {
         self.next_focus_seq += 1;
         self.next_focus_seq
+    }
+
+    /// The connected clients, as the frontend and status endpoint see them.
+    fn client_list(&self) -> Vec<models::McpClient> {
+        self.clients
+            .iter()
+            .map(|client| client.info.clone())
+            .collect()
+    }
+
+    /// Tell every attached window which clients are connected.
+    fn broadcast_clients(&self) {
+        let message = ServerFrontendMessage::ClientsChanged(ClientsChanged {
+            clients: self.client_list(),
+        });
+        for channel in &self.channels {
+            // A channel that has died is discarded when a command next needs
+            // it; there is nothing to do about it here.
+            let _ = channel.tx.send(message.clone());
+        }
     }
 
     /// Hand a request to the window commands should go to, discarding channels
@@ -244,17 +336,96 @@ impl WorkspaceRegistry {
                 next_focus_seq: 0,
                 channels: Vec::new(),
                 pending: HashMap::new(),
+                clients: Vec::new(),
+                next_client_id: 0,
             },
         );
         (id, token)
     }
 
-    /// Remove a workspace and invalidate its token.
+    /// Remove a workspace and invalidate its token, ending its clients'
+    /// presence connections.
     ///
     /// Returns true if the workspace was registered.
     pub async fn deregister(&self, workspace_id: &str) -> bool {
         let mut workspaces = self.workspaces.write().await;
-        workspaces.remove(workspace_id).is_some()
+        let Some(workspace) = workspaces.remove(workspace_id) else {
+            return false;
+        };
+        for client in &workspace.clients {
+            client.cancel.cancel();
+        }
+        true
+    }
+
+    /// Record a client connecting through the stdio bridge, and tell the
+    /// workspace's windows.
+    ///
+    /// Returns the lease that keeps the client listed, or None if the workspace
+    /// is not registered.
+    pub async fn add_client(
+        self: &Arc<Self>,
+        workspace_id: &str,
+        identity: ClientIdentity,
+    ) -> Option<ClientLease> {
+        let mut workspaces = self.workspaces.write().await;
+        let workspace = workspaces.get_mut(workspace_id)?;
+        workspace.next_client_id += 1;
+        let id = workspace.next_client_id;
+        let cancel = CancellationToken::new();
+
+        log::info!(
+            "MCP client '{}' {} connected to workspace '{}' (pid {}, {})",
+            identity.name.as_deref().unwrap_or("unknown"),
+            identity.version.as_deref().unwrap_or(""),
+            workspace_id,
+            identity
+                .pid
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            identity
+                .working_directory
+                .as_deref()
+                .unwrap_or("no directory")
+        );
+        workspace.clients.push(Client {
+            info: models::McpClient {
+                id,
+                name: identity.name,
+                version: identity.version,
+                pid: identity.pid,
+                working_directory: identity.working_directory,
+                session_id: identity.session_id,
+                connected_at: Utc::now(),
+            },
+            cancel: cancel.clone(),
+        });
+        workspace.broadcast_clients();
+
+        Some(ClientLease {
+            registry: self.clone(),
+            workspace_id: workspace_id.to_string(),
+            id,
+            cancel,
+        })
+    }
+
+    /// Take a client out, and tell the workspace's windows.
+    async fn remove_client(&self, workspace_id: &str, id: i32) {
+        let mut workspaces = self.workspaces.write().await;
+        let Some(workspace) = workspaces.get_mut(workspace_id) else {
+            return;
+        };
+        let Some(index) = workspace.clients.iter().position(|c| c.info.id == id) else {
+            return;
+        };
+        let client = workspace.clients.remove(index);
+        log::info!(
+            "MCP client '{}' disconnected from workspace '{}'",
+            client.info.name.as_deref().unwrap_or("unknown"),
+            workspace_id
+        );
+        workspace.broadcast_clients();
     }
 
     /// Whether any workspace is registered.
@@ -311,7 +482,13 @@ impl WorkspaceRegistry {
     ) -> Option<u64> {
         let generation = {
             let mut workspaces = self.workspaces.write().await;
-            workspaces.get_mut(workspace_id)?.attach(channel_tx)
+            let workspace = workspaces.get_mut(workspace_id)?;
+            // A window learns who is connected as soon as it attaches, and
+            // from then on whenever that changes.
+            let _ = channel_tx.send(ServerFrontendMessage::ClientsChanged(ClientsChanged {
+                clients: workspace.client_list(),
+            }));
+            workspace.attach(channel_tx)
         };
         self.connected.notify_waiters();
         Some(generation)
@@ -569,6 +746,7 @@ impl WorkspaceRegistry {
                 id: id.clone(),
                 display_name: workspace.display_name.clone(),
                 connected: workspace.connected(),
+                clients: workspace.client_list(),
             })
             .collect();
         status.sort_by(|a, b| a.id.cmp(&b.id));
@@ -702,14 +880,35 @@ mod tests {
         }
     }
 
-    /// Attach a channel, returning its generation and receiving end.
+    /// Attach a channel, returning its generation and receiving end, with the
+    /// client list every window is sent on attaching already read.
     async fn attach(
         registry: &WorkspaceRegistry,
         workspace_id: &str,
     ) -> (u64, mpsc::UnboundedReceiver<ServerFrontendMessage>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
         let generation = registry.attach_channel(workspace_id, tx).await.unwrap();
+        client_names(rx.recv().await.unwrap());
         (generation, rx)
+    }
+
+    /// The names of the clients in a `clients_changed` frame.
+    fn client_names(message: ServerFrontendMessage) -> Vec<String> {
+        match message {
+            ServerFrontendMessage::ClientsChanged(changed) => changed
+                .clients
+                .into_iter()
+                .map(|client| client.name.unwrap_or_default())
+                .collect(),
+            other => panic!("expected clients_changed, got {:?}", other),
+        }
+    }
+
+    fn named(name: &str) -> ClientIdentity {
+        ClientIdentity {
+            name: Some(name.to_string()),
+            ..Default::default()
+        }
     }
 
     /// Hand a request to the registry, expecting it to reach a window.
@@ -727,6 +926,7 @@ mod tests {
     fn sent_request_id(message: ServerFrontendMessage) -> String {
         match message {
             ServerFrontendMessage::CommandRequest(request) => request.id,
+            other => panic!("expected command_request, got {:?}", other),
         }
     }
 
@@ -945,5 +1145,56 @@ mod tests {
         let (connected, since) = registry.connection_state(&id).await;
         assert!(!connected);
         assert!(since.is_some());
+    }
+
+    #[tokio::test]
+    async fn windows_follow_clients_connecting_and_leaving() {
+        let registry = Arc::new(WorkspaceRegistry::new());
+        let (id, _) = registry.register(&registration("Workspace")).await;
+        let (_, mut window) = attach(&registry, &id).await;
+
+        let claude = registry
+            .add_client(&id, named("claude-code"))
+            .await
+            .unwrap();
+        assert_eq!(
+            client_names(window.recv().await.unwrap()),
+            vec!["claude-code"]
+        );
+        let codex = registry.add_client(&id, named("codex")).await.unwrap();
+        assert_eq!(
+            client_names(window.recv().await.unwrap()),
+            vec!["claude-code", "codex"]
+        );
+
+        // A window that attaches later is told who is already there.
+        let (tx, mut late) = mpsc::unbounded_channel();
+        registry.attach_channel(&id, tx).await.unwrap();
+        assert_eq!(
+            client_names(late.recv().await.unwrap()),
+            vec!["claude-code", "codex"]
+        );
+
+        // Dropping a lease is what a closed presence connection does.
+        drop(claude);
+        assert_eq!(client_names(window.recv().await.unwrap()), vec!["codex"]);
+        assert_eq!(registry.status().await[0].clients.len(), 1);
+        drop(codex);
+        assert!(client_names(window.recv().await.unwrap()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn deregistration_ends_presence_connections() {
+        let registry = Arc::new(WorkspaceRegistry::new());
+        let (id, _) = registry.register(&registration("Workspace")).await;
+        let lease = registry
+            .add_client(&id, named("claude-code"))
+            .await
+            .unwrap();
+
+        registry.deregister(&id).await;
+
+        assert!(lease.cancellation().is_cancelled());
+        assert!(registry.add_client(&id, named("late")).await.is_none());
     }
 }

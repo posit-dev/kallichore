@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2026-09-21T11:19:03.618998-07:00[America/Los_Angeles]
+- Build date: 2026-09-22T11:53:18.237280-07:00[America/Los_Angeles]
 - Generator version: 7.17.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -171,6 +171,7 @@ Method | HTTP request | Description
  - [ExecuteRequest](docs/ExecuteRequest.md)
  - [ExecutionQueue](docs/ExecutionQueue.md)
  - [InterruptMode](docs/InterruptMode.md)
+ - [McpClient](docs/McpClient.md)
  - [McpStatus](docs/McpStatus.md)
  - [McpWorkspace](docs/McpWorkspace.md)
  - [McpWorkspaceCapabilities](docs/McpWorkspaceCapabilities.md)
