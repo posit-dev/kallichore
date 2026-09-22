@@ -59,6 +59,15 @@ impl HttpResponse {
         serde_json::from_str(&self.body)
             .unwrap_or_else(|e| panic!("Response body is not JSON ({}): {}", e, self.body))
     }
+
+    /// Every JSON-RPC message in an SSE body, in order.
+    pub fn messages(&self) -> Vec<Value> {
+        self.body
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .filter_map(|payload| serde_json::from_str(payload.trim()).ok())
+            .collect()
+    }
 }
 
 /// POST a body to the MCP listener with exactly the headers given.
@@ -187,6 +196,29 @@ impl McpAgent {
         }
     }
 
+    /// A second handle on this agent's protocol session, for sending
+    /// notifications about a request while the agent waits on it.
+    pub fn same_session(&self) -> Self {
+        Self {
+            session_id: self.session_id.clone(),
+            ..self.another()
+        }
+    }
+
+    /// The ID the agent's next request will carry.
+    pub fn next_request_id(&self) -> i64 {
+        self.next_id + 1
+    }
+
+    /// Tell the server the agent no longer wants a request's result.
+    pub async fn cancel(&self, request_id: i64) {
+        self.notify(
+            "notifications/cancelled",
+            json!({ "requestId": request_id, "reason": "test" }),
+        )
+        .await;
+    }
+
     /// Talk to the endpoint as a client running inside one of the workspace's
     /// kernels does: the same workspace and token, with its own session named.
     pub fn in_session(mut self, session_id: &str) -> Self {
@@ -276,6 +308,41 @@ impl McpAgent {
             response.body
         );
         tool_call(expect_result(response.json()))
+    }
+
+    /// Call a tool with a progress token, returning its result and the
+    /// messages of the progress notifications that preceded it.
+    pub async fn call_tool_with_progress(
+        &mut self,
+        name: &str,
+        arguments: Value,
+    ) -> (ToolCall, Vec<String>) {
+        let response = self
+            .request(
+                "tools/call",
+                json!({
+                    "name": name,
+                    "arguments": arguments,
+                    "_meta": { "progressToken": "progress-1" },
+                }),
+            )
+            .await;
+        let messages = response.messages();
+        let progress = messages
+            .iter()
+            .filter(|message| message["method"] == "notifications/progress")
+            .map(|message| {
+                message["params"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .collect();
+        let result = messages
+            .into_iter()
+            .find(|message| message.get("id").is_some())
+            .unwrap_or_else(|| panic!("No response to tools/call: {}", response.body));
+        (tool_call(expect_result(result)), progress)
     }
 
     /// Send a JSON-RPC request with this agent's credentials and session.

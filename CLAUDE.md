@@ -218,11 +218,13 @@ separate from the main API transport, because agents need a URL.
 - Everything an agent runs is visible in the user's console. `evaluate_code` differs from
   `execute_code` only in `store_history`: it stays out of the session's history and leaves its
   execution counter alone. Neither uses the Jupyter `silent` flag, which would suppress both the
-  result the agent asked for and the echo the user needs.
+  result the agent asked for and the echo the user needs. Cancelling a call interrupts the kernel,
+  and a call that carries a progress token gets its stream output as progress notifications.
 - Agents that start their MCP servers as child processes run `kcserver mcp-stdio`, which relays
   JSON-RPC between stdio and a workspace's HTTP endpoint. It finds the endpoint from `--workspace`,
   then `POSITRON_MCP_URL`/`POSITRON_MCP_TOKEN`, then the workspace in Positron's connections
-  directory (`--connections`) whose folder contains its working directory. It resolves lazily and
+  directory (`--connections`) whose folder contains its working directory, preferring the most
+  recently active on a tie. It ignores connection files whose `version` is not 1. It resolves lazily and
   again after a refusal, and answers the handshake, tool list, and tool calls itself while no
   endpoint answers, so an agent never has to reconnect. Stdout carries the protocol; logs go to
   stderr. A request is retried only when it never reached a handler.

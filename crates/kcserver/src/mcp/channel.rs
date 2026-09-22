@@ -94,6 +94,10 @@ pub async fn run(
         }
     }
 
+    // Deregistering the workspace also ends the loop, by dropping the sender;
+    // close properly so the window sees a normal closure rather than a
+    // dropped connection.
+    let _ = stream.close(None).await;
     state
         .registry
         .detach_channel(&workspace_id, generation)

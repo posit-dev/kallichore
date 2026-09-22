@@ -876,7 +876,6 @@ mod tests {
                 name: None,
                 version: None,
             },
-            deadline_ms: 1000,
         }
     }
 
@@ -1062,7 +1061,6 @@ mod tests {
                     commands: Vec::new(),
                     session_ids: vec!["python-1".to_string()],
                     foreground_session_id: Some("python-1".to_string()),
-                    history_api_enabled: false,
                     focused: true,
                 }),
             )

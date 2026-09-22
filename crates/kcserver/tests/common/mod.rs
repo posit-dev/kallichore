@@ -402,11 +402,9 @@ impl TestServer {
     /// the identity a previous server issued it does.
     pub async fn register_mcp_workspace_as(
         &self,
-        mut registration: kallichore_api::models::McpWorkspaceRegistration,
+        registration: kallichore_api::models::McpWorkspaceRegistration,
     ) -> kallichore_api::models::McpWorkspace {
         let client = self.create_client().await;
-        registration.capabilities =
-            Some(kallichore_api::models::McpWorkspaceCapabilities::new(true));
 
         match client
             .register_mcp_workspace(registration)

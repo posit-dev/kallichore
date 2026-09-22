@@ -1477,6 +1477,9 @@ where
             process_tree::clear_process_cache(pid);
         }
 
+        // Forget the MCP endpoint of any client that ran inside the session
+        self.mcp.drop_caller_service(&session_id).await;
+
         // Ensure we get a write lock on the kernel sessions for the duration of
         // this function
         let mut sessions = self.kernel_sessions.write().unwrap();
@@ -1749,6 +1752,8 @@ where
                 .filter(|&s| s > 0)
                 .map(|s| std::time::Duration::from_secs(s as u64)),
             attribution: None,
+            cancel: None,
+            stream_tx: None,
         };
 
         match kernel_session.execute_collect(options).await {
@@ -1784,6 +1789,7 @@ where
                     details: None,
                 }))
             }
+            Err(ExecuteError::Cancelled) => unreachable!("REST executions are never cancelled"),
         }
     }
 

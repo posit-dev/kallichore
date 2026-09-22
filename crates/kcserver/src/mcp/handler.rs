@@ -27,16 +27,20 @@ use std::time::Duration;
 use kallichore_api::models;
 use kcshared::kernel_message::ExecutionAttribution;
 use kcshared::mcp_frontend::{AgentCommand, AgentIdentity, CommandRequest};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    InitializeRequestParams, InitializeResult, MetaObject, ServerCapabilities,
+    InitializeRequestParams, InitializeResult, ProgressNotificationParam, ProgressToken,
+    ServerCapabilities,
 };
 use rmcp::service::RequestContext;
-use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler};
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData, Peer, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
 
 use super::workspaces::CommandOutcome;
 use super::McpState;
@@ -51,6 +55,21 @@ const DEFAULT_TIMEOUT_S: u32 = 60;
 
 /// The longest execution timeout a caller may ask for.
 const MAX_TIMEOUT_S: u32 = 600;
+
+/// How long stream output is gathered into one progress notification.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
+
+/// The text a display may carry into a result; anything else is left to
+/// image blocks or dropped.
+const DISPLAY_TEXT_TYPES: [&str; 2] = ["text/plain", "text/markdown"];
+
+/// Terminal escape sequences: CSI (colors, cursor movement) and OSC (titles,
+/// hyperlinks). Kernels color tracebacks and some output with them, and to an
+/// agent they are noise that costs context.
+static ANSI_ESCAPE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+        .expect("ANSI escape pattern is valid")
+});
 
 /// How long `run_positron_command` waits for a frontend channel to appear.
 /// Long enough to cover a window reload, short enough to stay inside the
@@ -78,24 +97,19 @@ pub const SERVER_DESCRIPTION: &str = "The user's live Positron interpreter sessi
 /// Guidance sent to the agent when it connects. Kept short: it is delivered
 /// once and clients truncate long instruction blocks.
 pub(crate) const INSTRUCTIONS: &str = "\
-You are attached to one Positron workspace's live sessions: the workspace whose \
-terminal you were launched from. Other workspaces sharing this supervisor are \
-invisible to you, which is deliberate. Prefer execute_code and evaluate_code \
-over shelling out to Rscript or python: the user's session has their data, \
-packages, and working directory already loaded. Call list_sessions first to see \
-what is running and which session is in the foreground.
+You are attached to one Positron workspace and can reach only its interpreter \
+sessions. Prefer execute_code and evaluate_code over shelling out to Rscript or \
+python: the user's sessions already have their data and packages loaded. Call \
+list_sessions first to see what is running and which is in the foreground.
 
-Everything you run is visible in the user's console, attributed to you. Use \
-evaluate_code for inspection: it does not enter the session's history or \
-advance its execution counter, so it leaves the user's numbering alone. Use \
-execute_code for anything with side effects, which the user should be able to \
-find in their history afterwards. Output can legitimately be empty, so never \
-retry a state-changing call just because nothing came back.
+Everything you run appears in the user's console, attributed to you. Use \
+evaluate_code to inspect state; it stays out of the session's history. Use \
+execute_code for anything with side effects. Output can legitimately be empty, \
+so never retry a state-changing call because nothing came back.
 
-For IDE actions (opening files, starting sessions, installing packages, \
-changing settings), call list_positron_commands to find a command, then \
+For IDE actions, find a command with list_positron_commands and run it with \
 run_positron_command. These need Positron connected; the kernel tools do not. \
-No tool ever starts an interpreter on its own.";
+No tool starts an interpreter.";
 
 /// Added for a client running inside one of the workspace's own kernels, which
 /// is the one thing about its situation it cannot work out for itself.
@@ -122,7 +136,7 @@ pub struct PositronMcpHandler {
     caller_session_id: Option<String>,
 }
 
-/// Arguments accepted by `execute_code` and `evaluate_code`.
+/// Arguments accepted by `execute_code`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ExecuteCodeParams {
     /// The code to run, in the session's language.
@@ -137,9 +151,17 @@ pub struct ExecuteCodeParams {
     /// seconds. Defaults to 60, maximum 600.
     #[serde(default)]
     pub timeout_s: Option<u32>,
+}
 
-    /// For evaluate_code only: queue behind code that is already running
-    /// instead of failing when the session is busy.
+/// Arguments accepted by `evaluate_code`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct EvaluateCodeParams {
+    /// The arguments `execute_code` takes.
+    #[serde(flatten)]
+    pub code: ExecuteCodeParams,
+
+    /// Queue behind code that is already running instead of failing when the
+    /// session is busy.
     #[serde(default)]
     pub wait: Option<bool>,
 }
@@ -246,6 +268,12 @@ impl PositronMcpHandler {
         let mut body = json!({
             "sessions": entries,
             "workspace": self.workspace().await,
+            "positron_version": self
+                .state
+                .registry
+                .positron_version(&self.workspace_id)
+                .await,
+            "server_version": self.state.server_version(),
         });
         // Say that other workspaces exist without naming their sessions: an
         // agent told "there should be a session" needs a true answer, and the
@@ -275,7 +303,7 @@ impl PositronMcpHandler {
         context: RequestContext<RoleServer>,
         Parameters(params): Parameters<ExecuteCodeParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run_code(context, params, false).await
+        self.run_code(context, params, false, false).await
     }
 
     #[tool(
@@ -295,9 +323,10 @@ impl PositronMcpHandler {
     async fn evaluate_code(
         &self,
         context: RequestContext<RoleServer>,
-        Parameters(params): Parameters<ExecuteCodeParams>,
+        Parameters(params): Parameters<EvaluateCodeParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run_code(context, params, true).await
+        let wait = params.wait.unwrap_or(false);
+        self.run_code(context, params.code, true, wait).await
     }
 
     #[tool(
@@ -500,7 +529,6 @@ impl PositronMcpHandler {
             command_id: command_id.to_string(),
             args,
             agent: agent_identity(context),
-            deadline_ms: FRONTEND_REPLY_WAIT.as_millis() as u64,
         };
 
         log::info!(
@@ -559,11 +587,15 @@ impl PositronMcpHandler {
     /// the Jupyter `silent` flag, which would suppress the whole iopub stream
     /// -- both the `execute_result` the agent asked for and the echo the user
     /// needs in order to see what the agent is doing in their session.
+    ///
+    /// Cancelling the call interrupts the kernel. When the call carries a
+    /// progress token, stream output is reported as progress while it runs.
     async fn run_code(
         &self,
         context: RequestContext<RoleServer>,
         params: ExecuteCodeParams,
         inspecting: bool,
+        wait: bool,
     ) -> Result<CallToolResult, ErrorData> {
         self.state.note_request();
 
@@ -600,7 +632,7 @@ impl PositronMcpHandler {
 
         // A queued evaluation looks like a hang to an agent, which then
         // retries. Refuse instead, unless it asked to wait.
-        if inspecting && !params.wait.unwrap_or(false) {
+        if inspecting && !wait {
             let status = { session.state.read().await.status };
             if status == models::Status::Busy {
                 let body = json!({
@@ -628,6 +660,8 @@ impl PositronMcpHandler {
         );
         log::debug!("MCP {} code: {}", tool, params.code);
 
+        let progress_token = context.meta.get_progress_token();
+        let (stream_tx, stream_rx) = mpsc::unbounded_channel();
         let options = ExecuteOptions {
             code: params.code,
             silent: false,
@@ -641,10 +675,19 @@ impl PositronMcpHandler {
                 workspace_id: self.workspace_id.clone(),
                 tool: tool.to_string(),
             }),
+            cancel: Some(context.ct.clone()),
+            stream_tx: progress_token.is_some().then_some(stream_tx),
         };
 
+        // Progress is reported from this task rather than a spawned one, so
+        // it stays associated with the request it describes.
+        let reporting = async {
+            if let Some(token) = progress_token {
+                report_progress(&context.peer, token, stream_rx).await;
+            }
+        };
         let started = std::time::Instant::now();
-        let result = session.execute_collect(options).await;
+        let (result, ()) = tokio::join!(session.execute_collect(options), reporting);
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
         let (mut body, images, is_error) = match result {
@@ -679,6 +722,15 @@ impl PositronMcpHandler {
                     "status": "interrupted",
                     "code": "CHANNEL_CLOSED",
                     "message": "The kernel's message channel closed while the code was running.",
+                }),
+                Vec::new(),
+                true,
+            ),
+            Err(ExecuteError::Cancelled) => (
+                json!({
+                    "status": "interrupted",
+                    "code": "CANCELLED",
+                    "message": "The call was cancelled; the session was interrupted.",
                 }),
                 Vec::new(),
                 true,
@@ -729,8 +781,7 @@ impl PositronMcpHandler {
                     "code": "SESSION_NOT_VISIBLE",
                     "message": format!(
                         "Session '{}' belongs to one of the user's other Positron workspaces. \
-                         You can only reach the sessions of the workspace you were launched \
-                         from.",
+                         You can only reach the sessions of the workspace you are attached to.",
                         session_id
                     ),
                 })
@@ -839,7 +890,8 @@ impl PositronMcpHandler {
         })
     }
 
-    /// Add the connection state every tool result carries.
+    /// Add the connection state every tool result carries, in the body where
+    /// the model reads it.
     async fn decorate(&self, body: &mut Value) {
         let (connected, since) = self
             .state
@@ -853,16 +905,6 @@ impl PositronMcpHandler {
         if !connected {
             object.insert("positron_disconnected_since".into(), json!(since));
         }
-        object.insert(
-            "positron_version".into(),
-            json!(
-                self.state
-                    .registry
-                    .positron_version(&self.workspace_id)
-                    .await
-            ),
-        );
-        object.insert("server_version".into(), json!(self.state.server_version()));
     }
 
     /// Build a successful result.
@@ -870,32 +912,13 @@ impl PositronMcpHandler {
         self.decorate(&mut body).await;
         let mut result = CallToolResult::structured(body);
         result.content.extend(images);
-        result.meta = Some(self.meta().await);
         result
     }
 
     /// Build a tool-level error result.
     async fn error(&self, mut body: Value) -> CallToolResult {
         self.decorate(&mut body).await;
-        let mut result = CallToolResult::structured_error(body);
-        result.meta = Some(self.meta().await);
-        result
-    }
-
-    /// The `_meta` block attached to every result.
-    async fn meta(&self) -> MetaObject {
-        let (connected, since) = self
-            .state
-            .registry
-            .connection_state(&self.workspace_id)
-            .await;
-        let mut meta = serde_json::Map::new();
-        meta.insert("positron_connected".into(), json!(connected));
-        if !connected {
-            meta.insert("positron_disconnected_since".into(), json!(since));
-        }
-        meta.insert("positron_workspace".into(), self.workspace().await);
-        MetaObject(meta)
+        CallToolResult::structured_error(body)
     }
 }
 
@@ -1026,13 +1049,42 @@ fn matches_query(command: &AgentCommand, query: &str) -> bool {
             .any(|arg| arg.name.to_lowercase().contains(&query))
 }
 
+/// Relay stream output to the client as progress notifications until the
+/// execution ends, gathering what arrives within each interval into one.
+async fn report_progress(
+    peer: &Peer<RoleServer>,
+    token: ProgressToken,
+    mut stream_rx: mpsc::UnboundedReceiver<String>,
+) {
+    let mut progress = 0.0;
+    while let Some(mut text) = stream_rx.recv().await {
+        let deadline = tokio::time::Instant::now() + PROGRESS_INTERVAL;
+        while let Ok(Some(more)) = tokio::time::timeout_at(deadline, stream_rx.recv()).await {
+            text.push_str(&more);
+        }
+        progress += 1.0;
+        let mut budget = MAX_TEXT_BYTES;
+        let (message, _) = take_budget(strip_ansi(&text), &mut budget);
+        let notification =
+            ProgressNotificationParam::new(token.clone(), progress).with_message(message);
+        if let Err(e) = peer.notify_progress(notification).await {
+            log::debug!("Failed to send an MCP progress notification: {}", e);
+        }
+    }
+}
+
 /// Turn an execute reply into the structured result and image blocks an agent
 /// sees.
+///
+/// Images go out as image blocks and nowhere else. All text shares one budget,
+/// spent on the error first, since that is what the agent most needs to see
+/// when there is one.
 fn render_reply(reply: &models::ExecuteReply) -> (Value, Vec<ContentBlock>) {
     let mut stdout = String::new();
     let mut stderr = String::new();
+    let mut displays = Vec::new();
     let mut images = Vec::new();
-    let mut error: Option<Value> = None;
+    let mut error = None;
 
     for output in &reply.output {
         match output.r#type {
@@ -1047,49 +1099,69 @@ fn render_reply(reply: &models::ExecuteReply) -> (Value, Vec<ContentBlock>) {
             models::ExecuteOutputType::DisplayData => {
                 if let Some(data) = &output.data {
                     collect_images(data, &mut images);
+                    let text: Vec<(&String, &String)> = data
+                        .iter()
+                        .filter(|(mime, _)| DISPLAY_TEXT_TYPES.contains(&mime.as_str()))
+                        .collect();
+                    if !text.is_empty() {
+                        displays.push(text);
+                    }
                 }
             }
             models::ExecuteOutputType::Error => {
-                error = Some(json!({
-                    "name": output.error_name,
-                    "message": output.error_message,
-                    "traceback": output.error_traceback,
-                }));
+                error = Some((
+                    &output.error_name,
+                    &output.error_message,
+                    &output.error_traceback,
+                ));
             }
         }
     }
-
     if error.is_none() && reply.error_name.is_some() {
-        error = Some(json!({
-            "name": reply.error_name,
-            "message": reply.error_message,
-            "traceback": reply.error_traceback,
-        }));
-    }
-
-    let mut result: Option<serde_json::Map<String, Value>> = None;
-    if let Some(data) = &reply.data {
-        collect_images(data, &mut images);
-        result = Some(
-            data.iter()
-                .map(|(mime, value)| (mime.clone(), json!(value)))
-                .collect(),
-        );
+        error = Some((
+            &reply.error_name,
+            &reply.error_message,
+            &reply.error_traceback,
+        ));
     }
 
     let mut budget = MAX_TEXT_BYTES;
-    let (stdout, cut_stdout) = take_budget(stdout, &mut budget);
-    let (stderr, cut_stderr) = take_budget(stderr, &mut budget);
-    let mut cut_result = false;
-    if let Some(result) = result.as_mut() {
-        for value in result.values_mut() {
-            if let Some(text) = value.as_str() {
-                let (trimmed, cut) = take_budget(text.to_string(), &mut budget);
-                cut_result |= cut;
-                *value = json!(trimmed);
-            }
-        }
-    }
+    let mut truncated = false;
+    let mut take = |text: &str| {
+        let (text, cut) = take_budget(strip_ansi(text), &mut budget);
+        truncated |= cut;
+        text
+    };
+
+    let error = error.map(|(name, message, traceback)| {
+        json!({
+            "name": name,
+            "message": message.as_deref().map(&mut take),
+            "traceback": traceback.as_ref().map(|lines| lines
+                .iter()
+                .map(|line| take(line))
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()),
+        })
+    });
+    let stdout = take(&stdout);
+    let stderr = take(&stderr);
+    let result = reply.data.as_ref().map(|data| {
+        collect_images(data, &mut images);
+        data.iter()
+            .filter(|(mime, _)| !mime.starts_with("image/"))
+            .map(|(mime, value)| (mime.clone(), json!(take(value))))
+            .collect::<serde_json::Map<String, Value>>()
+    });
+    let displays: Vec<Value> = displays
+        .into_iter()
+        .map(|text| {
+            text.into_iter()
+                .map(|(mime, value)| (mime.clone(), json!(take(value))))
+                .collect::<serde_json::Map<String, Value>>()
+                .into()
+        })
+        .collect();
 
     let body = json!({
         "status": match reply.status {
@@ -1100,9 +1172,10 @@ fn render_reply(reply: &models::ExecuteReply) -> (Value, Vec<ContentBlock>) {
         "stdout": stdout,
         "stderr": stderr,
         "result": result,
+        "displays": displays,
         "images": images.len(),
         "error": error,
-        "truncated": cut_stdout || cut_stderr || cut_result,
+        "truncated": truncated,
     });
 
     (body, images)
@@ -1118,6 +1191,11 @@ fn collect_images(
             images.push(ContentBlock::image(value.clone(), mime.clone()));
         }
     }
+}
+
+/// Remove terminal escape sequences from text.
+fn strip_ansi(text: &str) -> String {
+    ANSI_ESCAPE.replace_all(text, "").into_owned()
 }
 
 /// Split a base64 data URI into its MIME type and payload.
@@ -1172,6 +1250,48 @@ mod tests {
         assert!(matches_query(&cmd, "installed"));
         assert!(matches_query(&cmd, "filter"));
         assert!(!matches_query(&cmd, "notebook"));
+    }
+
+    #[test]
+    fn instructions_fit_in_what_clients_keep() {
+        assert!(INSTRUCTIONS.len() < 800, "{}", INSTRUCTIONS.len());
+    }
+
+    #[test]
+    fn replies_keep_text_images_once_and_no_escapes() {
+        let bundle = |pairs: &[(&str, &str)]| {
+            Some(
+                pairs
+                    .iter()
+                    .map(|(mime, value)| (mime.to_string(), value.to_string()))
+                    .collect(),
+            )
+        };
+        let mut stream = models::ExecuteOutput::new(models::ExecuteOutputType::Stream);
+        stream.text = Some("\x1b[31mred\x1b[0m\n".to_string());
+        let mut display = models::ExecuteOutput::new(models::ExecuteOutputType::DisplayData);
+        display.data = bundle(&[("text/plain", "<Figure>"), ("image/png", "iVBO")]);
+        let mut error = models::ExecuteOutput::new(models::ExecuteOutputType::Error);
+        error.error_name = Some("ValueError".to_string());
+        error.error_traceback = Some(vec![
+            "\x1b[0;31mValueError\x1b[0m: boom".to_string(),
+            "x".repeat(MAX_TEXT_BYTES),
+        ]);
+        let mut reply = models::ExecuteReply::new(
+            models::ExecuteReplyStatus::Error,
+            1,
+            vec![stream, display, error],
+        );
+        reply.data = bundle(&[("text/plain", "42"), ("image/png", "iVBO")]);
+
+        let (body, images) = render_reply(&reply);
+
+        assert_eq!(images.len(), 2);
+        assert_eq!(body["result"], json!({ "text/plain": "" }));
+        assert_eq!(body["displays"], json!([{ "text/plain": "" }]));
+        assert_eq!(body["stdout"], json!(""));
+        assert_eq!(body["error"]["traceback"][0], json!("ValueError: boom"));
+        assert_eq!(body["truncated"], json!(true));
     }
 
     #[test]

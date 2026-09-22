@@ -386,6 +386,40 @@ async fn test_registration_is_idempotent_and_deregistration_closes_the_port() {
 }
 
 #[tokio::test]
+async fn test_deregistration_closes_the_frontend_channel() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let url = format!(
+        "{}/mcp/workspaces/{}/channel",
+        server.base_url().replace("http://", "ws://"),
+        workspace.workspace_id
+    );
+    let (mut channel, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("Failed to open the frontend channel");
+    // The server greets every window with the connected clients.
+    channel.next().await;
+
+    let client = server.create_client().await;
+    let _ = client
+        .deregister_mcp_workspace(workspace.workspace_id)
+        .await
+        .expect("Deregistration failed");
+
+    let closed = tokio::time::timeout(Duration::from_secs(5), channel.next())
+        .await
+        .expect("The channel should close when its workspace is deregistered");
+    assert!(
+        matches!(closed, Some(Ok(Message::Close(_)))),
+        "Expected a close frame, got {:?}",
+        closed
+    );
+}
+
+#[tokio::test]
 async fn test_server_status_reports_the_mcp_server() {
     let server = TestServer::start().await;
     let client = server.create_client().await;
@@ -455,7 +489,6 @@ async fn test_command_catalog_survives_the_window_disconnecting() {
     channel.send(FrontendMessage::Hello(FrontendHello {
         positron_version: Some("2026.09.0".to_string()),
         commands: fake_catalog(),
-        history_api_enabled: true,
         ..Default::default()
     }));
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -463,12 +496,6 @@ async fn test_command_catalog_survives_the_window_disconnecting() {
     let result = agent.call_tool("list_positron_commands", json!({})).await;
     assert_eq!(result.field("total"), &json!(3));
     assert_eq!(result.field("positron_connected"), &json!(true));
-    assert_eq!(
-        result.structured["positron_version"],
-        json!("2026.09.0"),
-        "{}",
-        result.structured
-    );
 
     // Matching runs over IDs, descriptions, and argument names.
     let result = agent
@@ -553,7 +580,6 @@ async fn test_run_positron_command_is_brokered_to_a_window() {
         Some("claude-code"),
         "The agent should identify itself from clientInfo"
     );
-    assert!(request.deadline_ms > 0);
     channel.reply(CommandReply {
         id: request.id,
         ok: true,
@@ -777,8 +803,9 @@ async fn test_the_window_the_user_focused_serves_commands() {
     // What the record knows is whatever the window that spoke last said.
     let result = agent.call_tool("list_positron_commands", json!({})).await;
     assert_eq!(result.field("positron_connected"), &json!(true));
-    assert_eq!(result.structured["positron_version"], json!("second"));
     assert_eq!(result.field("total"), &json!(0));
+    let result = agent.call_tool("list_sessions", json!({})).await;
+    assert_eq!(result.field("positron_version"), &json!("second"));
 
     // The user clicks back to the first window, so that is where a command the
     // agent asks for should happen.
@@ -1061,7 +1088,6 @@ where
 
     let registration = json!({
         "display_name": "Transport Workspace",
-        "capabilities": { "commands": true },
     });
     let response = post_over(
         connect().await,
@@ -1098,7 +1124,8 @@ where
     let result = agent.call_tool("list_positron_commands", json!({})).await;
     assert_eq!(result.field("total"), &json!(3));
     assert_eq!(result.field("positron_connected"), &json!(true));
-    assert_eq!(result.structured["positron_version"], json!("transport"));
+    let result = agent.call_tool("list_sessions", json!({})).await;
+    assert_eq!(result.field("positron_version"), &json!("transport"));
 }
 
 /// POST JSON to the supervisor over an already-connected stream.

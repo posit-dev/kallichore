@@ -202,6 +202,15 @@ impl McpState {
             .retain(|(workspace, _), _| workspace != workspace_id);
     }
 
+    /// Drop the endpoints of clients that ran inside a session, once the
+    /// session is gone.
+    pub async fn drop_caller_service(&self, session_id: &str) {
+        self.services
+            .lock()
+            .await
+            .retain(|(_, caller), _| caller.as_deref() != Some(session_id));
+    }
+
     /// The port the listener is bound to, if it is running.
     pub async fn port(&self) -> Option<u16> {
         self.listener.lock().await.as_ref().map(|l| l.port)

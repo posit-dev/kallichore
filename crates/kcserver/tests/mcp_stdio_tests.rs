@@ -33,6 +33,7 @@ struct Listed<'a> {
     url: String,
     token: &'a str,
     folders: Vec<&'a Path>,
+    last_active: Option<&'a str>,
 }
 
 impl<'a> Listed<'a> {
@@ -43,7 +44,14 @@ impl<'a> Listed<'a> {
             url: workspace.url.clone(),
             token: &workspace.token,
             folders,
+            last_active: None,
         }
+    }
+
+    /// The same, last active at the given time.
+    fn active_at(mut self, last_active: &'a str) -> Self {
+        self.last_active = Some(last_active);
+        self
     }
 }
 
@@ -73,6 +81,7 @@ fn write_connections(dir: &Path, workspaces: &[Listed]) {
                 "url": workspace.url,
                 "descriptor": descriptor,
                 "folders": workspace.folders,
+                "lastActive": workspace.last_active,
             }),
         );
     }
@@ -154,6 +163,13 @@ async fn test_bridge_relays_using_the_environment() {
     assert!(!result.is_error, "{:?}", result);
     assert_eq!(result.field("sessions")[0]["session_id"], json!(session));
 
+    // A response to a request of the server's is relayed, not answered.
+    agent
+        .send(json!({ "jsonrpc": "2.0", "id": "server-1", "result": {} }))
+        .await;
+    let ping = agent.send_request("ping", json!({})).await;
+    assert_eq!(agent.next_message().await["id"], json!(ping));
+
     assert!(agent.shut_down().await.success());
 }
 
@@ -218,6 +234,21 @@ async fn test_bridge_finds_the_workspace_by_folder() {
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert!(result.is_error, "{:?}", result);
     assert_eq!(result.field("code"), &json!("NO_WORKSPACE"));
+
+    // Of two workspaces listing the same folder, the one used last wins.
+    write_connections(
+        &connections,
+        &[
+            Listed::registered(&first, vec![&second_folder]).active_at("2026-09-22T10:00:00.000Z"),
+            Listed::registered(&second, vec![&second_folder]).active_at("2026-09-22T09:00:00.000Z"),
+        ],
+    );
+    let mut agent = StdioAgent::spawn(&args, &[], &second_folder);
+    agent.initialize().await;
+    assert_eq!(
+        attached_workspace(&mut agent).await,
+        json!(first.workspace_id)
+    );
 }
 
 #[tokio::test]
@@ -353,6 +384,36 @@ async fn test_bridge_survives_a_supervisor_restart() {
 }
 
 #[tokio::test]
+async fn test_bridge_ignores_connections_of_another_version() {
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("Future", None).await;
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let connections = root.path().join("connections");
+    write_connections(
+        &connections,
+        &[Listed::registered(&workspace, vec![&folder])],
+    );
+
+    // A Positron that writes a shape this bridge does not know.
+    let index_path = connections.join("connections.json");
+    let mut index: Value =
+        serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap()).unwrap();
+    index["version"] = json!(2);
+    std::fs::write(&index_path, index.to_string()).unwrap();
+
+    let mut agent = StdioAgent::spawn(
+        &["--connections", connections.to_str().unwrap()],
+        &[],
+        &folder,
+    );
+    agent.initialize().await;
+    let result = agent.call_tool("list_sessions", json!({})).await;
+    assert_eq!(result.field("code"), &json!("NO_WORKSPACE"));
+}
+
+#[tokio::test]
 async fn test_bridge_started_before_positron_connects_when_it_arrives() {
     let root = tempfile::tempdir().unwrap();
     let folder = root.path().join("project");
@@ -371,6 +432,7 @@ async fn test_bridge_started_before_positron_connects_when_it_arrives() {
             url: format!("http://127.0.0.1:{}/mcp/w/{}", dead_port, workspace_id),
             token: &token,
             folders: vec![&folder],
+            last_active: None,
         }],
     );
 
@@ -518,6 +580,7 @@ async fn test_an_idle_bridge_is_listed_once_positron_arrives() {
             url: format!("http://127.0.0.1:{}/mcp/w/{}", dead_port, workspace_id),
             token: &token,
             folders: vec![&folder],
+            last_active: None,
         }],
     );
 

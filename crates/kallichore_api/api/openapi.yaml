@@ -1365,15 +1365,6 @@ components:
         log_level:
           $ref: "#/components/schemas/serverConfiguration_log_level"
       type: object
-    mcpWorkspaceCapabilities:
-      properties:
-        commands:
-          description: Whether the workspace's windows can broker Positron commands
-            over their channels
-          type: boolean
-      required:
-      - commands
-      type: object
     mcpWorkspaceRegistration:
       properties:
         workspace_id:
@@ -1395,8 +1386,6 @@ components:
             \ across a restart of the server, which holds no state of its own. Omit\
             \ it to have the server issue one, and ignored unless it is well formed."
           type: string
-        capabilities:
-          $ref: "#/components/schemas/mcpWorkspaceCapabilities"
       required:
       - display_name
       type: object

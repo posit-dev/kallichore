@@ -585,6 +585,75 @@ async fn test_execute_code_times_out_and_interrupts_the_kernel() {
 }
 
 #[tokio::test]
+async fn test_cancelling_a_call_interrupts_the_kernel() {
+    let python_cmd = require_ipykernel!();
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+    let session_id = start_session(&client, &python_cmd).await;
+    let (_workspace_id, _window, agent) = agent_for(&server, &[&session_id]).await;
+
+    let mut runner = agent.another();
+    runner.initialize().await;
+    let canceller = runner.same_session();
+    let request_id = runner.next_request_id();
+    let running_session = session_id.clone();
+    let long_running = tokio::spawn(async move {
+        runner
+            .request(
+                "tools/call",
+                json!({
+                    "name": "execute_code",
+                    "arguments": {
+                        "code": "import time; time.sleep(30)",
+                        "session_id": running_session,
+                        "timeout_s": 60,
+                    },
+                }),
+            )
+            .await
+    });
+
+    wait_for_status(&client, &session_id, Status::Busy, Duration::from_secs(15)).await;
+    canceller.cancel(request_id).await;
+
+    // Well inside the 30 seconds the cell would otherwise take.
+    wait_for_status(&client, &session_id, Status::Idle, Duration::from_secs(10)).await;
+    let cancelled = tokio::time::timeout(Duration::from_secs(10), long_running)
+        .await
+        .expect("The cancelled call should end promptly")
+        .expect("Tool call panicked");
+    // A cancelled request gets no response.
+    assert!(
+        cancelled.messages().iter().all(|m| m.get("id").is_none()),
+        "{}",
+        cancelled.body
+    );
+}
+
+#[tokio::test]
+async fn test_long_executions_report_their_output_as_progress() {
+    let python_cmd = require_ipykernel!();
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+    let session_id = start_session(&client, &python_cmd).await;
+    let (_workspace_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
+
+    let (result, progress) = agent
+        .call_tool_with_progress(
+            "execute_code",
+            json!({
+                "code": "import time\nfor i in range(3):\n    print(f'step {i}', flush=True)\n    time.sleep(0.8)",
+                "session_id": session_id,
+            }),
+        )
+        .await;
+
+    assert!(!result.is_error, "{:?}", result);
+    assert!(progress.len() >= 2, "{:?}", progress);
+    assert_eq!(progress.concat(), "step 0\nstep 1\nstep 2\n");
+}
+
+#[tokio::test]
 async fn test_interrupt_session_stops_a_running_cell() {
     let python_cmd = require_ipykernel!();
     let server = TestServer::start().await;

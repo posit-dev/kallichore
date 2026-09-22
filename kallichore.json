@@ -1573,18 +1573,6 @@
           }
         }
       },
-      "mcpWorkspaceCapabilities": {
-        "type": "object",
-        "properties": {
-          "commands": {
-            "type": "boolean",
-            "description": "Whether the workspace's windows can broker Positron commands over their channels"
-          }
-        },
-        "required": [
-          "commands"
-        ]
-      },
       "mcpWorkspaceRegistration": {
         "type": "object",
         "properties": {
@@ -1603,9 +1591,6 @@
           "token": {
             "type": "string",
             "description": "A bearer token the server issued for this workspace before. Supplying it again keeps the token agents are configured with valid across a restart of the server, which holds no state of its own. Omit it to have the server issue one, and ignored unless it is well formed."
-          },
-          "capabilities": {
-            "$ref": "#/components/schemas/mcpWorkspaceCapabilities"
           }
         },
         "required": [

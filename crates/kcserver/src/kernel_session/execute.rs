@@ -22,6 +22,7 @@ use kcshared::{
     websocket_message::WebsocketMessage,
 };
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::{make_message_id, KernelSession};
 
@@ -30,11 +31,6 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How often to re-check a starting kernel's status.
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-/// The most messages buffered for a client that isn't connected. Beyond this
-/// the oldest are dropped, so a window that stays closed for a long time while
-/// an agent keeps working cannot grow the buffer without bound.
-const MAX_BUFFERED_MESSAGES: usize = 10_000;
 
 /// A request to execute code in a session.
 pub struct ExecuteOptions {
@@ -57,6 +53,13 @@ pub struct ExecuteOptions {
 
     /// Who requested the execution, when it isn't the connected client.
     pub attribution: Option<ExecutionAttribution>,
+
+    /// Cancelled when the caller no longer wants the result. The kernel is
+    /// then interrupted, as it is on a timeout.
+    pub cancel: Option<CancellationToken>,
+
+    /// Receives the text of each stream message as it arrives.
+    pub stream_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
 /// Errors that can occur while executing code.
@@ -71,6 +74,9 @@ pub enum ExecuteError {
     /// Execution did not complete within the requested timeout. The kernel has
     /// been interrupted.
     Timeout,
+
+    /// The caller cancelled the execution. The kernel has been interrupted.
+    Cancelled,
 
     /// The kernel's message channel closed while the execution was in flight.
     ChannelClosed,
@@ -136,17 +142,30 @@ impl KernelSession {
             return Err(ExecuteError::SendFailed(e.to_string()));
         }
 
-        let result = collect_execution_output(&mut rpc_rx, &msg_id, options.timeout).await;
+        let result = collect_execution_output(
+            &mut rpc_rx,
+            &msg_id,
+            options.timeout,
+            options.cancel.as_ref(),
+            options.stream_tx.as_ref(),
+        )
+        .await;
 
         {
             let mut state = self.state.write().await;
             state.rpc_listeners.remove(&msg_id);
         }
 
-        if matches!(result, Err(ExecuteError::Timeout)) {
-            // Interrupt the kernel so timed-out code stops consuming resources
+        if matches!(
+            result,
+            Err(ExecuteError::Timeout) | Err(ExecuteError::Cancelled)
+        ) {
+            // Interrupt the kernel so abandoned code stops consuming resources
             if let Err(e) = self.interrupt().await {
-                log::warn!("Failed to interrupt kernel after execution timeout: {}", e);
+                log::warn!(
+                    "Failed to interrupt kernel after abandoning execution: {}",
+                    e
+                );
             }
         }
 
@@ -185,23 +204,13 @@ impl KernelSession {
         }
     }
 
-    /// Push an `ExecutionRequested` event onto the client channel, trimming the
-    /// buffer first if a disconnected client has let it grow too large.
+    /// Push an `ExecutionRequested` event onto the client channel.
     async fn announce_execution(
         &self,
         msg_id: &str,
         code: &str,
         attribution: ExecutionAttribution,
     ) {
-        let connected = { self.state.read().await.connected };
-        if !connected {
-            while self.ws_json_tx.len() >= MAX_BUFFERED_MESSAGES {
-                if self.ws_json_rx.try_recv().is_err() {
-                    break;
-                }
-            }
-        }
-
         let event =
             WebsocketMessage::Kernel(KernelMessage::ExecutionRequested(ExecutionRequested {
                 msg_id: msg_id.to_string(),
@@ -226,6 +235,8 @@ async fn collect_execution_output(
     rpc_rx: &mut mpsc::UnboundedReceiver<JupyterMessage>,
     msg_id: &str,
     timeout_duration: Option<Duration>,
+    cancel: Option<&CancellationToken>,
+    stream_tx: Option<&mpsc::UnboundedSender<String>>,
 ) -> Result<models::ExecuteReply, ExecuteError> {
     let mut output: Vec<models::ExecuteOutput> = Vec::new();
     let mut data: Option<std::collections::HashMap<String, String>> = None;
@@ -245,18 +256,29 @@ async fn collect_execution_output(
     // not each individual message receive.
     let deadline = timeout_duration.map(|d| tokio::time::Instant::now() + d);
 
+    let cancelled = async {
+        match cancel {
+            Some(cancel) => cancel.cancelled().await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(cancelled);
+
     loop {
-        let msg = if let Some(deadline) = deadline {
-            match tokio::time::timeout_at(deadline, rpc_rx.recv()).await {
-                Ok(Some(msg)) => msg,
-                Ok(None) => return Err(ExecuteError::ChannelClosed),
-                Err(_) => return Err(ExecuteError::Timeout),
+        let received = async {
+            match deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline, rpc_rx.recv())
+                    .await
+                    .map_err(|_| ExecuteError::Timeout),
+                None => Ok(rpc_rx.recv().await),
             }
-        } else {
-            match rpc_rx.recv().await {
+        };
+        let msg = tokio::select! {
+            _ = &mut cancelled => return Err(ExecuteError::Cancelled),
+            received = received => match received? {
                 Some(msg) => msg,
                 None => return Err(ExecuteError::ChannelClosed),
-            }
+            },
         };
 
         let msg_type = msg.header.msg_type.as_str();
@@ -279,6 +301,9 @@ async fn collect_execution_output(
                     .get("text")
                     .and_then(|v| v.as_str())
                     .map(String::from);
+                if let (Some(tx), Some(text)) = (stream_tx, &entry.text) {
+                    let _ = tx.send(text.clone());
+                }
                 output.push(entry);
             }
             "display_data" => {

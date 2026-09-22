@@ -73,10 +73,6 @@ pub struct FrontendHello {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_session_id: Option<String>,
 
-    /// Whether the console history API is available in this window.
-    #[serde(default)]
-    pub history_api_enabled: bool,
-
     /// Whether the window had focus when it connected.
     #[serde(default)]
     pub focused: bool,
@@ -118,7 +114,7 @@ pub struct CommandReply {
     pub result: Option<serde_json::Value>,
 
     /// A machine-readable failure reason, when not `ok`: `not-found`,
-    /// `disabled`, or `error`.
+    /// `disabled`, `invalid-args`, or `error`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 
@@ -178,9 +174,6 @@ pub struct CommandRequest {
 
     /// The agent that asked for the command.
     pub agent: AgentIdentity,
-
-    /// How long the supervisor will wait for a reply, in milliseconds.
-    pub deadline_ms: u64,
 }
 
 /// The agents connected to the workspace, sent when a window attaches and

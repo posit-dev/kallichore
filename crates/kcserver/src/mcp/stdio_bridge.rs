@@ -41,7 +41,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -68,6 +67,9 @@ use super::{MCP_TOKEN_VAR, MCP_URL_VAR};
 
 /// The index Positron keeps in the connections directory.
 const INDEX_FILE: &str = "connections.json";
+
+/// The version of the index and descriptors the bridge understands.
+const CONNECTIONS_VERSION: u32 = 1;
 
 /// The header carrying a pre-2026-07-28 protocol session.
 const SESSION_HEADER: &str = "mcp-session-id";
@@ -134,7 +136,6 @@ pub async fn run(options: BridgeOptions) -> std::io::Result<()> {
     let bridge = Arc::new(Bridge {
         link: Mutex::new(Link::new(Resolver::from_environment(options))),
         out: tx,
-        presence_started: AtomicBool::new(false),
         presence: std::sync::Mutex::new(None),
     });
 
@@ -159,14 +160,17 @@ pub async fn run(options: BridgeOptions) -> std::io::Result<()> {
             }
         };
 
-        // The handshake and notifications are handled in order, since the
-        // server must see `initialize` and `notifications/initialized` before
-        // anything that follows them. Requests run concurrently, so a long
-        // execution does not hold up a quick listing, or the cancellation
-        // meant to stop it.
-        match message.get("method").and_then(Value::as_str) {
-            Some("initialize") if message.get("id").is_some() => bridge.initialize(message).await,
-            Some(_) if message.get("id").is_none() => bridge.notify(message).await,
+        // The handshake, notifications, and responses to the server's own
+        // requests are handled in order, since the server must see
+        // `initialize` and `notifications/initialized` before anything that
+        // follows them. Requests run concurrently, so a long execution does
+        // not hold up a quick listing, or the cancellation meant to stop it.
+        match (
+            message.get("method").and_then(Value::as_str),
+            message.get("id"),
+        ) {
+            (Some("initialize"), Some(_)) => bridge.initialize(message).await,
+            (None, _) | (_, None) => bridge.notify(message).await,
             _ => {
                 if let Some(info) = request_client_info(&message) {
                     bridge.link.lock().await.request_client_info = Some(info);
@@ -282,11 +286,13 @@ impl Endpoint {
 /// Positron's index of the workspaces registered on this machine.
 #[derive(Deserialize)]
 struct Index {
+    version: u32,
     workspaces: HashMap<String, IndexEntry>,
 }
 
 /// One workspace in the index.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct IndexEntry {
     /// The descriptor holding the workspace's token.
     descriptor: PathBuf,
@@ -294,11 +300,17 @@ struct IndexEntry {
     /// The workspace's folders.
     #[serde(default)]
     folders: Vec<PathBuf>,
+
+    /// When a window of the workspace was last active, as an ISO 8601 UTC
+    /// timestamp, which sorts chronologically as text.
+    #[serde(default)]
+    last_active: Option<String>,
 }
 
 /// The parts of a workspace's descriptor the bridge reads.
 #[derive(Deserialize)]
 struct Descriptor {
+    version: u32,
     url: String,
     token: String,
 }
@@ -376,8 +388,17 @@ impl Resolver {
                 return None;
             }
         };
-        match serde_json::from_str(&contents) {
-            Ok(index) => Some(index),
+        match serde_json::from_str::<Index>(&contents) {
+            Ok(index) if index.version == CONNECTIONS_VERSION => Some(index),
+            Ok(index) => {
+                log::warn!(
+                    "Ignoring {}, which is version {}; this bridge reads version {}",
+                    path.display(),
+                    index.version,
+                    CONNECTIONS_VERSION
+                );
+                None
+            }
             Err(e) => {
                 log::warn!("Could not parse {}: {}", path.display(), e);
                 None
@@ -395,10 +416,20 @@ impl Resolver {
         let descriptor: Descriptor = serde_json::from_str(&contents)
             .map_err(|e| log::warn!("Could not parse {}: {}", entry.descriptor.display(), e))
             .ok()?;
+        if descriptor.version != CONNECTIONS_VERSION {
+            log::warn!(
+                "Ignoring {}, which is version {}; this bridge reads version {}",
+                entry.descriptor.display(),
+                descriptor.version,
+                CONNECTIONS_VERSION
+            );
+            return None;
+        }
         Endpoint::parse(&descriptor.url, &descriptor.token)
     }
 
-    /// The workspace whose folder most closely contains the working directory.
+    /// The workspace whose folder most closely contains the working directory,
+    /// or of two that list the same folder, the one used most recently.
     fn workspace_for_working_dir(&self) -> Option<String> {
         let working_dir = canonical(self.working_dir.as_ref()?);
         let index = self.index()?;
@@ -413,10 +444,10 @@ impl Resolver {
                     .filter(|folder| working_dir.starts_with(folder))
                     .map(|folder| folder.components().count())
                     .max()
-                    .map(|depth| (depth, id))
+                    .map(|depth| (depth, entry.last_active, id))
             })
             .max()
-            .map(|(_, id)| id)
+            .map(|(_, _, id)| id)
     }
 }
 
@@ -582,10 +613,7 @@ struct Bridge {
     link: Mutex<Link>,
     out: Output,
 
-    /// Whether the presence keeper has been started.
-    presence_started: AtomicBool,
-
-    /// The presence keeper, stopped as the bridge leaves.
+    /// The presence keeper, once started; stopped as the bridge leaves.
     presence: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -611,8 +639,10 @@ impl Bridge {
         }
     }
 
-    /// Relay a notification. Dropped when no endpoint is answering: nothing is
-    /// waiting on it, and `notifications/initialized` is replayed on connect.
+    /// Relay a notification, or a response to a request of the server's; the
+    /// server answers neither. Dropped when no endpoint is answering: nothing
+    /// is waiting on it, and `notifications/initialized` is replayed on
+    /// connect.
     async fn notify(&self, message: Value) {
         let mut link = self.link.lock().await;
         if message.get("method").and_then(Value::as_str) == Some("notifications/initialized") {
@@ -692,11 +722,10 @@ impl Bridge {
 
     /// Start holding the presence stream, if that has not already begun.
     fn start_presence(self: &Arc<Self>) {
-        if self.presence_started.swap(true, Ordering::SeqCst) {
-            return;
+        let mut presence = self.presence.lock().unwrap();
+        if presence.is_none() {
+            *presence = Some(tokio::spawn(self.clone().keep_presence()));
         }
-        let keeper = tokio::spawn(self.clone().keep_presence());
-        *self.presence.lock().unwrap() = Some(keeper);
     }
 
     /// Stop holding the presence stream, which takes the client off the
