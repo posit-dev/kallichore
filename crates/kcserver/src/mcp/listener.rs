@@ -51,14 +51,14 @@ use super::McpState;
 
 /// The path prefix under which each workspace's endpoint lives; the workspace
 /// ID follows.
-const MCP_PATH_PREFIX: &str = "/mcp/w/";
+pub(crate) const MCP_PATH_PREFIX: &str = "/mcp/w/";
 
 /// The path rmcp's service expects to see once the workspace has been resolved.
 const MCP_PATH: &str = "/mcp";
 
 /// The path segment, following a workspace ID, under which a caller names the
 /// session it is running in.
-const CALLER_PATH_SEGMENT: &str = "/s/";
+pub(crate) const CALLER_PATH_SEGMENT: &str = "/s/";
 
 /// The response body type shared with rmcp's Streamable HTTP service.
 type McpBody = BoxBody<Bytes, Infallible>;

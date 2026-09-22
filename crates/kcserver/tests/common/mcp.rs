@@ -274,22 +274,7 @@ impl McpAgent {
             name,
             response.body
         );
-        let result = expect_result(response.json());
-        ToolCall {
-            is_error: result
-                .get("isError")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            structured: result
-                .get("structuredContent")
-                .cloned()
-                .unwrap_or(Value::Null),
-            content: result
-                .get("content")
-                .and_then(|c| c.as_array())
-                .cloned()
-                .unwrap_or_default(),
-        }
+        tool_call(expect_result(response.json()))
     }
 
     /// Send a JSON-RPC request with this agent's credentials and session.
@@ -322,6 +307,191 @@ impl McpAgent {
             headers.push(("mcp-session-id", session_id.clone()));
         }
         headers
+    }
+}
+
+/// Unpack a `tools/call` result.
+fn tool_call(result: Value) -> ToolCall {
+    ToolCall {
+        is_error: result
+            .get("isError")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        structured: result
+            .get("structuredContent")
+            .cloned()
+            .unwrap_or(Value::Null),
+        content: result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default(),
+    }
+}
+
+/// An agent that starts `kcserver mcp-stdio` as its MCP server and talks to it
+/// over the child's stdin and stdout.
+///
+/// Every line the child writes to stdout must be a JSON-RPC message, so reading
+/// one that is not fails the test.
+pub struct StdioAgent {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+
+    /// Messages read while waiting for a different one.
+    unclaimed: Vec<Value>,
+
+    name: String,
+    next_id: i64,
+}
+
+impl StdioAgent {
+    /// Start the bridge with the given arguments and environment, in the given
+    /// working directory. The Positron variables are cleared first, so the
+    /// bridge sees only what the test gives it.
+    pub fn spawn(args: &[&str], env: &[(&str, &str)], working_dir: &std::path::Path) -> Self {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_kcserver"));
+        command
+            .arg("mcp-stdio")
+            .args(args)
+            .current_dir(working_dir)
+            .env_remove("POSITRON_MCP_URL")
+            .env_remove("POSITRON_MCP_TOKEN")
+            .env("RUST_LOG", "debug")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("Failed to start kcserver mcp-stdio");
+        let stdin = child.stdin.take().expect("No stdin");
+        let stdout = child.stdout.take().expect("No stdout");
+        Self {
+            child,
+            stdin,
+            stdout: tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(stdout)),
+            unclaimed: Vec::new(),
+            name: "stdio-test-agent".to_string(),
+            next_id: 0,
+        }
+    }
+
+    /// Set the name this agent reports in `clientInfo`.
+    pub fn named(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+
+    /// Write one message to the bridge.
+    pub async fn send(&mut self, message: Value) {
+        use tokio::io::AsyncWriteExt;
+        let line = format!("{}\n", message);
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .expect("Failed to write to the bridge");
+    }
+
+    /// Send a request without waiting for its response, returning its ID.
+    pub async fn send_request(&mut self, method: &str, params: Value) -> i64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            .await;
+        id
+    }
+
+    /// The next message the bridge writes, whatever it is.
+    pub async fn next_message(&mut self) -> Value {
+        if !self.unclaimed.is_empty() {
+            return self.unclaimed.remove(0);
+        }
+        self.read_message().await
+    }
+
+    /// Wait for the response to a request, keeping anything else for later.
+    pub async fn response(&mut self, id: i64) -> Value {
+        if let Some(index) = self.unclaimed.iter().position(|m| m["id"] == json!(id)) {
+            return self.unclaimed.remove(index);
+        }
+        loop {
+            let message = self.read_message().await;
+            if message["id"] == json!(id) {
+                return message;
+            }
+            self.unclaimed.push(message);
+        }
+    }
+
+    /// Send a request and return its result.
+    pub async fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.send_request(method, params).await;
+        expect_result(self.response(id).await)
+    }
+
+    /// Complete the MCP handshake, returning the `initialize` result.
+    pub async fn initialize(&mut self) -> Value {
+        let result = self
+            .request(
+                "initialize",
+                json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": { "name": self.name, "version": "1.0.0" },
+                }),
+            )
+            .await;
+        self.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .await;
+        result
+    }
+
+    /// The names of the tools the bridge lists.
+    pub async fn tool_names(&mut self) -> Vec<String> {
+        self.request("tools/list", json!({}))
+            .await
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// Call a tool and unpack its result.
+    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> ToolCall {
+        tool_call(
+            self.request(
+                "tools/call",
+                json!({ "name": name, "arguments": arguments }),
+            )
+            .await,
+        )
+    }
+
+    /// Close stdin, as an agent shutting down does, and wait for the bridge
+    /// to exit.
+    pub async fn shut_down(mut self) -> std::process::ExitStatus {
+        drop(self.stdin);
+        tokio::time::timeout(Duration::from_secs(10), self.child.wait())
+            .await
+            .expect("The bridge did not exit when its stdin closed")
+            .expect("Failed to wait for the bridge")
+    }
+
+    async fn read_message(&mut self) -> Value {
+        let line = tokio::time::timeout(Duration::from_secs(30), self.stdout.next_line())
+            .await
+            .expect("Timed out waiting for the bridge")
+            .expect("Failed to read from the bridge")
+            .expect("The bridge closed its stdout");
+        serde_json::from_str(&line).unwrap_or_else(|e| {
+            panic!("The bridge wrote a line that is not JSON ({}): {}", e, line)
+        })
     }
 }
 

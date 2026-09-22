@@ -26,12 +26,17 @@
 //! terminal. Such a client is handed an endpoint that names its own session, so
 //! it gets its own handler and the server can tell it apart from an agent
 //! outside; see [`listener::session_endpoint_url`].
+//!
+//! Clients that would rather start a server than connect to one run
+//! `kcserver mcp-stdio`, which finds the right workspace's endpoint and relays
+//! to it; see [`stdio_bridge`].
 
 pub mod auth;
 pub mod card;
 pub mod channel;
 pub mod handler;
 pub mod listener;
+pub mod stdio_bridge;
 pub mod workspaces;
 
 use std::collections::HashMap;

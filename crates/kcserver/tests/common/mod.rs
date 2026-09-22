@@ -392,10 +392,19 @@ impl TestServer {
         display_name: &str,
         workspace_id: Option<String>,
     ) -> kallichore_api::models::McpWorkspace {
-        let client = self.create_client().await;
         let mut registration =
             kallichore_api::models::McpWorkspaceRegistration::new(display_name.to_string());
         registration.workspace_id = workspace_id;
+        self.register_mcp_workspace_as(registration).await
+    }
+
+    /// Register an MCP workspace exactly as described, as a window handing back
+    /// the identity a previous server issued it does.
+    pub async fn register_mcp_workspace_as(
+        &self,
+        mut registration: kallichore_api::models::McpWorkspaceRegistration,
+    ) -> kallichore_api::models::McpWorkspace {
+        let client = self.create_client().await;
         registration.capabilities =
             Some(kallichore_api::models::McpWorkspaceCapabilities::new(true));
 

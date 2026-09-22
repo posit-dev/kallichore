@@ -219,9 +219,16 @@ separate from the main API transport, because agents need a URL.
   `execute_code` only in `store_history`: it stays out of the session's history and leaves its
   execution counter alone. Neither uses the Jupyter `silent` flag, which would suppress both the
   result the agent asked for and the echo the user needs.
+- Agents that start their MCP servers as child processes run `kcserver mcp-stdio`, which relays
+  JSON-RPC between stdio and a workspace's HTTP endpoint. It finds the endpoint from `--workspace`,
+  then `POSITRON_MCP_URL`/`POSITRON_MCP_TOKEN`, then the workspace in Positron's connections
+  directory (`--connections`) whose folder contains its working directory. It resolves lazily and
+  again after a refusal, and answers the handshake, tool list, and tool calls itself while no
+  endpoint answers, so an agent never has to reconnect. Stdout carries the protocol; logs go to
+  stderr. A request is retried only when it never reached a handler.
 
 Code lives in `crates/kcserver/src/mcp/` (`listener.rs`, `handler.rs`, `workspaces.rs`, `auth.rs`,
-`channel.rs`), with shared frontend-channel message types in `crates/kcshared/src/mcp_frontend.rs`.
+`channel.rs`, `stdio_bridge.rs`), with shared frontend-channel message types in `crates/kcshared/src/mcp_frontend.rs`.
 The protocol layer is the `rmcp` crate.
 
 ## Testing
@@ -244,6 +251,7 @@ cargo test -- --nocapture
   - `named_pipe_test.rs`: Windows named pipe specific tests (Windows only)
   - `mcp_tests.rs`: MCP registration, auth, and command brokering over the real HTTP stack
   - `mcp_execute_tests.rs`: MCP kernel tools against a real ipykernel
+  - `mcp_stdio_tests.rs`: the `kcserver mcp-stdio` bridge, driven over stdio against a real server
 - **Platform-specific tests**: Automatically disabled on unsupported platforms
 
 ### Test Environment

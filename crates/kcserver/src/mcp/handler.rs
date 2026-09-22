@@ -73,7 +73,7 @@ pub const SERVER_DESCRIPTION: &str = "The user's live Positron interpreter sessi
 
 /// Guidance sent to the agent when it connects. Kept short: it is delivered
 /// once and clients truncate long instruction blocks.
-const INSTRUCTIONS: &str = "\
+pub(crate) const INSTRUCTIONS: &str = "\
 You are attached to one Positron workspace's live sessions: the workspace whose \
 terminal you were launched from. Other workspaces sharing this supervisor are \
 invisible to you, which is deliberate. Prefer execute_code and evaluate_code \
@@ -845,19 +845,33 @@ impl PositronMcpHandler {
     }
 }
 
+impl PositronMcpHandler {
+    /// Every tool the server publishes, available without a handler, so that
+    /// the stdio bridge can list them while Positron is not running.
+    pub fn tool_list() -> Vec<rmcp::model::Tool> {
+        Self::tool_router().list_all()
+    }
+}
+
+/// What the server reports about itself at `initialize`, with the given
+/// instructions.
+pub fn server_info(instructions: String) -> InitializeResult {
+    InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+        .with_server_info(
+            Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION"))
+                .with_title(SERVER_TITLE)
+                .with_description(SERVER_DESCRIPTION),
+        )
+        .with_instructions(instructions)
+}
+
 #[tool_handler]
 impl ServerHandler for PositronMcpHandler {
     fn get_info(&self) -> InitializeResult {
-        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(
-                Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION"))
-                    .with_title(SERVER_TITLE)
-                    .with_description(SERVER_DESCRIPTION),
-            )
-            .with_instructions(match &self.caller_session_id {
-                Some(_) => format!("{}{}", INSTRUCTIONS, CALLER_INSTRUCTIONS),
-                None => INSTRUCTIONS.to_string(),
-            })
+        server_info(match &self.caller_session_id {
+            Some(_) => format!("{}{}", INSTRUCTIONS, CALLER_INSTRUCTIONS),
+            None => INSTRUCTIONS.to_string(),
+        })
     }
 
     /// Announce the agent, then negotiate as the default implementation does.
