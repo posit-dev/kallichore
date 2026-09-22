@@ -187,7 +187,11 @@ impl WorkspaceRegistry {
     ///
     /// An ID the caller supplies is honored only if it is well formed, since it
     /// goes into the endpoint URL agents connect to; otherwise a fresh one is
-    /// minted from the display name.
+    /// minted from the display name. A token the caller supplies is honored on
+    /// the same terms, and for a stronger reason: this registry lives in
+    /// memory, so a token of our own would last no longer than the process,
+    /// while the configuration an agent reads it from lasts indefinitely. The
+    /// caller keeps the token with the workspace ID and hands both back.
     ///
     /// Returns the workspace ID and its token.
     pub async fn register(
@@ -195,10 +199,21 @@ impl WorkspaceRegistry {
         registration: &models::McpWorkspaceRegistration,
     ) -> (String, String) {
         let mut workspaces = self.workspaces.write().await;
+        let supplied_token = match registration.token.as_deref() {
+            Some(token) if is_valid_token(token) => Some(token.to_string()),
+            Some(_) => {
+                log::warn!("Ignoring malformed MCP workspace token; issuing a new one");
+                None
+            }
+            None => None,
+        };
 
         if let Some(id) = registration.workspace_id.as_ref() {
             if let Some(existing) = workspaces.get_mut(id) {
                 existing.display_name = registration.display_name.clone();
+                if let Some(token) = supplied_token {
+                    existing.token = token;
+                }
                 return (id.clone(), existing.token.clone());
             }
         }
@@ -214,7 +229,7 @@ impl WorkspaceRegistry {
             }
             None => mint_id(&registration.display_name, &workspaces),
         };
-        let token = generate_token();
+        let token = supplied_token.unwrap_or_else(generate_token);
         workspaces.insert(
             id.clone(),
             Workspace {
@@ -573,6 +588,12 @@ const MAX_ID_LEN: usize = 40;
 /// What a slug falls back to when a display name has nothing usable in it.
 const FALLBACK_SLUG: &str = "workspace";
 
+/// How many random bytes a token carries.
+const TOKEN_BYTES: usize = 32;
+
+/// A token's length once rendered as hex.
+const TOKEN_LEN: usize = TOKEN_BYTES * 2;
+
 /// Mint an ID for a workspace: its name, made URL-safe, plus enough randomness
 /// that two workspaces of the same name never collide.
 ///
@@ -634,10 +655,17 @@ fn is_valid_id(id: &str) -> bool {
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
-/// Generate a 32-byte random token, rendered as hex.
+/// Generate a random token, rendered as hex.
 fn generate_token() -> String {
-    let bytes: [u8; 32] = rand::thread_rng().gen();
+    let bytes: [u8; TOKEN_BYTES] = rand::thread_rng().gen();
     hex::encode(bytes)
+}
+
+/// Whether a token the caller supplied is one we would have issued. Guards the
+/// only way a token enters the registry from outside, so a caller cannot
+/// substitute a guessable credential for the one we minted.
+fn is_valid_token(token: &str) -> bool {
+    token.len() == TOKEN_LEN && token.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 /// Compare two byte strings without leaking their contents through timing.
@@ -777,6 +805,35 @@ mod tests {
         assert_eq!(id, again);
         assert_eq!(token, same_token);
         assert_eq!(registry.workspace_for_token(&token).await, Some(id));
+    }
+
+    #[tokio::test]
+    async fn a_supplied_token_outlives_the_server() {
+        // A server that has just started holds no record of the workspace, so
+        // the token the caller was issued by its predecessor -- the one every
+        // agent is configured with -- is the one to keep.
+        let registry = WorkspaceRegistry::new();
+        let token = generate_token();
+        let mut registration = registration("Workspace 1");
+        registration.workspace_id = Some("workspace-1-abc123".to_string());
+        registration.token = Some(token.clone());
+
+        let (id, issued) = registry.register(&registration).await;
+
+        assert_eq!(issued, token);
+        assert_eq!(registry.workspace_for_token(&token).await, Some(id));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_supplied_token_is_replaced() {
+        let registry = WorkspaceRegistry::new();
+        let mut registration = registration("Workspace 1");
+        registration.token = Some("hunter2".to_string());
+
+        let (_, issued) = registry.register(&registration).await;
+
+        assert_ne!(issued, "hunter2");
+        assert!(is_valid_token(&issued));
     }
 
     #[tokio::test]

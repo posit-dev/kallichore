@@ -3505,6 +3505,11 @@ pub struct McpWorkspaceRegistration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preferred_port: Option<i32>,
 
+    /// A bearer token the server issued for this workspace before. Supplying it again keeps the token agents are configured with valid across a restart of the server, which holds no state of its own. Omit it to have the server issue one, and ignored unless it is well formed.
+    #[serde(rename = "token")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+
     #[serde(rename = "capabilities")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<models::McpWorkspaceCapabilities>,
@@ -3517,6 +3522,7 @@ impl McpWorkspaceRegistration {
             workspace_id: None,
             display_name,
             preferred_port: None,
+            token: None,
             capabilities: None,
         }
     }
@@ -3536,6 +3542,9 @@ impl std::fmt::Display for McpWorkspaceRegistration {
             self.preferred_port.as_ref().map(|preferred_port| {
                 ["preferred_port".to_string(), preferred_port.to_string()].join(",")
             }),
+            self.token
+                .as_ref()
+                .map(|token| ["token".to_string(), token.to_string()].join(",")),
             // Skipping non-primitive type capabilities in query parameter serialization
         ];
 
@@ -3561,6 +3570,7 @@ impl std::str::FromStr for McpWorkspaceRegistration {
             pub workspace_id: Vec<String>,
             pub display_name: Vec<String>,
             pub preferred_port: Vec<i32>,
+            pub token: Vec<String>,
             pub capabilities: Vec<models::McpWorkspaceCapabilities>,
         }
 
@@ -3596,6 +3606,10 @@ impl std::str::FromStr for McpWorkspaceRegistration {
                         <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
                     #[allow(clippy::redundant_clone)]
+                    "token" => intermediate_rep.token.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
                     "capabilities" => intermediate_rep.capabilities.push(
                         <models::McpWorkspaceCapabilities as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
@@ -3621,6 +3635,7 @@ impl std::str::FromStr for McpWorkspaceRegistration {
                 .next()
                 .ok_or_else(|| "display_name missing in McpWorkspaceRegistration".to_string())?,
             preferred_port: intermediate_rep.preferred_port.into_iter().next(),
+            token: intermediate_rep.token.into_iter().next(),
             capabilities: intermediate_rep.capabilities.into_iter().next(),
         })
     }

@@ -492,7 +492,9 @@ paths:
       description: "Registers (or re-registers) a workspace and starts the MCP listener\
         \ if it isn't already running. Re-registering with a known workspace ID returns\
         \ the same bearer token, so agents launched from terminals that outlived the\
-        \ window keep working."
+        \ window keep working. The server keeps no state across restarts, so a caller\
+        \ that wants the token to outlive the server supplies the one it was issued\
+        \ before."
       operationId: register-mcp-workspace
       requestBody:
         content:
@@ -1357,6 +1359,12 @@ components:
           description: "The TCP port the MCP listener should bind. Used only when\
             \ the listener isn't running yet, and ignored when the port is unavailable."
           type: integer
+        token:
+          description: "A bearer token the server issued for this workspace before.\
+            \ Supplying it again keeps the token agents are configured with valid\
+            \ across a restart of the server, which holds no state of its own. Omit\
+            \ it to have the server issue one, and ignored unless it is well formed."
+          type: string
         capabilities:
           $ref: "#/components/schemas/mcpWorkspaceCapabilities"
       required:
