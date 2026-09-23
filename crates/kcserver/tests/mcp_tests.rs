@@ -35,8 +35,9 @@ use kcshared::mcp_frontend::{
 use serde_json::{json, Value};
 
 /// The tools the server is expected to publish.
-const EXPECTED_TOOLS: [&str; 7] = [
+const EXPECTED_TOOLS: [&str; 8] = [
     "list_sessions",
+    "get_session_history",
     "execute_code",
     "evaluate_code",
     "interrupt_session",
