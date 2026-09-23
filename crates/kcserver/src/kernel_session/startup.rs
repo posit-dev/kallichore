@@ -281,7 +281,7 @@ impl StartupCoordinator {
         // CREATE_NO_WINDOW (above) gives the kernel its own console and so
         // detaches it from the supervisor's console lifetime; without the job
         // object the kernel would be left orphaned when the supervisor exits.
-        super::job_object::assign_to_supervisor_job(&child);
+        super::job_object::assign_to_jobs(&self.session_id, &child);
 
         // Capture output streams
         process_monitor.capture_output_streams(&mut child);

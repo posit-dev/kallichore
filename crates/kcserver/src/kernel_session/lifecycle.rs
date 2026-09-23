@@ -308,20 +308,14 @@ impl LifecycleManager {
                 }
 
                 // On Unix-alikes, interrupts are signaled by sending a SIGINT signal
-                #[cfg(not(windows))]
+                #[cfg(unix)]
                 {
-                    use sysinfo::{Pid, Signal, System};
                     let pid = self.state.read().await.process_id.unwrap_or(0);
                     if pid == 0 {
                         return Err(anyhow::anyhow!("No process ID to interrupt"));
                     }
-                    let mut system = System::new();
-                    let pid = Pid::from_u32(pid);
-                    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]));
-                    if let Some(process) = system.process(pid) {
-                        process.kill_with(Signal::Interrupt);
-                    } else {
-                        return Err(anyhow::anyhow!("Process {} not found", pid));
+                    if !crate::process_control::interrupt(pid) {
+                        return Err(anyhow::anyhow!("Failed to interrupt process {}", pid));
                     }
                 }
             }

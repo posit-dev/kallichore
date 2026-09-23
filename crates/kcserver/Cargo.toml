@@ -39,7 +39,6 @@ hmac = "0.12.1"
 sha2 = "0.10.8"
 bytes = "1.7.1"
 async-channel = "2.3.1"
-sysinfo = "0.31.4"
 event-listener = "5.3.1"
 base64 = "0.22.1"
 simplelog = "0.12.2"
@@ -76,7 +75,7 @@ features = [
     "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
     "Win32_System_Threading",
-    "Win32_System_Diagnostics_ToolHelp",
     "Win32_UI_WindowsAndMessaging"
 ]
