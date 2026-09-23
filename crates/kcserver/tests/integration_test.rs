@@ -128,13 +128,7 @@ mod unix_socket_tests {
         fn drop(&mut self) {
             println!("Cleaning up Unix socket test server");
 
-            if let Err(e) = self.child.kill() {
-                println!("Warning: Failed to terminate Unix socket server: {}", e);
-            }
-
-            if let Err(e) = self.child.wait() {
-                println!("Warning: Failed to wait for Unix socket server: {}", e);
-            }
+            crate::common::test_utils::stop_server(&mut self.child);
 
             // Clean up socket file if it still exists
             if self.socket_path.exists() {

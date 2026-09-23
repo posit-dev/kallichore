@@ -144,18 +144,42 @@ pub fn create_shutdown_request() -> WebsocketMessage {
 
 /// Helper function to properly clean up a spawned server process
 pub fn cleanup_spawned_server(mut child: Child) {
-    println!("Cleaning up spawned server (PID: {})", child.id());
+    stop_server(&mut child);
+}
+
+/// Stops a server, first with SIGTERM so it can shut down its kernels, then
+/// forcibly if it hasn't exited within a few seconds. `Child::kill` alone
+/// sends SIGKILL on Unix, which leaves the kernels running.
+pub fn stop_server(child: &mut Child) {
+    println!("Stopping server (PID: {})", child.id());
+
+    #[cfg(unix)]
+    {
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::kill(child.id() as libc::pid_t, libc::SIGTERM)
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(status)) = child.try_wait() {
+                println!("Server exited with status: {}", status);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        println!("Server did not exit after SIGTERM; killing it");
+    }
 
     if let Err(e) = child.kill() {
-        println!("Warning: Failed to terminate spawned server process: {}", e);
+        println!("Warning: Failed to terminate server process: {}", e);
     }
 
     match child.wait() {
         Ok(status) => {
-            println!("Spawned server process terminated with status: {}", status);
+            println!("Server process terminated with status: {}", status);
         }
         Err(e) => {
-            println!("Warning: Failed to wait for spawned server process: {}", e);
+            println!("Warning: Failed to wait for server process: {}", e);
         }
     }
 }

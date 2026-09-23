@@ -14,7 +14,7 @@ mod common;
 
 use common::test_utils::{
     create_execute_request, create_session_with_client, create_shutdown_request,
-    create_test_session, get_python_executable, is_ipykernel_available,
+    create_test_session, get_python_executable, is_ipykernel_available, stop_server,
 };
 use common::transport::{
     run_communication_test, CommunicationChannel, CommunicationTestResults, TransportType,
@@ -588,13 +588,7 @@ async fn run_python_kernel_test_domain_socket(python_cmd: &str) {
     }
 
     // Terminate the server process
-    if let Err(e) = child.kill() {
-        println!("Warning: Failed to terminate Unix socket server: {}", e);
-    }
-
-    if let Err(e) = child.wait() {
-        println!("Warning: Failed to wait for Unix socket server: {}", e);
-    }
+    stop_server(&mut child);
 
     // Clean up socket file if it still exists
     if socket_path.exists() {
