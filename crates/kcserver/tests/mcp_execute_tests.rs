@@ -23,7 +23,7 @@ use common::test_utils::{
 };
 use common::TestServer;
 use futures::{SinkExt, StreamExt};
-use kallichore_api::models::ExecuteRequest;
+use kallichore_api::models::{ExecuteRequest, InterruptMode};
 use kallichore_api::models::Status;
 use kallichore_api::{
     ApiNoContext, GetSessionHistoryResponse, GetSessionResponse, StartSessionResponse,
@@ -34,6 +34,10 @@ use kcshared::websocket_message::WebsocketMessage;
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
+
+/// Runs for 30 seconds in short sleeps, since on Windows an interrupt takes
+/// effect only between sleeps.
+const LONG_RUNNING_CELL: &str = "import time\nfor _ in range(300):\n    time.sleep(0.1)";
 
 /// A 1x1 transparent PNG, so image handling can be tested without matplotlib.
 const TINY_PNG: &str =
@@ -91,6 +95,8 @@ async fn start_owned_session(
         let session_id = format!("mcp-exec-{}", Uuid::new_v4());
         let mut session = create_test_session(session_id.clone(), python_cmd);
         session.workspace_id = workspace_id.map(|id| id.to_string());
+        // ipykernel ignores interrupt_request messages on Windows.
+        session.interrupt_mode = InterruptMode::Signal;
         create_session_with_client(client, session).await;
 
         match client
@@ -562,7 +568,7 @@ async fn test_execute_code_times_out_and_interrupts_the_kernel() {
         .call_tool(
             "execute_code",
             json!({
-                "code": "import time; time.sleep(30)",
+                "code": LONG_RUNNING_CELL,
                 "session_id": session_id,
                 "timeout_s": 2,
             }),
@@ -607,7 +613,7 @@ async fn test_cancelling_a_call_interrupts_the_kernel() {
                 json!({
                     "name": "execute_code",
                     "arguments": {
-                        "code": "import time; time.sleep(30)",
+                        "code": LONG_RUNNING_CELL,
                         "session_id": running_session,
                         "timeout_s": 60,
                     },
@@ -672,7 +678,7 @@ async fn test_interrupt_session_stops_a_running_cell() {
             .call_tool(
                 "execute_code",
                 json!({
-                    "code": "import time; time.sleep(30)",
+                    "code": LONG_RUNNING_CELL,
                     "session_id": running_session,
                     "timeout_s": 60,
                 }),
