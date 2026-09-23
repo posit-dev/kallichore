@@ -518,19 +518,25 @@ async fn test_connected_bridges_are_listed_while_they_run() {
     let listed = window
         .wait_for_clients(Duration::from_secs(10), |clients| clients.len() == 1)
         .await;
+    // Canonicalized because the reported path may be a symlink (macOS) or a
+    // short 8.3 name (Windows).
     let expected_dir = std::fs::canonicalize(cwd.path()).unwrap();
+    let listed_dir = listed[0]
+        .working_directory
+        .as_deref()
+        .map(|dir| std::fs::canonicalize(dir).unwrap());
     assert_eq!(
         (
             listed[0].name.as_deref(),
             listed[0].version.as_deref(),
             listed[0].pid,
-            listed[0].working_directory.as_deref().map(Path::new),
+            listed_dir,
         ),
         (
             Some("claude-code"),
             Some("1.0.0"),
             Some(claude.pid() as i32),
-            Some(expected_dir.as_path()),
+            Some(expected_dir),
         )
     );
     assert_eq!(names(&listed_clients(&server).await), vec!["claude-code"]);
