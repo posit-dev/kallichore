@@ -30,8 +30,8 @@ mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
 mod mcp;
-#[cfg(target_os = "linux")]
-mod proc_stat;
+mod process_control;
+mod process_metrics;
 mod process_tree;
 mod registration_file;
 mod registration_socket;
@@ -187,6 +187,13 @@ struct Args {
     /// 1000 ms.
     #[arg(short, long)]
     resource_sample_interval: Option<u16>,
+
+    /// Whether the resource usage reported for a session includes the usage of
+    /// its child processes. When false, only the session's own process is
+    /// measured, and no child process enumeration is performed. Defaults to
+    /// true.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+    resource_include_children: bool,
 
     /// The log level to use. Valid values are "trace", "debug", "info", "warn",
     /// and "error". If not specified, the default log level is "info", or the
@@ -485,8 +492,11 @@ async fn main() {
     // Convert the transport to a server listener
     let server_listener = transport.into_server_listener();
 
-    // Determine the resource sample interval (default to 1000ms if not specified)
-    let resource_sample_interval_ms = args.resource_sample_interval.unwrap_or(1000) as u64;
+    // Determine the resource monitor settings (sampling defaults to 1000ms)
+    let resource_config = resource_monitor::ResourceMonitorConfig {
+        sample_interval_ms: args.resource_sample_interval.unwrap_or(1000) as u64,
+        include_children: args.resource_include_children,
+    };
 
     // Pass the listener to the server
     server::create_with_listener(
@@ -498,7 +508,7 @@ async fn main() {
         #[cfg(unix)]
         args.socket_dir,
         main_server_socket,
-        resource_sample_interval_ms,
+        resource_config,
     )
     .await;
 }

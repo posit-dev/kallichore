@@ -1463,6 +1463,7 @@ components:
     serverConfiguration:
       example:
         resource_sample_interval_ms: 6
+        resource_include_children: true
         log_level: trace
         idle_shutdown_hours: 0
       properties:
@@ -1474,6 +1475,11 @@ components:
           description: The interval in milliseconds at which resource usage is sampled.
             A value of 0 disables resource usage sampling.
           type: integer
+        resource_include_children:
+          description: "Whether the resource usage reported for a session includes\
+            \ the usage of its child processes. When false, only the session's own\
+            \ process is measured."
+          type: boolean
         log_level:
           $ref: "#/components/schemas/serverConfiguration_log_level"
       type: object

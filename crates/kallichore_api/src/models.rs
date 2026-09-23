@@ -5770,6 +5770,11 @@ pub struct ServerConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_sample_interval_ms: Option<i32>,
 
+    /// Whether the resource usage reported for a session includes the usage of its child processes. When false, only the session's own process is measured.
+    #[serde(rename = "resource_include_children")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_include_children: Option<bool>,
+
     #[serde(rename = "log_level")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_level: Option<models::ServerConfigurationLogLevel>,
@@ -5781,6 +5786,7 @@ impl ServerConfiguration {
         ServerConfiguration {
             idle_shutdown_hours: None,
             resource_sample_interval_ms: None,
+            resource_include_children: None,
             log_level: None,
         }
     }
@@ -5810,6 +5816,15 @@ impl std::fmt::Display for ServerConfiguration {
                     ]
                     .join(",")
                 }),
+            self.resource_include_children
+                .as_ref()
+                .map(|resource_include_children| {
+                    [
+                        "resource_include_children".to_string(),
+                        resource_include_children.to_string(),
+                    ]
+                    .join(",")
+                }),
             // Skipping non-primitive type log_level in query parameter serialization
         ];
 
@@ -5834,6 +5849,7 @@ impl std::str::FromStr for ServerConfiguration {
         struct IntermediateRep {
             pub idle_shutdown_hours: Vec<i32>,
             pub resource_sample_interval_ms: Vec<i32>,
+            pub resource_include_children: Vec<bool>,
             pub log_level: Vec<models::ServerConfigurationLogLevel>,
         }
 
@@ -5867,6 +5883,10 @@ impl std::str::FromStr for ServerConfiguration {
                         )
                     }
                     #[allow(clippy::redundant_clone)]
+                    "resource_include_children" => intermediate_rep.resource_include_children.push(
+                        <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
                     "log_level" => intermediate_rep.log_level.push(
                         <models::ServerConfigurationLogLevel as std::str::FromStr>::from_str(val)
                             .map_err(|x| x.to_string())?,
@@ -5888,6 +5908,10 @@ impl std::str::FromStr for ServerConfiguration {
             idle_shutdown_hours: intermediate_rep.idle_shutdown_hours.into_iter().next(),
             resource_sample_interval_ms: intermediate_rep
                 .resource_sample_interval_ms
+                .into_iter()
+                .next(),
+            resource_include_children: intermediate_rep
+                .resource_include_children
                 .into_iter()
                 .next(),
             log_level: intermediate_rep.log_level.into_iter().next(),

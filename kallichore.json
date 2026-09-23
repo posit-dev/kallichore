@@ -1611,6 +1611,10 @@
             "type": "integer",
             "description": "The interval in milliseconds at which resource usage is sampled. A value of 0 disables resource usage sampling."
           },
+          "resource_include_children": {
+            "type": "boolean",
+            "description": "Whether the resource usage reported for a session includes the usage of its child processes. When false, only the session's own process is measured."
+          },
           "log_level": {
             "type": "string",
             "description": "The current log level",

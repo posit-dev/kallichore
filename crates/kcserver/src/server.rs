@@ -10,8 +10,8 @@
 
 #![allow(unused_imports)]
 
-use crate::process_tree;
-use crate::resource_monitor;
+use crate::process_control;
+use crate::resource_monitor::{self, ResourceMonitorConfig};
 use crate::websocket_service::ApiWebsocketExt;
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -42,7 +42,6 @@ use swagger::auth::MakeAllowAllAuthenticator;
 use swagger::{AuthData, ContextBuilder, EmptyContext};
 use swagger::{Authorization, Push};
 use swagger::{Has, XSpanIdString};
-use sysinfo::{Pid, System};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -128,7 +127,7 @@ pub async fn create_with_listener(
     log_level: Option<String>,
     #[cfg(unix)] socket_dir: Option<String>,
     _main_server_socket: Option<String>,
-    resource_sample_interval_ms: u64,
+    resource_config: ResourceMonitorConfig,
 ) {
     match listener {
         ServerListener::Tcp(tcp_listener) => {
@@ -140,7 +139,7 @@ pub async fn create_with_listener(
                 idle_shutdown_hours,
                 log_level,
                 socket_dir,
-                resource_sample_interval_ms,
+                resource_config,
             )
             .await;
             #[cfg(not(unix))]
@@ -150,7 +149,7 @@ pub async fn create_with_listener(
                 token,
                 idle_shutdown_hours,
                 log_level,
-                resource_sample_interval_ms,
+                resource_config,
             )
             .await;
         }
@@ -164,7 +163,7 @@ pub async fn create_with_listener(
                 log_level,
                 socket_dir,
                 _main_server_socket,
-                resource_sample_interval_ms,
+                resource_config,
             )
             .await;
         }
@@ -176,7 +175,7 @@ pub async fn create_with_listener(
                 token,
                 idle_shutdown_hours,
                 log_level,
-                resource_sample_interval_ms,
+                resource_config,
             )
             .await;
         }
@@ -197,8 +196,8 @@ pub async fn create(
     let listener = tokio::net::TcpListener::from_std(listener)
         .expect("Failed to convert to tokio TcpListener");
 
-    // Default resource sample interval of 1000ms
-    let resource_sample_interval_ms = 1000u64;
+    // Default resource monitor settings
+    let resource_config = ResourceMonitorConfig::default();
 
     // Generate a fresh server ID for this standalone server instance
     let server_id = uuid::Uuid::new_v4().to_string();
@@ -211,7 +210,7 @@ pub async fn create(
         idle_shutdown_hours,
         log_level,
         None,
-        resource_sample_interval_ms,
+        resource_config,
     )
     .await;
     #[cfg(not(unix))]
@@ -221,7 +220,7 @@ pub async fn create(
         token,
         idle_shutdown_hours,
         log_level,
-        resource_sample_interval_ms,
+        resource_config,
     )
     .await;
 }
@@ -232,7 +231,7 @@ struct ServerConfig {
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
     uses_domain_sockets_or_pipes: bool,
-    resource_sample_interval_ms: u64,
+    resource_config: ResourceMonitorConfig,
     #[cfg(unix)]
     socket_dir: Option<String>,
     #[cfg(unix)]
@@ -249,7 +248,7 @@ impl ServerConfig {
         uses_domain_sockets_or_pipes: bool,
         socket_dir: Option<String>,
         main_server_socket: Option<String>,
-        resource_sample_interval_ms: u64,
+        resource_config: ResourceMonitorConfig,
     ) -> Self {
         Self {
             server_id,
@@ -257,7 +256,7 @@ impl ServerConfig {
             idle_shutdown_hours,
             log_level,
             uses_domain_sockets_or_pipes,
-            resource_sample_interval_ms,
+            resource_config,
             socket_dir,
             main_server_socket,
         }
@@ -270,7 +269,7 @@ impl ServerConfig {
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         uses_domain_sockets_or_pipes: bool,
-        resource_sample_interval_ms: u64,
+        resource_config: ResourceMonitorConfig,
     ) -> Self {
         Self {
             server_id,
@@ -278,7 +277,7 @@ impl ServerConfig {
             idle_shutdown_hours,
             log_level,
             uses_domain_sockets_or_pipes,
-            resource_sample_interval_ms,
+            resource_config,
         }
     }
 
@@ -302,7 +301,7 @@ impl ServerConfig {
             self.uses_domain_sockets_or_pipes,
             self.socket_dir.clone(),
             self.main_server_socket.clone(),
-            self.resource_sample_interval_ms,
+            self.resource_config,
         )
     }
 
@@ -314,7 +313,7 @@ impl ServerConfig {
             self.idle_shutdown_hours,
             self.effective_log_level(),
             self.uses_domain_sockets_or_pipes,
-            self.resource_sample_interval_ms,
+            self.resource_config,
         )
     }
 }
@@ -363,7 +362,7 @@ async fn create_tcp_server(
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
     #[cfg(unix)] socket_dir: Option<String>,
-    resource_sample_interval_ms: u64,
+    resource_config: ResourceMonitorConfig,
 ) {
     #[cfg(unix)]
     let config = ServerConfig::new(
@@ -374,7 +373,7 @@ async fn create_tcp_server(
         false,
         socket_dir,
         None,
-        resource_sample_interval_ms,
+        resource_config,
     );
     #[cfg(not(unix))]
     let config = ServerConfig::new(
@@ -383,7 +382,7 @@ async fn create_tcp_server(
         idle_shutdown_hours,
         log_level,
         false,
-        resource_sample_interval_ms,
+        resource_config,
     );
     let server = config.create_server();
 
@@ -440,7 +439,7 @@ async fn create_unix_server(
     log_level: Option<String>,
     socket_dir: Option<String>,
     main_server_socket: Option<String>,
-    resource_sample_interval_ms: u64,
+    resource_config: ResourceMonitorConfig,
 ) {
     let config = ServerConfig::new(
         server_id,
@@ -450,7 +449,7 @@ async fn create_unix_server(
         true,
         socket_dir,
         main_server_socket.clone(),
-        resource_sample_interval_ms,
+        resource_config,
     );
     let server = config.create_server();
 
@@ -523,7 +522,7 @@ async fn create_named_pipe_server(
     token: Option<String>,
     idle_shutdown_hours: Option<u16>,
     log_level: Option<String>,
-    resource_sample_interval_ms: u64,
+    resource_config: ResourceMonitorConfig,
 ) {
     use tokio::net::windows::named_pipe::ServerOptions;
 
@@ -533,7 +532,7 @@ async fn create_named_pipe_server(
         idle_shutdown_hours,
         log_level,
         true,
-        resource_sample_interval_ms,
+        resource_config,
     );
     let server = config.create_server();
 
@@ -633,6 +632,9 @@ pub struct Server<C> {
     resource_sample_interval_ms: Arc<RwLock<u64>>,
     // Channel to signal changes to resource sampling interval
     resource_interval_update_tx: Sender<u64>,
+    // Shared, thread-safe storage for whether child processes count towards a
+    // session's reported resource usage
+    resource_include_children: Arc<RwLock<bool>>,
     // Track whether this server is using Unix domain sockets
     #[cfg(unix)]
     #[allow(dead_code)]
@@ -667,7 +669,7 @@ impl<C> Server<C> {
         uses_domain_sockets: bool,
         socket_dir: Option<String>,
         main_server_socket: Option<String>,
-        resource_sample_interval_ms: u64,
+        resource_config: ResourceMonitorConfig,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -688,15 +690,17 @@ impl<C> Server<C> {
         );
 
         // Create shared storage and channel for resource sampling interval
-        let shared_resource_interval = Arc::new(RwLock::new(resource_sample_interval_ms));
+        let shared_resource_interval = Arc::new(RwLock::new(resource_config.sample_interval_ms));
+        let shared_include_children = Arc::new(RwLock::new(resource_config.include_children));
         let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
 
         // Start the global resource monitor
         resource_monitor::start_global_resource_monitor(
             kernel_sessions.clone(),
-            resource_sample_interval_ms,
+            resource_config,
             resource_interval_update_rx,
             shared_resource_interval.clone(),
+            shared_include_children.clone(),
         );
 
         let mcp = crate::mcp::McpState::new(kernel_sessions.clone(), idle_nudge_tx.clone());
@@ -716,6 +720,7 @@ impl<C> Server<C> {
             idle_config_update_tx,
             resource_sample_interval_ms: shared_resource_interval,
             resource_interval_update_tx,
+            resource_include_children: shared_include_children,
             uses_domain_sockets,
             #[cfg(unix)]
             active_domain_sockets: Arc::new(RwLock::new(vec![])),
@@ -733,7 +738,7 @@ impl<C> Server<C> {
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         uses_named_pipes: bool,
-        resource_sample_interval_ms: u64,
+        resource_config: ResourceMonitorConfig,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -754,15 +759,17 @@ impl<C> Server<C> {
         );
 
         // Create shared storage and channel for resource sampling interval
-        let shared_resource_interval = Arc::new(RwLock::new(resource_sample_interval_ms));
+        let shared_resource_interval = Arc::new(RwLock::new(resource_config.sample_interval_ms));
+        let shared_include_children = Arc::new(RwLock::new(resource_config.include_children));
         let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
 
         // Start the global resource monitor
         resource_monitor::start_global_resource_monitor(
             kernel_sessions.clone(),
-            resource_sample_interval_ms,
+            resource_config,
             resource_interval_update_rx,
             shared_resource_interval.clone(),
+            shared_include_children.clone(),
         );
 
         let mcp = crate::mcp::McpState::new(kernel_sessions.clone(), idle_nudge_tx.clone());
@@ -782,6 +789,7 @@ impl<C> Server<C> {
             idle_config_update_tx,
             resource_sample_interval_ms: shared_resource_interval,
             resource_interval_update_tx,
+            resource_include_children: shared_include_children,
             uses_named_pipes,
         }
     }
@@ -793,7 +801,7 @@ impl<C> Server<C> {
         idle_shutdown_hours: Option<u16>,
         log_level: Option<String>,
         _uses_domain_sockets: bool,
-        resource_sample_interval_ms: u64,
+        resource_config: ResourceMonitorConfig,
     ) -> Self {
         // Create the list of kernel sessions we'll use throughout the server lifetime
         let kernel_sessions = Arc::new(RwLock::new(vec![]));
@@ -814,15 +822,17 @@ impl<C> Server<C> {
         );
 
         // Create shared storage and channel for resource sampling interval
-        let shared_resource_interval = Arc::new(RwLock::new(resource_sample_interval_ms));
+        let shared_resource_interval = Arc::new(RwLock::new(resource_config.sample_interval_ms));
+        let shared_include_children = Arc::new(RwLock::new(resource_config.include_children));
         let (resource_interval_update_tx, resource_interval_update_rx) = mpsc::channel(16);
 
         // Start the global resource monitor
         resource_monitor::start_global_resource_monitor(
             kernel_sessions.clone(),
-            resource_sample_interval_ms,
+            resource_config,
             resource_interval_update_rx,
             shared_resource_interval.clone(),
+            shared_include_children.clone(),
         );
 
         let mcp = crate::mcp::McpState::new(kernel_sessions.clone(), idle_nudge_tx.clone());
@@ -842,6 +852,7 @@ impl<C> Server<C> {
             idle_config_update_tx,
             resource_sample_interval_ms: shared_resource_interval,
             resource_interval_update_tx,
+            resource_include_children: shared_include_children,
         }
     }
 
@@ -940,8 +951,7 @@ impl<C> Server<C> {
                         // If we have a positive client PID, check to see if the
                         // process is still running. If it is, skip the idle check.
                         if client_pid > 1 {
-                            let system = System::new_all();
-                            if system.process(Pid::from_u32(client_pid)).is_some() {
+                            if process_control::is_running(client_pid) {
                                 log::info!("Skipping idle check; client process {} still running.", client_pid);
                                 continue;
                             }
@@ -1482,10 +1492,10 @@ where
             }
         };
 
-        // Ensure the session is not running and get the process ID for cache cleanup
-        let (status, process_id) = {
+        // Ensure the session is not running
+        let status = {
             let state = kernel_session.state.read().await;
-            (state.status.clone(), state.process_id)
+            state.status.clone()
         };
         if status != models::Status::Exited {
             let error = KSError::SessionRunning(session_id.clone());
@@ -1495,10 +1505,8 @@ where
             ));
         }
 
-        // Clear process tree cache for this session's kernel PID
-        if let Some(pid) = process_id {
-            process_tree::clear_process_cache(pid);
-        }
+        // Release the job object used to track this session's processes
+        kernel_session::job_object::release_session_job(&session_id);
 
         // Forget the MCP endpoint of any client that ran inside the session
         self.mcp.drop_caller_service(&session_id).await;
@@ -1676,27 +1684,16 @@ where
         match pid {
             Some(pid) => {
                 // Kill the process
-                let mut system = System::new();
-                let process_id = Pid::from_u32(pid);
-                system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[process_id]));
-                if let Some(process) = system.process(process_id) {
-                    if process.kill() {
-                        // Clean up any domain sockets associated with this session
-                        self.cleanup_session_domain_sockets(&session_id);
-                        Ok(KillSessionResponse::Killed(serde_json::Value::Null))
-                    } else {
-                        let err = KSError::ProcessNotFound(pid, session_id.clone());
-                        err.log();
-                        Ok(KillSessionResponse::KillFailed(err.to_json(Some(
-                            String::from("Failed to send kill signal to process"),
-                        ))))
-                    }
+                if process_control::terminate(pid) {
+                    // Clean up any domain sockets associated with this session
+                    self.cleanup_session_domain_sockets(&session_id);
+                    Ok(KillSessionResponse::Killed(serde_json::Value::Null))
                 } else {
                     let err = KSError::ProcessNotFound(pid, session_id.clone());
                     err.log();
-                    return Ok(KillSessionResponse::KillFailed(
-                        err.to_json(Some(String::from("Could not look up process details"))),
-                    ));
+                    Ok(KillSessionResponse::KillFailed(err.to_json(Some(
+                        String::from("Failed to send kill signal to process"),
+                    ))))
                 }
             }
             None => {
@@ -2191,6 +2188,12 @@ where
             Some(*resource_interval_guard as i32)
         };
 
+        // Read the resource_include_children flag from the shared value
+        let include_children = {
+            let include_children_guard = self.resource_include_children.read().unwrap();
+            Some(*include_children_guard)
+        };
+
         // Convert log_level from String to ServerConfigurationLogLevel
         let log_level_enum =
             self.log_level
@@ -2210,6 +2213,7 @@ where
                 models::ServerConfiguration {
                     idle_shutdown_hours: idle_hours,
                     resource_sample_interval_ms: resource_interval,
+                    resource_include_children: include_children,
                     log_level: log_level_enum,
                 },
             ),
@@ -2305,6 +2309,24 @@ where
 
             // Note: The shared storage is updated by the resource monitor task itself
             // when it receives the update message, so we don't need to update it here
+        }
+
+        // Check if resource_include_children is provided in the configuration
+        if let Some(include_children) = configuration.resource_include_children {
+            // The resource monitor reads this on each tick, so updating the
+            // shared value is all that's needed to take effect.
+            let mut include_children_guard = self.resource_include_children.write().unwrap();
+            if *include_children_guard != include_children {
+                log::info!(
+                    "Updating resource monitor to {} child processes in session usage",
+                    if include_children {
+                        "include"
+                    } else {
+                        "exclude"
+                    }
+                );
+                *include_children_guard = include_children;
+            }
         }
 
         // Return success

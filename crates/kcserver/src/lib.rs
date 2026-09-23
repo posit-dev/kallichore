@@ -20,8 +20,8 @@ pub mod kernel_connection;
 pub mod kernel_session;
 pub mod kernel_state;
 pub mod mcp;
-#[cfg(target_os = "linux")]
-pub mod proc_stat;
+pub mod process_control;
+pub mod process_metrics;
 pub mod process_tree;
 pub mod registration_file;
 pub mod registration_socket;
