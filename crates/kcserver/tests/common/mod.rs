@@ -13,7 +13,6 @@ pub mod test_utils;
 pub mod transport;
 
 use kallichore_api::{ApiNoContext, Client, ContextWrapperExt};
-use kcshared::port_picker::pick_unused_tcp_port;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
@@ -41,10 +40,12 @@ struct ServerConfig {
 }
 
 impl ServerConfig {
-    fn tcp(port: u16, extra_args: &[String]) -> Self {
+    fn tcp(handshake_path: &str, extra_args: &[String]) -> Self {
         let mut args = vec![
-            "--port".to_string(),
-            port.to_string(),
+            "--handshake-socket".to_string(),
+            handshake_path.to_string(),
+            "--transport".to_string(),
+            "tcp".to_string(),
             "--token".to_string(),
             "none".to_string(),
         ];
@@ -162,9 +163,19 @@ impl TestServer {
     }
 
     async fn start_http(extra_args: &[String]) -> Self {
-        let port = pick_unused_tcp_port().expect("Failed to pick unused port");
-        let config = ServerConfig::tcp(port, extra_args);
+        use self::test_utils::HandshakeListener;
+
+        // Let the server pick its own port and report it, so no other process
+        // can take the port between choosing it and binding it.
+        let handshake = HandshakeListener::create().await;
+        let config = ServerConfig::tcp(handshake.path(), extra_args);
         let child = create_server_process(config).await;
+        let port = handshake
+            .recv()
+            .await
+            .expect("Failed to receive handshake payload")
+            .port
+            .expect("Missing port in handshake payload");
         let base_url = format!("http://localhost:{}", port);
 
         let test_server = TestServer {
