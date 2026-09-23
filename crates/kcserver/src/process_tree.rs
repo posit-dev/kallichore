@@ -16,6 +16,10 @@
 
 use std::collections::HashSet;
 
+/// Ceiling on how many processes we track per session, so a pathological
+/// process tree can't make us do unbounded work.
+pub const MAX_TRACKED_PROCESSES: usize = 4096;
+
 /// Get the root PID and all of its descendants.
 ///
 /// `session_id` identifies the kernel session the root process belongs to; it
@@ -38,6 +42,14 @@ pub fn get_process_tree(session_id: &str, root_pid: u32) -> HashSet<u32> {
         let mut to_visit = vec![root_pid];
 
         while let Some(pid) = to_visit.pop() {
+            if visited.len() >= MAX_TRACKED_PROCESSES {
+                log::trace!(
+                    "Process tree of {} exceeds {} processes; truncating",
+                    root_pid,
+                    MAX_TRACKED_PROCESSES
+                );
+                break;
+            }
             if !visited.insert(pid) {
                 continue;
             }

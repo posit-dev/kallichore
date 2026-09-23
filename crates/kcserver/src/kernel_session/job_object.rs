@@ -85,9 +85,7 @@ mod windows_impl {
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
-    /// Ceiling on how many job members we will ask for, so a pathological
-    /// process tree can't make us allocate without bound.
-    const MAX_TRACKED_PROCESSES: usize = 4096;
+    use crate::process_tree::MAX_TRACKED_PROCESSES;
 
     /// Wrapper that lets us cache a raw `HANDLE` in a `static`.
     struct JobHandle(HANDLE);
@@ -306,6 +304,11 @@ mod windows_impl {
                     capacity = assigned.min(MAX_TRACKED_PROCESSES);
                     continue;
                 }
+                log::trace!(
+                    "Could not list job members ({} assigned, limit {})",
+                    assigned,
+                    MAX_TRACKED_PROCESSES
+                );
                 return None;
             }
 
