@@ -65,7 +65,7 @@ use swagger::ApiError;
 use crate::client_session::ClientSession;
 use crate::connection_file::{self, ConnectionFile};
 use crate::error::KSError;
-use crate::kernel_session::{self, KernelSession};
+use crate::kernel_session::{self, ExecuteError, ExecuteOptions, KernelSession};
 use crate::registration_file::RegistrationFile;
 use crate::registration_socket::HandshakeResult;
 use crate::websocket_service::WebsocketInterceptorMakeService;
@@ -73,9 +73,10 @@ use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsUpgradeResponse, ConnectionInfoResponse,
-    DeleteSessionResponse, ExecuteCodeResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, NewSessionResponse, RestartSessionResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    DeleteSessionResponse, DeregisterMcpWorkspaceResponse, ExecuteCodeResponse,
+    GetSessionHistoryResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
+    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 use kcshared::{
     handshake_protocol::{HandshakeStatus, HandshakeVersion},
@@ -86,6 +87,19 @@ use kcshared::{
 
 use crate::kernel_session::make_message_id;
 use tokio::sync::broadcast;
+
+/// Build a plain-text HTTP response.
+fn text_response(
+    status: StatusCode,
+    message: String,
+) -> Response<BoxBody<bytes::Bytes, std::io::Error>> {
+    let body = Full::new(bytes::Bytes::from(message))
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
+        .boxed();
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    response
+}
 
 // Enum to handle different listener types in server
 #[cfg(all(unix, not(windows)))]
@@ -372,7 +386,7 @@ async fn create_tcp_server(
     );
     let server = config.create_server();
 
-    let service = WebsocketInterceptorMakeService::new(server.clone());
+    let service = WebsocketInterceptorMakeService::new(server.clone(), true);
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
     let service = Arc::new(service);
@@ -439,9 +453,10 @@ async fn create_unix_server(
     );
     let server = config.create_server();
 
-    // For domain sockets, use the regular API service instead of the websocket interceptor
-    // since domain sockets handle channels differently
-    let service = kallichore_api::server::MakeService::new(server.clone());
+    // Domain sockets hand out a per-session endpoint instead of upgrading
+    // session channels in place, so the interceptor is used only for the MCP
+    // frontend channel here.
+    let service = WebsocketInterceptorMakeService::new(server.clone(), false);
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
     let service = Arc::new(service);
@@ -521,9 +536,10 @@ async fn create_named_pipe_server(
     );
     let server = config.create_server();
 
-    // For named pipes, use the regular API service instead of the websocket interceptor
-    // since named pipes handle channels differently, similar to Unix domain sockets
-    let service = kallichore_api::server::MakeService::new(server);
+    // Named pipes hand out a per-session endpoint instead of upgrading session
+    // channels in place, so the interceptor is used only for the MCP frontend
+    // channel here.
+    let service = WebsocketInterceptorMakeService::new(server, false);
     let service = MakeAllowAllAuthenticator::new(service, "cosmo");
     let service = kallichore_api::server::context::MakeAddContext::<_, EmptyContext>::new(service);
     let service = Arc::new(service);
@@ -638,6 +654,9 @@ pub struct Server<C> {
     // Track the main server socket path if it was created by the server
     #[cfg(unix)]
     main_server_socket: Option<String>,
+    // The MCP server: registered workspaces, tool state, and the on-demand
+    // listener agents connect to
+    mcp: Arc<crate::mcp::McpState>,
 }
 
 impl<C> Server<C> {
@@ -684,8 +703,11 @@ impl<C> Server<C> {
             shared_include_children.clone(),
         );
 
+        let mcp = crate::mcp::McpState::new(kernel_sessions.clone(), idle_nudge_tx.clone());
+
         Server {
             token,
+            mcp,
             started_time: std::time::Instant::now(),
             server_id,
             marker: PhantomData,
@@ -750,8 +772,11 @@ impl<C> Server<C> {
             shared_include_children.clone(),
         );
 
+        let mcp = crate::mcp::McpState::new(kernel_sessions.clone(), idle_nudge_tx.clone());
+
         Server {
             token,
+            mcp,
             started_time: std::time::Instant::now(),
             server_id,
             marker: PhantomData,
@@ -810,8 +835,11 @@ impl<C> Server<C> {
             shared_include_children.clone(),
         );
 
+        let mcp = crate::mcp::McpState::new(kernel_sessions.clone(), idle_nudge_tx.clone());
+
         Server {
             token,
+            mcp,
             started_time: std::time::Instant::now(),
             server_id,
             marker: PhantomData,
@@ -1171,207 +1199,6 @@ impl<C> Server<C> {
         // If we got here, the token is valid or not required
         return true;
     }
-
-    /// Collect execution output from the RPC listener channel until the
-    /// execute_reply arrives on the shell channel.
-    async fn collect_execution_output(
-        rpc_rx: &mut mpsc::UnboundedReceiver<JupyterMessage>,
-        msg_id: &str,
-        timeout_duration: Option<std::time::Duration>,
-    ) -> Result<models::ExecuteReply, ExecuteCodeError> {
-        let mut output: Vec<models::ExecuteOutput> = Vec::new();
-        let mut data: Option<std::collections::HashMap<String, String>> = None;
-        #[allow(unused_assignments)]
-        let mut status = models::ExecuteReplyStatus::Ok;
-        #[allow(unused_assignments)]
-        let mut execution_count: i32 = 0;
-        let mut error_name: Option<String> = None;
-        let mut error_message: Option<String> = None;
-        let mut error_traceback: Option<Vec<String>> = None;
-
-        // We need both execute_reply (shell) and status:idle (IOPub) before
-        // returning, because ZMQ delivers them over different sockets and the
-        // execute_result on IOPub may arrive after execute_reply on shell.
-        let mut got_execute_reply = false;
-        let mut got_idle = false;
-
-        // Use an absolute deadline so the timeout covers total execution time,
-        // not each individual message receive.
-        let deadline = timeout_duration.map(|d| tokio::time::Instant::now() + d);
-
-        loop {
-            let msg = if let Some(deadline) = deadline {
-                match tokio::time::timeout_at(deadline, rpc_rx.recv()).await {
-                    Ok(Some(msg)) => msg,
-                    Ok(None) => return Err(ExecuteCodeError::ChannelClosed),
-                    Err(_) => return Err(ExecuteCodeError::Timeout),
-                }
-            } else {
-                match rpc_rx.recv().await {
-                    Some(msg) => msg,
-                    None => return Err(ExecuteCodeError::ChannelClosed),
-                }
-            };
-
-            let msg_type = msg.header.msg_type.as_str();
-            log::trace!(
-                "execute_code RPC received message type '{}' for msg_id '{}'",
-                msg_type,
-                msg_id,
-            );
-
-            match msg_type {
-                "stream" => {
-                    let mut entry = models::ExecuteOutput::new(models::ExecuteOutputType::Stream);
-                    entry.stream_name = msg
-                        .content
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    entry.text = msg
-                        .content
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    output.push(entry);
-                }
-                "display_data" => {
-                    let mut entry =
-                        models::ExecuteOutput::new(models::ExecuteOutputType::DisplayData);
-                    entry.data = msg.content.get("data").and_then(|v| {
-                        v.as_object().map(|obj| {
-                            obj.iter()
-                                .map(|(k, v)| {
-                                    let s = v.as_str().map(String::from)
-                                        .unwrap_or_else(|| v.to_string());
-                                    (k.clone(), s)
-                                })
-                                .collect()
-                        })
-                    });
-                    entry.metadata = msg.content.get("metadata").cloned();
-                    output.push(entry);
-                }
-                "error" => {
-                    let mut entry = models::ExecuteOutput::new(models::ExecuteOutputType::Error);
-                    entry.error_name = msg
-                        .content
-                        .get("ename")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    entry.error_message = msg
-                        .content
-                        .get("evalue")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    entry.error_traceback = msg.content.get("traceback").and_then(|v| {
-                        v.as_array()
-                            .map(|arr| arr.iter().filter_map(|s| s.as_str().map(String::from)).collect())
-                    });
-                    output.push(entry);
-                }
-                "execute_result" => {
-                    // Hoist into the top-level `data` field of ExecuteReply
-                    data = msg.content.get("data").and_then(|v| {
-                        v.as_object().map(|obj| {
-                            obj.iter()
-                                .map(|(k, v)| {
-                                    let s = v.as_str().map(String::from)
-                                        .unwrap_or_else(|| v.to_string());
-                                    (k.clone(), s)
-                                })
-                                .collect()
-                        })
-                    });
-                    execution_count = msg
-                        .content
-                        .get("execution_count")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0) as i32;
-                }
-                "execute_reply" => {
-                    // This is the shell reply that signals execution is complete.
-                    let reply_status = msg
-                        .content
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("ok");
-                    status = if reply_status == "error" {
-                        models::ExecuteReplyStatus::Error
-                    } else {
-                        models::ExecuteReplyStatus::Ok
-                    };
-                    execution_count = msg
-                        .content
-                        .get("execution_count")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(execution_count as i64)
-                        as i32;
-
-                    // Extract error info from the reply itself if present
-                    if reply_status == "error" {
-                        error_name = msg
-                            .content
-                            .get("ename")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-                        error_message = msg
-                            .content
-                            .get("evalue")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-                        error_traceback =
-                            msg.content.get("traceback").and_then(|v| {
-                                v.as_array().map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|s| s.as_str().map(String::from))
-                                        .collect()
-                                })
-                            });
-                    }
-
-                    got_execute_reply = true;
-                    if got_idle {
-                        break;
-                    }
-                }
-                "status" => {
-                    let is_idle = msg
-                        .content
-                        .get("execution_state")
-                        .and_then(|v| v.as_str())
-                        == Some("idle");
-                    if is_idle {
-                        got_idle = true;
-                        if got_execute_reply {
-                            break;
-                        }
-                    }
-                }
-                other => {
-                    log::debug!(
-                        "execute_code RPC ignoring unexpected message type '{}' for msg_id '{}'",
-                        other,
-                        msg_id,
-                    );
-                }
-            }
-        }
-
-        let mut reply = models::ExecuteReply::new(status, execution_count, output);
-        reply.data = data;
-        reply.error_name = error_name;
-        reply.error_message = error_message;
-        reply.error_traceback = error_traceback;
-
-        Ok(reply)
-    }
-}
-
-/// Errors that can occur during execute_code collection
-enum ExecuteCodeError {
-    Timeout,
-    ChannelClosed,
 }
 
 #[async_trait]
@@ -1400,6 +1227,29 @@ where
         return Ok(GetSessionResponse::SessionDetails(
             session.as_active_session().await,
         ));
+    }
+
+    async fn get_session_history(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionHistoryResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "get_session_history(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        if !self.validate_token(context) {
+            return Ok(GetSessionHistoryResponse::Unauthorized);
+        }
+
+        let Some(session) = self.find_session(session_id) else {
+            return Ok(GetSessionHistoryResponse::SessionNotFound);
+        };
+        let history = session.state.read().await.history.entries();
+        Ok(GetSessionHistoryResponse::ExecutionHistory(history))
     }
 
     /// List active sessions
@@ -1538,6 +1388,7 @@ where
             connection_timeout: session.connection_timeout.clone(),
             protocol_version: session.protocol_version.clone(),
             notebook_uri: session.notebook_uri.clone(),
+            workspace_id: session.workspace_id.clone(),
         };
 
         let sessions = self.kernel_sessions.clone();
@@ -1547,6 +1398,7 @@ where
             key,
             self.idle_nudge_tx.clone(),
             self.reserved_ports.clone(),
+            Arc::downgrade(&self.mcp),
         )
         .await
         {
@@ -1559,6 +1411,14 @@ where
                 return Ok(NewSessionResponse::InvalidRequest(error.to_json(None)));
             }
         };
+
+        if let Some(workspace_id) = kernel_session.model.workspace_id.as_deref() {
+            log::info!(
+                "Session '{}' belongs to MCP workspace '{}'",
+                new_session_id,
+                workspace_id
+            );
+        }
 
         let mut sessions = sessions.write().unwrap();
         sessions.push(kernel_session);
@@ -1647,6 +1507,9 @@ where
 
         // Release the job object used to track this session's processes
         kernel_session::job_object::release_session_job(&session_id);
+
+        // Forget the MCP endpoint of any client that ran inside the session
+        self.mcp.drop_caller_service(&session_id).await;
 
         // Ensure we get a write lock on the kernel sessions for the duration of
         // this function
@@ -1899,119 +1762,37 @@ where
             }
         };
 
-        // Verify the session is in a runnable state. If the kernel is still
-        // coming up (uninitialized/starting/ready), wait for it to become
-        // ready rather than rejecting outright: callers commonly issue an
-        // execute_request immediately after start_session, before the kernel
-        // has published its first idle status on iopub.
-        {
-            // How long to wait for a starting kernel to become ready before
-            // giving up.
-            const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-            const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
-
-            let deadline = std::time::Instant::now() + READY_TIMEOUT;
-            loop {
-                let status = { kernel_session.state.read().await.status };
-                match status {
-                    // Runnable: proceed.
-                    models::Status::Idle | models::Status::Busy => break,
-                    // Still coming up: wait, unless we've run out of time.
-                    models::Status::Uninitialized
-                    | models::Status::Starting
-                    | models::Status::Ready => {
-                        if std::time::Instant::now() >= deadline {
-                            return Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
-                                code: "session_not_ready".to_string(),
-                                message: format!(
-                                    "Session did not become ready within {:?} (last status: '{}')",
-                                    READY_TIMEOUT, status
-                                ),
-                                details: None,
-                            }));
-                        }
-                        tokio::time::sleep(POLL_INTERVAL).await;
-                    }
-                    // Not runnable and won't become runnable.
-                    models::Status::Offline | models::Status::Exited => {
-                        return Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
-                            code: "session_not_ready".to_string(),
-                            message: format!(
-                                "Session is in '{}' state; must be idle or busy to execute code",
-                                status
-                            ),
-                            details: None,
-                        }));
-                    }
-                }
-            }
-        }
-
-        // Create the execute_request Jupyter message
-        let msg_id = make_message_id();
-        let jupyter_msg = JupyterMessage {
-            header: JupyterMessageHeader {
-                msg_id: msg_id.clone(),
-                msg_type: "execute_request".to_string(),
-            },
-            parent_header: None,
-            channel: JupyterChannel::Shell,
-            content: serde_json::json!({
-                "code": execute_request.code,
-                "silent": execute_request.silent.unwrap_or(false),
-                "store_history": execute_request.store_history.unwrap_or(true),
-                "user_expressions": {},
-                "allow_stdin": false,
-                "stop_on_error": execute_request.stop_on_error.unwrap_or(true),
-            }),
-            metadata: serde_json::json!({}),
-            buffers: vec![],
+        let options = ExecuteOptions {
+            code: execute_request.code.clone(),
+            silent: execute_request.silent.unwrap_or(false),
+            store_history: execute_request.store_history.unwrap_or(true),
+            stop_on_error: execute_request.stop_on_error.unwrap_or(true),
+            timeout: execute_request
+                .timeout_seconds
+                .filter(|&s| s > 0)
+                .map(|s| std::time::Duration::from_secs(s as u64)),
+            attribution: None,
+            cancel: None,
+            stream_tx: None,
         };
 
-        // Register an RPC listener for this msg_id
-        let (rpc_tx, mut rpc_rx) = mpsc::unbounded_channel::<JupyterMessage>();
-        {
-            let mut state = kernel_session.state.write().await;
-            state.rpc_listeners.insert(msg_id.clone(), rpc_tx);
-        }
-
-        // Send the message through the same path as WebSocket executions,
-        // which routes through the execution queue in the ZMQ proxy
-        if let Err(e) = kernel_session.ws_zmq_tx.send(jupyter_msg).await {
-            // Clean up the listener
-            let mut state = kernel_session.state.write().await;
-            state.rpc_listeners.remove(&msg_id);
-            return Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
-                code: "send_failed".to_string(),
-                message: format!("Failed to send execute request to kernel: {}", e),
-                details: None,
-            }));
-        }
-
-        // Collect output messages until we receive the execute_reply
-        let timeout_duration = execute_request
-            .timeout_seconds
-            .filter(|&s| s > 0)
-            .map(|s| std::time::Duration::from_secs(s as u64));
-
-        let result = Self::collect_execution_output(&mut rpc_rx, &msg_id, timeout_duration).await;
-
-        // Unregister the RPC listener
-        {
-            let mut state = kernel_session.state.write().await;
-            state.rpc_listeners.remove(&msg_id);
-        }
-
-        match result {
+        match kernel_session.execute_collect(options).await {
             Ok(reply) => Ok(ExecuteCodeResponse::ExecutionCompleted(reply)),
-            Err(ExecuteCodeError::Timeout) => {
-                // Interrupt the kernel so timed-out code stops consuming resources
-                if let Err(e) = kernel_session.interrupt().await {
-                    log::warn!(
-                        "Failed to interrupt kernel after execution timeout: {}",
-                        e
-                    );
-                }
+            Err(ExecuteError::NotReady(message)) => {
+                Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
+                    code: "session_not_ready".to_string(),
+                    message,
+                    details: None,
+                }))
+            }
+            Err(ExecuteError::SendFailed(message)) => {
+                Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
+                    code: "send_failed".to_string(),
+                    message: format!("Failed to send execute request to kernel: {}", message),
+                    details: None,
+                }))
+            }
+            Err(ExecuteError::Timeout) => {
                 Ok(ExecuteCodeResponse::ExecutionTimedOut(models::Error {
                     code: "timeout".to_string(),
                     message: format!(
@@ -2021,16 +1802,16 @@ where
                     details: None,
                 }))
             }
-            Err(ExecuteCodeError::ChannelClosed) => {
+            Err(ExecuteError::ChannelClosed) => {
                 Ok(ExecuteCodeResponse::InvalidRequest(models::Error {
                     code: "channel_closed".to_string(),
                     message: "Kernel message channel closed unexpectedly".to_string(),
                     details: None,
                 }))
             }
+            Err(ExecuteError::Cancelled) => unreachable!("REST executions are never cancelled"),
         }
     }
-
 
     async fn interrupt_session(
         &self,
@@ -2213,9 +1994,115 @@ where
             uptime_seconds: uptime_seconds as i32,
             version: env!("CARGO_PKG_VERSION").to_string(),
             server_id: Some(self.server_id.clone()),
+            mcp: Some(self.mcp.status().await),
         };
 
         Ok(kallichore_api::ServerStatusResponse::ServerStatusAndInformation(resp))
+    }
+
+    /// Register (or re-register) a Positron workspace, starting the MCP
+    /// listener if this is the first one.
+    async fn register_mcp_workspace(
+        &self,
+        registration: models::McpWorkspaceRegistration,
+        context: &C,
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "register_mcp_workspace(\"{}\") - X-Span-ID: {:?}",
+            registration.display_name,
+            ctx_span.get().0.clone(),
+        );
+
+        if !self.validate_token(context) {
+            return Ok(RegisterMcpWorkspaceResponse::Unauthorized);
+        }
+
+        let preferred_port = registration
+            .preferred_port
+            .and_then(|port| u16::try_from(port).ok());
+        let port = match self.mcp.ensure_listener(preferred_port).await {
+            Ok(port) => port,
+            Err(e) => {
+                return Ok(RegisterMcpWorkspaceResponse::InvalidRequest(
+                    models::Error {
+                        code: "mcp_listener_failed".to_string(),
+                        message: format!("Failed to start the MCP listener: {}", e),
+                        details: None,
+                    },
+                ));
+            }
+        };
+
+        let (workspace_id, token) = self.mcp.registry.register(&registration).await;
+        info!(
+            "MCP workspace '{}' ({}) registered on port {}",
+            workspace_id, registration.display_name, port
+        );
+
+        Ok(RegisterMcpWorkspaceResponse::WorkspaceRegistered(
+            models::McpWorkspace {
+                // Each workspace has an endpoint of its own, so an agent
+                // holding one workspace's URL cannot end up talking to
+                // another's.
+                url: crate::mcp::listener::endpoint_url(port, &workspace_id),
+                workspace_id,
+                token,
+                port: port as i32,
+            },
+        ))
+    }
+
+    /// Deregister a Positron workspace, stopping the MCP listener when the
+    /// last one goes away.
+    async fn deregister_mcp_workspace(
+        &self,
+        workspace_id: String,
+        context: &C,
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "deregister_mcp_workspace(\"{}\") - X-Span-ID: {:?}",
+            workspace_id,
+            ctx_span.get().0.clone(),
+        );
+
+        if !self.validate_token(context) {
+            return Ok(DeregisterMcpWorkspaceResponse::Unauthorized);
+        }
+
+        if !self.mcp.registry.deregister(&workspace_id).await {
+            return Ok(DeregisterMcpWorkspaceResponse::WorkspaceNotFound);
+        }
+        self.mcp.drop_service(&workspace_id).await;
+        info!("MCP workspace '{}' deregistered", workspace_id);
+
+        if self.mcp.registry.is_empty().await {
+            self.mcp.stop_listener().await;
+        }
+
+        Ok(DeregisterMcpWorkspaceResponse::WorkspaceDeregistered)
+    }
+
+    /// The frontend channel is upgraded to a WebSocket before it reaches the
+    /// generated routing, so this is only hit by requests that never asked to
+    /// upgrade.
+    async fn mcp_workspace_channel(
+        &self,
+        workspace_id: String,
+        context: &C,
+    ) -> Result<McpWorkspaceChannelResponse, ApiError> {
+        if !self.validate_token(context) {
+            return Ok(McpWorkspaceChannelResponse::Unauthorized);
+        }
+        if !self.mcp.registry.contains(&workspace_id).await {
+            return Ok(McpWorkspaceChannelResponse::WorkspaceNotFound);
+        }
+        Ok(McpWorkspaceChannelResponse::InvalidRequest(models::Error {
+            code: "upgrade_required".to_string(),
+            message: "The MCP frontend channel requires a WebSocket upgrade".to_string(),
+            details: None,
+        }))
     }
 
     async fn client_heartbeat(
@@ -2577,6 +2464,79 @@ impl<C> Server<C> {
         response
             .headers_mut()
             .append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
+        Ok(response)
+    }
+
+    /// Handle the WebSocket upgrade for an MCP frontend channel.
+    ///
+    /// Unlike session channels, this upgrades in place on every transport: the
+    /// frontend is a single long-lived connection per window, so there is no
+    /// reason to hand out a separate endpoint.
+    async fn handle_mcp_workspace_channel_request(
+        &self,
+        request: hyper::Request<Incoming>,
+        workspace_id: String,
+        context: &C,
+    ) -> Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>
+    where
+        C: Has<Option<AuthData>>,
+    {
+        if !self.validate_token(context) {
+            return Ok(text_response(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized".to_string(),
+            ));
+        }
+
+        if !self.mcp.registry.contains(&workspace_id).await {
+            return Ok(text_response(
+                StatusCode::NOT_FOUND,
+                format!("No MCP workspace registered with ID '{}'", workspace_id),
+            ));
+        }
+
+        let derived = request
+            .headers()
+            .get(SEC_WEBSOCKET_KEY)
+            .map(|key| derive_accept_key(key.as_bytes()));
+        let Some(derived) = derived else {
+            return Ok(text_response(
+                StatusCode::BAD_REQUEST,
+                "The MCP frontend channel requires a WebSocket upgrade".to_string(),
+            ));
+        };
+        let version = request.version();
+
+        let upgrade_future = hyper::upgrade::on(request);
+        let mcp = self.mcp.clone();
+        tokio::task::spawn(async move {
+            match upgrade_future.await {
+                Ok(upgraded) => {
+                    let io = TokioIo::new(upgraded);
+                    let stream = WebSocketStream::from_raw_socket(io, Role::Server, None).await;
+                    crate::mcp::channel::run(mcp, workspace_id, stream).await;
+                }
+                Err(e) => {
+                    log::error!("Failed to upgrade MCP frontend channel: {}", e);
+                }
+            }
+        });
+
+        let body = Empty::<bytes::Bytes>::new()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "infallible"))
+            .boxed();
+        let mut response = Response::new(body);
+        *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+        *response.version_mut() = version;
+        response
+            .headers_mut()
+            .append(CONNECTION, HeaderValue::from_static("Upgrade"));
+        response
+            .headers_mut()
+            .append(UPGRADE, HeaderValue::from_static("websocket"));
+        response
+            .headers_mut()
+            .append(SEC_WEBSOCKET_ACCEPT, derived.parse().unwrap());
         Ok(response)
     }
 
@@ -2973,8 +2933,29 @@ impl<C> Server<C> {
 // Implement ApiWebsocketExt trait to provide access to channels_websocket_request
 impl<C> ApiWebsocketExt<C> for Server<C>
 where
-    C: Has<XSpanIdString> + Has<Option<Authorization>> + Send + Sync + Clone + 'static,
+    C: Has<XSpanIdString>
+        + Has<Option<Authorization>>
+        + Has<Option<AuthData>>
+        + Send
+        + Sync
+        + Clone
+        + 'static,
 {
+    fn mcp_workspace_channel_request(
+        &self,
+        request: hyper::Request<Incoming>,
+        workspace_id: String,
+        context: &C,
+    ) -> BoxFuture<'static, Result<Response<BoxBody<bytes::Bytes, std::io::Error>>, ApiError>> {
+        let server = self.clone();
+        let context = context.clone();
+        Box::pin(async move {
+            server
+                .handle_mcp_workspace_channel_request(request, workspace_id, &context)
+                .await
+        })
+    }
+
     fn channels_websocket_request(
         &self,
         request: hyper::Request<Incoming>,

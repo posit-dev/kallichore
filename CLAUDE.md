@@ -8,7 +8,7 @@ Kallichore is a headless Jupyter kernel supervisor written in Rust that provides
 
 ## Tech Stack
 
-- **Language**: Rust (Edition 2021, minimum version 1.75)
+- **Language**: Rust (Edition 2021, minimum version 1.88)
 - **Architecture**: Multi-crate workspace with auto-generated API layer
 - **Protocols**: Jupyter Protocol, WebSocket, ZeroMQ messaging
 - **Authentication**: Bearer token with HMAC message signing
@@ -179,6 +179,73 @@ Example usage:
 - TCP WebSocket: `ws://localhost:8080/sessions/{session_id}/channels`
 - Unix Socket WebSocket: `ws+unix:/path/to/socket:/sessions/{session_id}/channels` (conceptual - actual connection via domain socket path)
 
+## MCP Server
+
+`kcserver` hosts a Model Context Protocol server so external coding agents (Claude Code, Codex,
+any MCP client) can reach the user's live sessions. It listens on its own loopback TCP socket,
+separate from the main API transport, because agents need a URL.
+
+- The listener starts when the first Positron workspace registers (`POST /mcp/workspaces`) and
+  stops when the last one deregisters. No port is open unless someone asked for it.
+- One supervisor can be shared by every window of a Positron server, so each registered workspace
+  gets an endpoint of its own at `/mcp/w/<workspace_id>` with its own bearer token, distinct from
+  the supervisor API token. Requests must present the token belonging to the endpoint they address,
+  and must carry a loopback `Host` and `Origin`. A token presented at another workspace's endpoint
+  is refused, so an agent holding a stale configuration fails loudly rather than driving the wrong
+  sessions.
+- A workspace ID is its display name slugified plus a short random suffix (`my-project-h7k2qa`), so
+  the URL agents are configured with is readable. The suffix is not a secret — the token is — but
+  it does keep two folders of the same name from sharing a record. An ID supplied at registration
+  is honored only if it matches `[a-z0-9-]`, since it goes into the endpoint path.
+- Every tool is scoped to the workspace whose endpoint it arrived on. A session belongs to the
+  workspace that created it, named in `workspace_id` on `POST /sessions`, so ownership is settled
+  without Positron being connected. A workspace also reaches sessions it reports holding over a
+  frontend channel (`session_ids` in `hello`, then `sessions_changed`) as long as no other
+  registered workspace owns them; that covers sessions that were already running when MCP was
+  turned on. Naming another workspace's session returns `SESSION_NOT_VISIBLE`. Both the ownership
+  and the claim outlive the window going away.
+- Kernel tools (`list_sessions`, `get_session_history`, `execute_code`, `evaluate_code`,
+  `interrupt_session`) are answered inside `kcserver` and keep working when Positron is disconnected.
+- Every session keeps a bounded execution history (`execution_history.rs`), recorded in the ZeroMQ
+  proxy so it covers code from any client: the last 100 non-silent executions, each with its input,
+  output, and error clipped to a few kilobytes, a timestamp, and the `source`/`agent_name` from the
+  request's `metadata.attribution` when present. The last few entries are in the session's `history`
+  field and in `list_sessions`; all of them are at `GET /sessions/{id}/history` and
+  `get_session_history`.
+- Command tools (`list_positron_commands`, `run_positron_command`, `get_plot`) are brokered to a
+  window over `GET /mcp/workspaces/{id}/channel`, a WebSocket that works on all three transports. The command
+  catalog is cached, so searching works while disconnected; running does not. Positron keeps the
+  workspace ID in workspace-scoped state, so two windows onto one workspace share a record and
+  attach a frontend channel each; commands go to whichever of them reported focus last, and move
+  to a sibling if that window disappears mid-request.
+- Agent executions go through the same execution queue and WebSocket mirror as Positron's own, and
+  are preceded by a `KernelMessage::ExecutionRequested` event naming the agent. That event buffers
+  while no client is connected, so a window that reopens learns who ran the code it is seeing.
+- Everything an agent runs is visible in the user's console. `evaluate_code` differs from
+  `execute_code` only in `store_history`: it stays out of the session's history and leaves its
+  execution counter alone. Neither uses the Jupyter `silent` flag, which would suppress both the
+  result the agent asked for and the echo the user needs. Cancelling a call interrupts the kernel,
+  and a call that carries a progress token gets its stream output as progress notifications.
+- Agents that start their MCP servers as child processes run `kcserver mcp-stdio`, which relays
+  JSON-RPC between stdio and a workspace's HTTP endpoint. It finds the endpoint from `--workspace`,
+  then `POSITRON_MCP_URL`/`POSITRON_MCP_TOKEN`, then the workspace in Positron's connections
+  directory (`--connections`) whose folder contains its working directory, preferring the most
+  recently active on a tie. It ignores connection files whose `version` is not 1. It resolves lazily and
+  again after a refusal, and answers the handshake, tool list, and tool calls itself while no
+  endpoint answers, so an agent never has to reconnect. Stdout carries the protocol; logs go to
+  stderr. A request is retried only when it never reached a handler.
+- Connected agents are known through presence: for as long as it runs, the bridge holds
+  `GET /mcp/w/<id>/presence` open, describing itself in the query string (`name`, `version`,
+  `pid`, `cwd`). The workspace lists it while the response is open and drops it when the
+  connection closes, however the bridge died. The list is in `serverStatus.mcp.workspaces[].clients`
+  and is pushed to windows as `clients_changed` on the frontend channel, on attach and on every
+  change. Deregistering a workspace ends its presence streams; bridges reopen them wherever the
+  endpoint reappears. Direct HTTP clients have no presence and are not listed.
+
+Code lives in `crates/kcserver/src/mcp/` (`listener.rs`, `handler.rs`, `workspaces.rs`, `auth.rs`,
+`channel.rs`, `stdio_bridge.rs`), with shared frontend-channel message types in `crates/kcshared/src/mcp_frontend.rs`.
+The protocol layer is the `rmcp` crate.
+
 ## Resource Monitoring
 
 kcserver samples CPU, memory and thread counts for each kernel session and pushes them to
@@ -227,6 +294,9 @@ cargo test -- --nocapture
 - **Integration tests**: Located in `crates/kcserver/tests/`
   - `integration_test.rs`: General TCP and WebSocket functionality
   - `named_pipe_test.rs`: Windows named pipe specific tests (Windows only)
+  - `mcp_tests.rs`: MCP registration, auth, and command brokering over the real HTTP stack
+  - `mcp_execute_tests.rs`: MCP kernel tools against a real ipykernel
+  - `mcp_stdio_tests.rs`: the `kcserver mcp-stdio` bridge, driven over stdio against a real server
 - **Platform-specific tests**: Automatically disabled on unsupported platforms
 
 ### Test Environment

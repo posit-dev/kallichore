@@ -99,11 +99,12 @@ use swagger::auth::Authorization;
 use kallichore_api::server::MakeService;
 use kallichore_api::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
-    ConnectionInfoResponse, DeleteSessionResponse, ExecuteCodeResponse,
-    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, DeregisterMcpWorkspaceResponse,
+    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionHistoryResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
+    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 use std::error::Error;
 use swagger::ApiError;
@@ -154,6 +155,20 @@ where
         info!(
             "new_session({:?}) - X-Span-ID: {:?}",
             new_session,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Register a Positron workspace with the MCP server
+    async fn register_mcp_workspace(
+        &self,
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
+        context: &C,
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError> {
+        info!(
+            "register_mcp_workspace({:?}) - X-Span-ID: {:?}",
+            mcp_workspace_registration,
             context.get().0.clone()
         );
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))
@@ -246,6 +261,20 @@ where
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
+    /// Deregister a Positron workspace
+    async fn deregister_mcp_workspace(
+        &self,
+        workspace_id: String,
+        context: &C,
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError> {
+        info!(
+            "deregister_mcp_workspace(\"{}\") - X-Span-ID: {:?}",
+            workspace_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
     /// Execute code and return results
     async fn execute_code(
         &self,
@@ -276,6 +305,20 @@ where
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))
     }
 
+    /// Get the session's execution history
+    async fn get_session_history(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionHistoryResponse, ApiError> {
+        info!(
+            "get_session_history(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
     /// Interrupt session
     async fn interrupt_session(
         &self,
@@ -299,6 +342,20 @@ where
         info!(
             "kill_session(\"{}\") - X-Span-ID: {:?}",
             session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    async fn mcp_workspace_channel(
+        &self,
+        workspace_id: String,
+        context: &C,
+    ) -> Result<McpWorkspaceChannelResponse, ApiError> {
+        info!(
+            "mcp_workspace_channel(\"{}\") - X-Span-ID: {:?}",
+            workspace_id,
             context.get().0.clone()
         );
         Err(ApiError("Api-Error: Operation is NOT implemented".into()))

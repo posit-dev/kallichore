@@ -10,6 +10,7 @@
 
 mod connection;
 mod environment;
+mod execute;
 mod handshake;
 pub(crate) mod job_object;
 mod lifecycle;
@@ -18,7 +19,7 @@ mod shell_wrapper;
 mod startup;
 mod utils;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Utc};
@@ -28,8 +29,9 @@ use kcshared::{jupyter_message::JupyterMessage, websocket_message::WebsocketMess
 use tokio::sync::RwLock;
 
 use crate::{
-    connection_file::ConnectionFile, kernel_connection::KernelConnection,
-    kernel_state::KernelState, startup_status::StartupStatus,
+    connection_file::ConnectionFile, execution_history::RECENT_ENTRIES,
+    kernel_connection::KernelConnection, kernel_state::KernelState, mcp::McpState,
+    startup_status::StartupStatus,
 };
 
 use connection::ConnectionManager;
@@ -41,6 +43,7 @@ use process::ProcessMonitor;
 use startup::StartupCoordinator;
 
 // Re-export utility functions for external use
+pub use execute::{ExecuteError, ExecuteOptions};
 pub use utils::make_message_id;
 
 /// A Jupyter kernel session.
@@ -87,6 +90,11 @@ pub struct KernelSession {
 
     /// The exit event; fires when the kernel process exits
     pub exit_event: Arc<Event>,
+
+    /// The MCP server, whose endpoint the kernel is given when the session
+    /// belongs to a registered workspace. Weak because the MCP server holds
+    /// the sessions.
+    pub mcp: Weak<McpState>,
 }
 
 impl KernelSession {
@@ -96,6 +104,7 @@ impl KernelSession {
         key: String,
         idle_nudge_tx: tokio::sync::mpsc::Sender<Option<u32>>,
         reserved_ports: Arc<std::sync::RwLock<Vec<i32>>>,
+        mcp: Weak<McpState>,
     ) -> Result<Self, anyhow::Error> {
         let (zmq_tx, zmq_rx) = async_channel::unbounded::<JupyterMessage>();
         let (json_tx, json_rx) = async_channel::unbounded::<WebsocketMessage>();
@@ -137,6 +146,7 @@ impl KernelSession {
             interrupt_event_handle,
             exit_event: Arc::new(Event::new()),
             reserved_ports,
+            mcp,
         };
         Ok(kernel_session)
     }
@@ -152,6 +162,7 @@ impl KernelSession {
             session_id: self.connection.session_id.clone(),
             model: self.model.clone(),
             state: self.state.clone(),
+            mcp: self.mcp.clone(),
             argv: self.argv.clone(),
             #[cfg(windows)]
             interrupt_event_handle: self.interrupt_event_handle,
@@ -567,6 +578,7 @@ impl KernelSession {
             started: self.started,
             status: state.status,
             execution_queue: state.execution_queue.to_json(),
+            history: Some(state.history.recent(RECENT_ENTRIES)),
             socket_path: state.client_socket_path.clone(),
             kernel_info: state.kernel_info.clone().unwrap_or(serde_json::json!({})),
         }

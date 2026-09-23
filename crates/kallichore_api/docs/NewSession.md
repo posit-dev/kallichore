@@ -19,6 +19,7 @@ Name | Type | Description | Notes
 **protocol_version** | **String** | The Jupyter protocol version supported by the underlying kernel | [optional] [default to Some("5.3".to_string())]
 **startup_environment** | [***models::StartupEnvironment**](startupEnvironment.md) |  | 
 **startup_environment_arg** | **String** | The command or script to run before starting the session | [optional] [default to None]
+**workspace_id** | **String** | The MCP workspace creating the session, if the client has registered one. The session belongs to that workspace: agents reach it through that workspace's MCP endpoint and no other. | [optional] [default to None]
 
 [[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)
 

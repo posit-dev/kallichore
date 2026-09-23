@@ -8,10 +8,11 @@ use log::{debug, info};
 use kallichore_api::{
     models, AdoptSessionResponse, ApiNoContext, ChannelsUpgradeResponse, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
-    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    DeregisterMcpWorkspaceResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
+    GetSessionHistoryResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    ListSessionsResponse, McpWorkspaceChannelResponse, NewSessionResponse,
+    RegisterMcpWorkspaceResponse, RestartSessionResponse, ServerStatusResponse,
+    SetServerConfigurationResponse, ShutdownServerResponse, StartSessionResponse,
 };
 use simple_logger::SimpleLogger;
 use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
@@ -85,6 +86,11 @@ enum Operation {
         #[clap(value_parser = parse_json::<models::NewSession>)]
         new_session: models::NewSession,
     },
+    /// Register a Positron workspace with the MCP server
+    RegisterMcpWorkspace {
+        #[clap(value_parser = parse_json::<models::McpWorkspaceRegistration>)]
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
+    },
     /// Get server status and information
     ServerStatus {},
     /// Change the server configuration
@@ -106,6 +112,8 @@ enum Operation {
     ConnectionInfo { session_id: String },
     /// Delete session
     DeleteSession { session_id: String },
+    /// Deregister a Positron workspace
+    DeregisterMcpWorkspace { workspace_id: String },
     /// Execute code and return results
     ExecuteCode {
         session_id: String,
@@ -114,10 +122,14 @@ enum Operation {
     },
     /// Get session details
     GetSession { session_id: String },
+    /// Get the session's execution history
+    GetSessionHistory { session_id: String },
     /// Interrupt session
     InterruptSession { session_id: String },
     /// Force quit session
     KillSession { session_id: String },
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    McpWorkspaceChannel { workspace_id: String },
     /// Restart a session
     RestartSession {
         session_id: String,
@@ -254,6 +266,26 @@ async fn main() -> Result<()> {
                 NewSessionResponse::Unauthorized => "Unauthorized\n".to_string(),
             }
         }
+        Operation::RegisterMcpWorkspace {
+            mcp_workspace_registration,
+        } => {
+            info!("Performing a RegisterMcpWorkspace request");
+
+            let result = client
+                .register_mcp_workspace(mcp_workspace_registration)
+                .await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                RegisterMcpWorkspaceResponse::WorkspaceRegistered(body) => {
+                    "WorkspaceRegistered\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                RegisterMcpWorkspaceResponse::InvalidRequest(body) => {
+                    "InvalidRequest\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                RegisterMcpWorkspaceResponse::Unauthorized => "Unauthorized\n".to_string(),
+            }
+        }
         Operation::ServerStatus {} => {
             info!("Performing a ServerStatus request");
 
@@ -383,6 +415,29 @@ async fn main() -> Result<()> {
                 DeleteSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
             }
         }
+        Operation::DeregisterMcpWorkspace { workspace_id } => {
+            prompt(
+                args.force,
+                "This will delete the given entry, are you sure?",
+            )?;
+            info!(
+                "Performing a DeregisterMcpWorkspace request on {:?}",
+                (&workspace_id)
+            );
+
+            let result = client.deregister_mcp_workspace(workspace_id).await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                DeregisterMcpWorkspaceResponse::WorkspaceDeregistered => {
+                    "WorkspaceDeregistered\n".to_string()
+                }
+                DeregisterMcpWorkspaceResponse::Unauthorized => "Unauthorized\n".to_string(),
+                DeregisterMcpWorkspaceResponse::WorkspaceNotFound => {
+                    "WorkspaceNotFound\n".to_string()
+                }
+            }
+        }
         Operation::ExecuteCode {
             session_id,
             execute_request,
@@ -422,6 +477,23 @@ async fn main() -> Result<()> {
                 GetSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
             }
         }
+        Operation::GetSessionHistory { session_id } => {
+            info!(
+                "Performing a GetSessionHistory request on {:?}",
+                (&session_id)
+            );
+
+            let result = client.get_session_history(session_id).await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                GetSessionHistoryResponse::ExecutionHistory(body) => {
+                    "ExecutionHistory\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                GetSessionHistoryResponse::Unauthorized => "Unauthorized\n".to_string(),
+                GetSessionHistoryResponse::SessionNotFound => "SessionNotFound\n".to_string(),
+            }
+        }
         Operation::InterruptSession { session_id } => {
             info!(
                 "Performing a InterruptSession request on {:?}",
@@ -457,6 +529,26 @@ async fn main() -> Result<()> {
                 }
                 KillSessionResponse::Unauthorized => "Unauthorized\n".to_string(),
                 KillSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
+            }
+        }
+        Operation::McpWorkspaceChannel { workspace_id } => {
+            info!(
+                "Performing a McpWorkspaceChannel request on {:?}",
+                (&workspace_id)
+            );
+
+            let result = client.mcp_workspace_channel(workspace_id).await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                McpWorkspaceChannelResponse::UpgradedConnection => {
+                    "UpgradedConnection\n".to_string()
+                }
+                McpWorkspaceChannelResponse::InvalidRequest(body) => {
+                    "InvalidRequest\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                McpWorkspaceChannelResponse::Unauthorized => "Unauthorized\n".to_string(),
+                McpWorkspaceChannelResponse::WorkspaceNotFound => "WorkspaceNotFound\n".to_string(),
             }
         }
         Operation::RestartSession {

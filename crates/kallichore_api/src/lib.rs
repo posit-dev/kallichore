@@ -61,6 +61,17 @@ pub enum NewSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum RegisterMcpWorkspaceResponse {
+    /// Workspace registered
+    WorkspaceRegistered(models::McpWorkspace),
+    /// Invalid request
+    InvalidRequest(models::Error),
+    /// Unauthorized
+    Unauthorized,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum ServerStatusResponse {
     /// Server status and information
     ServerStatusAndInformation(models::ServerStatus),
@@ -142,6 +153,17 @@ pub enum DeleteSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum DeregisterMcpWorkspaceResponse {
+    /// Workspace deregistered
+    WorkspaceDeregistered,
+    /// Unauthorized
+    Unauthorized,
+    /// Workspace not found
+    WorkspaceNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum ExecuteCodeResponse {
     /// Execution completed
     ExecutionCompleted(models::ExecuteReply),
@@ -162,6 +184,17 @@ pub enum GetSessionResponse {
     SessionDetails(models::ActiveSession),
     /// Failed to get session
     FailedToGetSession(models::Error),
+    /// Session not found
+    SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum GetSessionHistoryResponse {
+    /// Execution history
+    ExecutionHistory(Vec<models::ExecutionHistoryEntry>),
+    /// Unauthorized
+    Unauthorized,
     /// Session not found
     SessionNotFound,
 }
@@ -190,6 +223,19 @@ pub enum KillSessionResponse {
     Unauthorized,
     /// Session not found
     SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
+pub enum McpWorkspaceChannelResponse {
+    /// Upgraded connection
+    UpgradedConnection,
+    /// Invalid request
+    InvalidRequest(models::Error),
+    /// Unauthorized
+    Unauthorized,
+    /// Workspace not found
+    WorkspaceNotFound,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -245,6 +291,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<NewSessionResponse, ApiError>;
 
+    /// Register a Positron workspace with the MCP server
+    async fn register_mcp_workspace(
+        &self,
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
+        context: &C,
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError>;
+
     /// Get server status and information
     async fn server_status(&self, context: &C) -> Result<ServerStatusResponse, ApiError>;
 
@@ -287,6 +340,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<DeleteSessionResponse, ApiError>;
 
+    /// Deregister a Positron workspace
+    async fn deregister_mcp_workspace(
+        &self,
+        workspace_id: String,
+        context: &C,
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError>;
+
     /// Execute code and return results
     async fn execute_code(
         &self,
@@ -302,6 +362,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<GetSessionResponse, ApiError>;
 
+    /// Get the session's execution history
+    async fn get_session_history(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionHistoryResponse, ApiError>;
+
     /// Interrupt session
     async fn interrupt_session(
         &self,
@@ -315,6 +382,13 @@ pub trait Api<C: Send + Sync> {
         session_id: String,
         context: &C,
     ) -> Result<KillSessionResponse, ApiError>;
+
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    async fn mcp_workspace_channel(
+        &self,
+        workspace_id: String,
+        context: &C,
+    ) -> Result<McpWorkspaceChannelResponse, ApiError>;
 
     /// Restart a session
     async fn restart_session(
@@ -356,6 +430,12 @@ pub trait ApiNoContext<C: Send + Sync> {
         new_session: models::NewSession,
     ) -> Result<NewSessionResponse, ApiError>;
 
+    /// Register a Positron workspace with the MCP server
+    async fn register_mcp_workspace(
+        &self,
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError>;
+
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError>;
 
@@ -388,6 +468,12 @@ pub trait ApiNoContext<C: Send + Sync> {
     /// Delete session
     async fn delete_session(&self, session_id: String) -> Result<DeleteSessionResponse, ApiError>;
 
+    /// Deregister a Positron workspace
+    async fn deregister_mcp_workspace(
+        &self,
+        workspace_id: String,
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError>;
+
     /// Execute code and return results
     async fn execute_code(
         &self,
@@ -398,6 +484,12 @@ pub trait ApiNoContext<C: Send + Sync> {
     /// Get session details
     async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError>;
 
+    /// Get the session's execution history
+    async fn get_session_history(
+        &self,
+        session_id: String,
+    ) -> Result<GetSessionHistoryResponse, ApiError>;
+
     /// Interrupt session
     async fn interrupt_session(
         &self,
@@ -406,6 +498,12 @@ pub trait ApiNoContext<C: Send + Sync> {
 
     /// Force quit session
     async fn kill_session(&self, session_id: String) -> Result<KillSessionResponse, ApiError>;
+
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    async fn mcp_workspace_channel(
+        &self,
+        workspace_id: String,
+    ) -> Result<McpWorkspaceChannelResponse, ApiError>;
 
     /// Restart a session
     async fn restart_session(
@@ -471,6 +569,17 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().new_session(new_session, &context).await
     }
 
+    /// Register a Positron workspace with the MCP server
+    async fn register_mcp_workspace(
+        &self,
+        mcp_workspace_registration: models::McpWorkspaceRegistration,
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .register_mcp_workspace(mcp_workspace_registration, &context)
+            .await
+    }
+
     /// Get server status and information
     async fn server_status(&self) -> Result<ServerStatusResponse, ApiError> {
         let context = self.context().clone();
@@ -530,6 +639,17 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().delete_session(session_id, &context).await
     }
 
+    /// Deregister a Positron workspace
+    async fn deregister_mcp_workspace(
+        &self,
+        workspace_id: String,
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .deregister_mcp_workspace(workspace_id, &context)
+            .await
+    }
+
     /// Execute code and return results
     async fn execute_code(
         &self,
@@ -548,6 +668,15 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
         self.api().get_session(session_id, &context).await
     }
 
+    /// Get the session's execution history
+    async fn get_session_history(
+        &self,
+        session_id: String,
+    ) -> Result<GetSessionHistoryResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().get_session_history(session_id, &context).await
+    }
+
     /// Interrupt session
     async fn interrupt_session(
         &self,
@@ -561,6 +690,17 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn kill_session(&self, session_id: String) -> Result<KillSessionResponse, ApiError> {
         let context = self.context().clone();
         self.api().kill_session(session_id, &context).await
+    }
+
+    /// Upgrade to a WebSocket carrying the MCP frontend channel
+    async fn mcp_workspace_channel(
+        &self,
+        workspace_id: String,
+    ) -> Result<McpWorkspaceChannelResponse, ApiError> {
+        let context = self.context().clone();
+        self.api()
+            .mcp_workspace_channel(workspace_id, &context)
+            .await
     }
 
     /// Restart a session

@@ -601,6 +601,50 @@
         }
       }
     },
+    "/sessions/{session_id}/history": {
+      "get": {
+        "operationId": "get-session-history",
+        "summary": "Get the session's execution history",
+        "description": "Returns the executions the session has run, oldest first. Only the most recent 100 are kept.",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Execution history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/executionHistoryEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
     "/shutdown": {
       "post": {
         "operationId": "shutdown-server",
@@ -748,6 +792,135 @@
                   "$ref": "#/components/schemas/error"
                 }
               }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/workspaces": {
+      "post": {
+        "operationId": "register-mcp-workspace",
+        "summary": "Register a Positron workspace with the MCP server",
+        "description": "Registers (or re-registers) a workspace and starts the MCP listener if it isn't already running. Re-registering with a known workspace ID returns the same bearer token, so agents launched from terminals that outlived the window keep working. The server keeps no state across restarts, so a caller that wants the token to outlive the server supplies the one it was issued before.",
+        "security": [
+          "bearerAuth"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/mcpWorkspaceRegistration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workspace registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/mcpWorkspace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          }
+        }
+      }
+    },
+    "/mcp/workspaces/{workspace_id}": {
+      "delete": {
+        "operationId": "deregister-mcp-workspace",
+        "summary": "Deregister a Positron workspace",
+        "description": "Removes the workspace and invalidates its token. When the last workspace is removed the MCP listener stops and its port is released.",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace deregistered",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Workspace not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
+    "/mcp/workspaces/{workspace_id}/channel": {
+      "get": {
+        "operationId": "mcp-workspace-channel",
+        "summary": "Upgrade to a WebSocket carrying the MCP frontend channel",
+        "description": "Opens the bidirectional channel over which a window pushes its workspace's command catalog and foreground session, and over which the supervisor brokers agent command requests.",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Upgraded connection",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Workspace not found",
+            "content": {
+              "application/json": {}
             }
           }
         }
@@ -999,6 +1172,10 @@
           "startup_environment_arg": {
             "type": "string",
             "description": "The command or script to run before starting the session"
+          },
+          "workspace_id": {
+            "type": "string",
+            "description": "The MCP workspace creating the session, if the client has registered one. The session belongs to that workspace: agents reach it through that workspace's MCP endpoint and no other."
           }
         },
         "required": [
@@ -1282,6 +1459,13 @@
           "socket_path": {
             "type": "string",
             "description": "The path to the Unix domain socket used to send/receive data from the session, if applicable"
+          },
+          "history": {
+            "type": "array",
+            "description": "The last few executions the session ran, oldest first. The full history is available from the session's history endpoint.",
+            "items": {
+              "$ref": "#/components/schemas/executionHistoryEntry"
+            }
           }
         },
         "required": [
@@ -1344,6 +1528,9 @@
           "server_id": {
             "type": "string",
             "description": "A unique identifier generated when the server starts. Clients can compare this against a previously observed value to detect that they are talking to a different server instance (e.g. one that was restarted), and therefore that any persisted bearer token may be stale."
+          },
+          "mcp": {
+            "$ref": "#/components/schemas/mcpStatus"
           }
         },
         "required": [
@@ -1440,6 +1627,219 @@
             ]
           }
         }
+      },
+      "mcpWorkspaceRegistration": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "A previously issued workspace ID. Omit to have the server generate one from the display name."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "A human-readable name for the workspace, normally the folder the user has open. Shown in logs and status, and used to build the workspace ID."
+          },
+          "preferred_port": {
+            "type": "integer",
+            "description": "The TCP port the MCP listener should bind. Used only when the listener isn't running yet, and ignored when the port is unavailable."
+          },
+          "token": {
+            "type": "string",
+            "description": "A bearer token the server issued for this workspace before. Supplying it again keeps the token agents are configured with valid across a restart of the server, which holds no state of its own. Omit it to have the server issue one, and ignored unless it is well formed."
+          }
+        },
+        "required": [
+          "display_name"
+        ]
+      },
+      "mcpWorkspace": {
+        "type": "object",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "description": "The workspace's ID; supply it again to re-register after a reconnect"
+          },
+          "token": {
+            "type": "string",
+            "description": "The bearer token agents present to the MCP server. Scoped to this workspace and distinct from the supervisor API token."
+          },
+          "port": {
+            "type": "integer",
+            "description": "The TCP port the MCP listener is bound to on 127.0.0.1"
+          },
+          "url": {
+            "type": "string",
+            "description": "The full MCP endpoint URL agents should connect to. Unique to this workspace, so an agent configured with it can only reach this workspace's sessions."
+          }
+        },
+        "required": [
+          "workspace_id",
+          "port",
+          "token",
+          "url"
+        ]
+      },
+      "mcpWorkspaceStatus": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "connected": {
+            "type": "boolean",
+            "description": "Whether any of the workspace's windows is currently connected"
+          },
+          "clients": {
+            "type": "array",
+            "description": "The agents connected to the workspace through the stdio bridge",
+            "items": {
+              "$ref": "#/components/schemas/mcpClient"
+            }
+          }
+        },
+        "required": [
+          "clients",
+          "connected",
+          "display_name",
+          "id"
+        ]
+      },
+      "mcpClient": {
+        "type": "object",
+        "description": "An agent connected to a workspace through the stdio bridge",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Identifies the client within its workspace"
+          },
+          "name": {
+            "type": "string",
+            "description": "The agent's name, from the MCP clientInfo"
+          },
+          "version": {
+            "type": "string",
+            "description": "The agent's version, from the MCP clientInfo"
+          },
+          "pid": {
+            "type": "integer",
+            "description": "The process ID of the bridge"
+          },
+          "working_directory": {
+            "type": "string",
+            "description": "The bridge's working directory, normally the agent's"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The session the client is running inside, for a client in a kernel"
+          },
+          "connected_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the client connected"
+          }
+        },
+        "required": [
+          "connected_at",
+          "id"
+        ]
+      },
+      "mcpStatus": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "Whether the MCP listener is running"
+          },
+          "port": {
+            "type": "integer",
+            "description": "The port the MCP listener is bound to, or 0 when inactive"
+          },
+          "request_count": {
+            "type": "integer",
+            "description": "The number of MCP tool calls served since the listener started"
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/mcpWorkspaceStatus"
+            }
+          }
+        },
+        "required": [
+          "active",
+          "port",
+          "request_count",
+          "workspaces"
+        ]
+      },
+      "executionError": {
+        "type": "object",
+        "description": "The error an execution raised",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The error's name, such as its exception class"
+          },
+          "message": {
+            "type": "string",
+            "description": "The error message"
+          },
+          "traceback": {
+            "type": "array",
+            "description": "The traceback, one frame or line per item",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "message",
+          "traceback"
+        ]
+      },
+      "executionHistoryEntry": {
+        "type": "object",
+        "description": "Code a session ran and what it produced. Input and output are clipped to a few kilobytes each, keeping their beginning and end.",
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "The code that was run"
+          },
+          "output": {
+            "type": "string",
+            "description": "The text the code produced: standard output and error, displays, and the result, in the order they arrived"
+          },
+          "error": {
+            "$ref": "#/components/schemas/executionError"
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A Unix timestamp in milliseconds indicating when the code was sent to the kernel"
+          },
+          "source": {
+            "type": "string",
+            "description": "What submitted the code, when known, such as 'agent', 'interactive', or 'script'"
+          },
+          "agent": {
+            "type": "string",
+            "description": "The name of the agent that submitted the code, when it was an agent"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether any part of the entry was clipped"
+          }
+        },
+        "required": [
+          "input",
+          "output",
+          "timestamp",
+          "truncated"
+        ]
       }
     },
     "responses": {

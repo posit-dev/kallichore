@@ -18,6 +18,7 @@ use kcshared::{
 use tokio::sync::mpsc;
 
 use crate::connection_file::ConnectionFile;
+use crate::execution_history::ExecutionHistory;
 use crate::execution_queue::ExecutionQueue;
 
 #[cfg(not(target_os = "windows"))]
@@ -56,6 +57,9 @@ pub struct KernelState {
 
     /// The execution queue for the kernel.
     pub execution_queue: ExecutionQueue,
+
+    /// The code the kernel has run and what it produced.
+    pub history: ExecutionHistory,
 
     /// The current input prompt.
     pub input_prompt: String,
@@ -110,6 +114,7 @@ impl KernelState {
             restarting: false,
             process_id: None,
             execution_queue: ExecutionQueue::new(),
+            history: ExecutionHistory::default(),
             env_vars: session.env.clone(),
             resolved_env: HashMap::new(),
             input_prompt: session.input_prompt.clone(),
