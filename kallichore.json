@@ -601,6 +601,50 @@
         }
       }
     },
+    "/sessions/{session_id}/history": {
+      "get": {
+        "operationId": "get-session-history",
+        "summary": "Get the session's execution history",
+        "description": "Returns the executions the session has run, oldest first. Only the most recent 100 are kept.",
+        "security": [
+          "bearerAuth"
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Execution history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/executionHistoryEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "description": "Session not found",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    },
     "/shutdown": {
       "post": {
         "operationId": "shutdown-server",
@@ -1415,6 +1459,13 @@
           "socket_path": {
             "type": "string",
             "description": "The path to the Unix domain socket used to send/receive data from the session, if applicable"
+          },
+          "history": {
+            "type": "array",
+            "description": "The last few executions the session ran, oldest first. The full history is available from the session's history endpoint.",
+            "items": {
+              "$ref": "#/components/schemas/executionHistoryEntry"
+            }
           }
         },
         "required": [
@@ -1718,6 +1769,72 @@
           "port",
           "request_count",
           "workspaces"
+        ]
+      },
+      "executionError": {
+        "type": "object",
+        "description": "The error an execution raised",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The error's name, such as its exception class"
+          },
+          "message": {
+            "type": "string",
+            "description": "The error message"
+          },
+          "traceback": {
+            "type": "array",
+            "description": "The traceback, one frame or line per item",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "message",
+          "traceback"
+        ]
+      },
+      "executionHistoryEntry": {
+        "type": "object",
+        "description": "Code a session ran and what it produced. Input and output are clipped to a few kilobytes each, keeping their beginning and end.",
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "The code that was run"
+          },
+          "output": {
+            "type": "string",
+            "description": "The text the code produced: standard output and error, displays, and the result, in the order they arrived"
+          },
+          "error": {
+            "$ref": "#/components/schemas/executionError"
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A Unix timestamp in milliseconds indicating when the code was sent to the kernel"
+          },
+          "source": {
+            "type": "string",
+            "description": "What submitted the code, when known, such as 'agent', 'interactive', or 'script'"
+          },
+          "agent": {
+            "type": "string",
+            "description": "The name of the agent that submitted the code, when it was an agent"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether any part of the entry was clipped"
+          }
+        },
+        "required": [
+          "input",
+          "output",
+          "timestamp",
+          "truncated"
         ]
       }
     },

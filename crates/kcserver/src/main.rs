@@ -21,6 +21,7 @@ use rand::Rng;
 use simplelog::{ColorChoice, CombinedLogger, Config, TermLogger, TerminalMode, WriteLogger};
 mod connection_file;
 mod error;
+mod execution_history;
 mod execution_queue;
 mod handshake_socket;
 mod heartbeat;

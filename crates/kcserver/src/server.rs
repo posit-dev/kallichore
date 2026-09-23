@@ -74,10 +74,10 @@ use crate::working_dir;
 use crate::zmq_ws_proxy::{self, ZmqWsProxy};
 use kallichore_api::{
     models, AdoptSessionResponse, ChannelsUpgradeResponse, ConnectionInfoResponse,
-    DeleteSessionResponse, DeregisterMcpWorkspaceResponse, ExecuteCodeResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, McpWorkspaceChannelResponse, NewSessionResponse,
-    RegisterMcpWorkspaceResponse, RestartSessionResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    DeleteSessionResponse, DeregisterMcpWorkspaceResponse, ExecuteCodeResponse,
+    GetSessionHistoryResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
+    RestartSessionResponse, ShutdownServerResponse, StartSessionResponse,
 };
 use kcshared::{
     handshake_protocol::{HandshakeStatus, HandshakeVersion},
@@ -1217,6 +1217,29 @@ where
         return Ok(GetSessionResponse::SessionDetails(
             session.as_active_session().await,
         ));
+    }
+
+    async fn get_session_history(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionHistoryResponse, ApiError> {
+        let ctx_span: &dyn Has<XSpanIdString> = context;
+        info!(
+            "get_session_history(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            ctx_span.get().0.clone(),
+        );
+
+        if !self.validate_token(context) {
+            return Ok(GetSessionHistoryResponse::Unauthorized);
+        }
+
+        let Some(session) = self.find_session(session_id) else {
+            return Ok(GetSessionHistoryResponse::SessionNotFound);
+        };
+        let history = session.state.read().await.history.entries();
+        Ok(GetSessionHistoryResponse::ExecutionHistory(history))
     }
 
     /// List active sessions

@@ -9,10 +9,10 @@ use kallichore_api::{
     models, AdoptSessionResponse, ApiNoContext, ChannelsUpgradeResponse, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
     DeregisterMcpWorkspaceResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
-    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    GetSessionHistoryResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    ListSessionsResponse, McpWorkspaceChannelResponse, NewSessionResponse,
+    RegisterMcpWorkspaceResponse, RestartSessionResponse, ServerStatusResponse,
+    SetServerConfigurationResponse, ShutdownServerResponse, StartSessionResponse,
 };
 use simple_logger::SimpleLogger;
 use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
@@ -122,6 +122,8 @@ enum Operation {
     },
     /// Get session details
     GetSession { session_id: String },
+    /// Get the session's execution history
+    GetSessionHistory { session_id: String },
     /// Interrupt session
     InterruptSession { session_id: String },
     /// Force quit session
@@ -473,6 +475,23 @@ async fn main() -> Result<()> {
                     "FailedToGetSession\n".to_string() + &serde_json::to_string_pretty(&body)?
                 }
                 GetSessionResponse::SessionNotFound => "SessionNotFound\n".to_string(),
+            }
+        }
+        Operation::GetSessionHistory { session_id } => {
+            info!(
+                "Performing a GetSessionHistory request on {:?}",
+                (&session_id)
+            );
+
+            let result = client.get_session_history(session_id).await?;
+            debug!("Result: {:?}", result);
+
+            match result {
+                GetSessionHistoryResponse::ExecutionHistory(body) => {
+                    "ExecutionHistory\n".to_string() + &serde_json::to_string_pretty(&body)?
+                }
+                GetSessionHistoryResponse::Unauthorized => "Unauthorized\n".to_string(),
+                GetSessionHistoryResponse::SessionNotFound => "SessionNotFound\n".to_string(),
             }
         }
         Operation::InterruptSession { session_id } => {

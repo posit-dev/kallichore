@@ -29,8 +29,9 @@ use kcshared::{jupyter_message::JupyterMessage, websocket_message::WebsocketMess
 use tokio::sync::RwLock;
 
 use crate::{
-    connection_file::ConnectionFile, kernel_connection::KernelConnection,
-    kernel_state::KernelState, mcp::McpState, startup_status::StartupStatus,
+    connection_file::ConnectionFile, execution_history::RECENT_ENTRIES,
+    kernel_connection::KernelConnection, kernel_state::KernelState, mcp::McpState,
+    startup_status::StartupStatus,
 };
 
 use connection::ConnectionManager;
@@ -577,6 +578,7 @@ impl KernelSession {
             started: self.started,
             status: state.status,
             execution_queue: state.execution_queue.to_json(),
+            history: Some(state.history.recent(RECENT_ENTRIES)),
             socket_path: state.client_socket_path.clone(),
             kernel_info: state.kernel_info.clone().unwrap_or(serde_json::json!({})),
         }

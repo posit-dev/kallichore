@@ -497,6 +497,7 @@ impl ZmqWsProxy {
                         .await?;
                     return Ok(());
                 }
+                state.history.begin(&msg);
             }
             JupyterMsg::InterruptRequest => {
                 // Clear the execution queue; an interrupt should cancel any
@@ -632,6 +633,8 @@ impl ZmqWsProxy {
                         let mut state = self.state.write().await;
                         match state.execution_queue.next_request() {
                             Some(request) => {
+                                state.history.begin(&request);
+
                                 // Send the next request to the kernel with the protocol version
                                 let wire_message =
                                     WireMessage::from_jupyter(request, self.connection.clone())?;
@@ -655,11 +658,13 @@ impl ZmqWsProxy {
             }
         }
 
-        // (2.5) If there's an RPC listener registered for this message's parent
-        // msg_id, forward a clone to it. This allows the execute_code RPC to
-        // collect output without interfering with the WebSocket stream.
+        // (2.5) Record the message in the execution history, and if there's an
+        // RPC listener registered for this message's parent msg_id, forward a
+        // clone to it. This allows the execute_code RPC to collect output
+        // without interfering with the WebSocket stream.
         if let Some(ref parent_header) = message.parent_header {
-            let state = self.state.read().await;
+            let mut state = self.state.write().await;
+            state.history.record(&message);
             if let Some(rpc_tx) = state.rpc_listeners.get(&parent_header.msg_id) {
                 if let Err(e) = rpc_tx.send(message.clone()) {
                     log::warn!(

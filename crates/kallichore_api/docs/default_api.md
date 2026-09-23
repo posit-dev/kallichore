@@ -19,6 +19,7 @@ Method | HTTP request | Description
 **deregister-mcp-workspace**](default_api.md#deregister-mcp-workspace) | **DELETE** /mcp/workspaces/{workspace_id} | Deregister a Positron workspace
 **execute-code**](default_api.md#execute-code) | **POST** /sessions/{session_id}/execute | Execute code and return results
 **get-session**](default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
+**get-session-history**](default_api.md#get-session-history) | **GET** /sessions/{session_id}/history | Get the session's execution history
 **interrupt-session**](default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
 **kill-session**](default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
 **mcp-workspace-channel**](default_api.md#mcp-workspace-channel) | **GET** /mcp/workspaces/{workspace_id}/channel | Upgrade to a WebSocket carrying the MCP frontend channel
@@ -383,6 +384,33 @@ Name | Type | Description  | Notes
 ### Return type
 
 [**models::ActiveSession**](activeSession.md)
+
+### Authorization
+
+No authorization required
+
+### HTTP request headers
+
+ - **Content-Type**: Not defined
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **get-session-history**
+> Vec<models::ExecutionHistoryEntry> get-session-history(session_id)
+Get the session's execution history
+
+Returns the executions the session has run, oldest first. Only the most recent 100 are kept.
+
+### Required Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+  **session_id** | **String**|  | 
+
+### Return type
+
+[**Vec<models::ExecutionHistoryEntry>**](executionHistoryEntry.md)
 
 ### Authorization
 

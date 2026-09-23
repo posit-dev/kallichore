@@ -23,8 +23,11 @@ use common::test_utils::{
 };
 use common::TestServer;
 use futures::{SinkExt, StreamExt};
+use kallichore_api::models::ExecuteRequest;
 use kallichore_api::models::Status;
-use kallichore_api::{ApiNoContext, GetSessionResponse, StartSessionResponse};
+use kallichore_api::{
+    ApiNoContext, GetSessionHistoryResponse, GetSessionResponse, StartSessionResponse,
+};
 use kcshared::kernel_message::KernelMessage;
 use kcshared::mcp_frontend::{ForegroundChanged, FrontendHello, FrontendMessage, SessionsChanged};
 use kcshared::websocket_message::WebsocketMessage;
@@ -795,6 +798,62 @@ async fn test_session_targeting_uses_the_foreground_session() {
     assert_eq!(foreground[0]["session_id"], json!(second));
     assert_eq!(foreground[0]["language"], json!("python"));
     assert_eq!(foreground[0]["mode"], json!("console"));
+}
+
+#[tokio::test]
+async fn test_history_records_what_ran_and_who_ran_it() {
+    let python_cmd = require_ipykernel!();
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+    let session_id = start_session(&client, &python_cmd).await;
+    let (_workspace_id, _window, mut agent) = agent_for(&server, &[&session_id]).await;
+
+    for code in ["print('hi')\n21 * 2", "raise ValueError('boom')"] {
+        agent
+            .call_tool(
+                "execute_code",
+                json!({ "code": code, "session_id": session_id }),
+            )
+            .await;
+    }
+    let request = ExecuteRequest::new("'from rest'".to_string());
+    let _ = client
+        .execute_code(session_id.clone(), request)
+        .await
+        .expect("Failed to execute code");
+
+    let history = match client
+        .get_session_history(session_id.clone())
+        .await
+        .expect("Failed to get history")
+    {
+        GetSessionHistoryResponse::ExecutionHistory(history) => history,
+        other => panic!("Unexpected response: {:?}", other),
+    };
+    assert_eq!(history.len(), 3, "{:?}", history);
+    assert_eq!(history[0].output, "hi\n42\n");
+    assert_eq!(history[0].source.as_deref(), Some("agent"));
+    assert_eq!(history[0].agent.as_deref(), Some("claude-code"));
+    assert_eq!(history[1].error.as_ref().unwrap().name, "ValueError");
+    assert_eq!(history[2].source, None);
+    assert!(history[0].timestamp <= history[2].timestamp);
+
+    let result = agent
+        .call_tool(
+            "get_session_history",
+            json!({ "session_id": session_id, "limit": 2 }),
+        )
+        .await;
+    assert!(!result.is_error, "{:?}", result);
+    assert_eq!(result.field("total"), &json!(3));
+    let entries = result.field("entries").as_array().unwrap();
+    assert_eq!(entries.len(), 2, "{:?}", result);
+    assert_eq!(entries[0]["error"]["message"], json!("boom"));
+    assert_eq!(entries[1]["input"], json!("'from rest'"));
+
+    let result = agent.call_tool("list_sessions", json!({})).await;
+    let recent = &result.field("sessions")[0]["recent_history"];
+    assert_eq!(recent.as_array().unwrap().len(), 3, "{:?}", result);
 }
 
 #[tokio::test]

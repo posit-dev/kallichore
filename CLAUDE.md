@@ -204,8 +204,14 @@ separate from the main API transport, because agents need a URL.
   registered workspace owns them; that covers sessions that were already running when MCP was
   turned on. Naming another workspace's session returns `SESSION_NOT_VISIBLE`. Both the ownership
   and the claim outlive the window going away.
-- Kernel tools (`list_sessions`, `execute_code`, `evaluate_code`, `interrupt_session`) are answered
-  inside `kcserver` and keep working when Positron is disconnected.
+- Kernel tools (`list_sessions`, `get_session_history`, `execute_code`, `evaluate_code`,
+  `interrupt_session`) are answered inside `kcserver` and keep working when Positron is disconnected.
+- Every session keeps a bounded execution history (`execution_history.rs`), recorded in the ZeroMQ
+  proxy so it covers code from any client: the last 100 non-silent executions, each with its input,
+  output, and error clipped to a few kilobytes, a timestamp, and the `source`/`agent_name` from the
+  request's `metadata.attribution` when present. The last few entries are in the session's `history`
+  field and in `list_sessions`; all of them are at `GET /sessions/{id}/history` and
+  `get_session_history`.
 - Command tools (`list_positron_commands`, `run_positron_command`, `get_plot`) are brokered to a
   window over `GET /mcp/workspaces/{id}/channel`, a WebSocket that works on all three transports. The command
   catalog is cached, so searching works while disconnected; running does not. Positron keeps the

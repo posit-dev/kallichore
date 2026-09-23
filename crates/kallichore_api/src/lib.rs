@@ -190,6 +190,17 @@ pub enum GetSessionResponse {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[must_use]
+pub enum GetSessionHistoryResponse {
+    /// Execution history
+    ExecutionHistory(Vec<models::ExecutionHistoryEntry>),
+    /// Unauthorized
+    Unauthorized,
+    /// Session not found
+    SessionNotFound,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[must_use]
 pub enum InterruptSessionResponse {
     /// Interrupted
     Interrupted(serde_json::Value),
@@ -351,6 +362,13 @@ pub trait Api<C: Send + Sync> {
         context: &C,
     ) -> Result<GetSessionResponse, ApiError>;
 
+    /// Get the session's execution history
+    async fn get_session_history(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionHistoryResponse, ApiError>;
+
     /// Interrupt session
     async fn interrupt_session(
         &self,
@@ -465,6 +483,12 @@ pub trait ApiNoContext<C: Send + Sync> {
 
     /// Get session details
     async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError>;
+
+    /// Get the session's execution history
+    async fn get_session_history(
+        &self,
+        session_id: String,
+    ) -> Result<GetSessionHistoryResponse, ApiError>;
 
     /// Interrupt session
     async fn interrupt_session(
@@ -642,6 +666,15 @@ impl<T: Api<C> + Send + Sync, C: Clone + Send + Sync> ApiNoContext<C> for Contex
     async fn get_session(&self, session_id: String) -> Result<GetSessionResponse, ApiError> {
         let context = self.context().clone();
         self.api().get_session(session_id, &context).await
+    }
+
+    /// Get the session's execution history
+    async fn get_session_history(
+        &self,
+        session_id: String,
+    ) -> Result<GetSessionHistoryResponse, ApiError> {
+        let context = self.context().clone();
+        self.api().get_session_history(session_id, &context).await
     }
 
     /// Interrupt session

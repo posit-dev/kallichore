@@ -96,6 +96,11 @@ pub struct ActiveSession {
     #[serde(rename = "socket_path")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<String>,
+
+    /// The last few executions the session ran, oldest first. The full history is available from the session's history endpoint.
+    #[serde(rename = "history")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<Vec<models::ExecutionHistoryEntry>>,
 }
 
 impl ActiveSession {
@@ -142,6 +147,7 @@ impl ActiveSession {
             idle_seconds,
             busy_seconds,
             socket_path: None,
+            history: None,
         }
     }
 }
@@ -197,6 +203,7 @@ impl std::fmt::Display for ActiveSession {
             self.socket_path
                 .as_ref()
                 .map(|socket_path| ["socket_path".to_string(), socket_path.to_string()].join(",")),
+            // Skipping non-primitive type history in query parameter serialization
         ];
 
         write!(
@@ -240,6 +247,7 @@ impl std::str::FromStr for ActiveSession {
             pub idle_seconds: Vec<i32>,
             pub busy_seconds: Vec<i32>,
             pub socket_path: Vec<String>,
+            pub history: Vec<Vec<models::ExecutionHistoryEntry>>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -360,6 +368,12 @@ impl std::str::FromStr for ActiveSession {
                     "socket_path" => intermediate_rep.socket_path.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    "history" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in ActiveSession"
+                                .to_string(),
+                        )
+                    }
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing ActiveSession".to_string(),
@@ -464,6 +478,7 @@ impl std::str::FromStr for ActiveSession {
                 .next()
                 .ok_or_else(|| "busy_seconds missing in ActiveSession".to_string())?,
             socket_path: intermediate_rep.socket_path.into_iter().next(),
+            history: intermediate_rep.history.into_iter().next(),
         })
     }
 }
@@ -2439,6 +2454,532 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
                             std::result::Result::Ok(value) => std::result::Result::Ok(value),
                             std::result::Result::Err(err) => std::result::Result::Err(
                                 format!("Unable to convert header value '{hdr_value}' into ExecuteRequest - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
+/// The error an execution raised
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ExecutionError {
+    /// The error's name, such as its exception class
+    #[serde(rename = "name")]
+    pub name: String,
+
+    /// The error message
+    #[serde(rename = "message")]
+    pub message: String,
+
+    /// The traceback, one frame or line per item
+    #[serde(rename = "traceback")]
+    pub traceback: Vec<String>,
+}
+
+impl ExecutionError {
+    #[allow(clippy::new_without_default)]
+    pub fn new(name: String, message: String, traceback: Vec<String>) -> ExecutionError {
+        ExecutionError {
+            name,
+            message,
+            traceback,
+        }
+    }
+}
+
+/// Converts the ExecutionError value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for ExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("name".to_string()),
+            Some(self.name.to_string()),
+            Some("message".to_string()),
+            Some(self.message.to_string()),
+            Some("traceback".to_string()),
+            Some(
+                self.traceback
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ExecutionError value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ExecutionError {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub name: Vec<String>,
+            pub message: Vec<String>,
+            pub traceback: Vec<Vec<String>>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ExecutionError".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "name" => intermediate_rep.name.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "message" => intermediate_rep.message.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    "traceback" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in ExecutionError"
+                                .to_string(),
+                        )
+                    }
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ExecutionError".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ExecutionError {
+            name: intermediate_rep
+                .name
+                .into_iter()
+                .next()
+                .ok_or_else(|| "name missing in ExecutionError".to_string())?,
+            message: intermediate_rep
+                .message
+                .into_iter()
+                .next()
+                .ok_or_else(|| "message missing in ExecutionError".to_string())?,
+            traceback: intermediate_rep
+                .traceback
+                .into_iter()
+                .next()
+                .ok_or_else(|| "traceback missing in ExecutionError".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ExecutionError> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ExecutionError>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ExecutionError>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for ExecutionError - value: {hdr_value} is invalid {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<ExecutionError> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <ExecutionError as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{value}' into ExecutionError - {err}"
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {hdr_value:?} to string: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ExecutionError>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ExecutionError>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ExecutionError>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<ExecutionError> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <ExecutionError as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into ExecutionError - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
+/// Code a session ran and what it produced. Input and output are clipped to a few kilobytes each, keeping their beginning and end.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ExecutionHistoryEntry {
+    /// The code that was run
+    #[serde(rename = "input")]
+    pub input: String,
+
+    /// The text the code produced: standard output and error, displays, and the result, in the order they arrived
+    #[serde(rename = "output")]
+    pub output: String,
+
+    #[serde(rename = "error")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<models::ExecutionError>,
+
+    /// A Unix timestamp in milliseconds indicating when the code was sent to the kernel
+    #[serde(rename = "timestamp")]
+    pub timestamp: i64,
+
+    /// What submitted the code, when known, such as 'agent', 'interactive', or 'script'
+    #[serde(rename = "source")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
+    /// The name of the agent that submitted the code, when it was an agent
+    #[serde(rename = "agent")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+
+    /// Whether any part of the entry was clipped
+    #[serde(rename = "truncated")]
+    pub truncated: bool,
+}
+
+impl ExecutionHistoryEntry {
+    #[allow(clippy::new_without_default)]
+    pub fn new(
+        input: String,
+        output: String,
+        timestamp: i64,
+        truncated: bool,
+    ) -> ExecutionHistoryEntry {
+        ExecutionHistoryEntry {
+            input,
+            output,
+            error: None,
+            timestamp,
+            source: None,
+            agent: None,
+            truncated,
+        }
+    }
+}
+
+/// Converts the ExecutionHistoryEntry value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for ExecutionHistoryEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("input".to_string()),
+            Some(self.input.to_string()),
+            Some("output".to_string()),
+            Some(self.output.to_string()),
+            // Skipping non-primitive type error in query parameter serialization
+            Some("timestamp".to_string()),
+            Some(self.timestamp.to_string()),
+            self.source
+                .as_ref()
+                .map(|source| ["source".to_string(), source.to_string()].join(",")),
+            self.agent
+                .as_ref()
+                .map(|agent| ["agent".to_string(), agent.to_string()].join(",")),
+            Some("truncated".to_string()),
+            Some(self.truncated.to_string()),
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ExecutionHistoryEntry value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ExecutionHistoryEntry {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub input: Vec<String>,
+            pub output: Vec<String>,
+            pub error: Vec<models::ExecutionError>,
+            pub timestamp: Vec<i64>,
+            pub source: Vec<String>,
+            pub agent: Vec<String>,
+            pub truncated: Vec<bool>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ExecutionHistoryEntry".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "input" => intermediate_rep.input.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "output" => intermediate_rep.output.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "error" => intermediate_rep.error.push(
+                        <models::ExecutionError as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "timestamp" => intermediate_rep.timestamp.push(
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "source" => intermediate_rep.source.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "agent" => intermediate_rep.agent.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "truncated" => intermediate_rep.truncated.push(
+                        <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ExecutionHistoryEntry".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ExecutionHistoryEntry {
+            input: intermediate_rep
+                .input
+                .into_iter()
+                .next()
+                .ok_or_else(|| "input missing in ExecutionHistoryEntry".to_string())?,
+            output: intermediate_rep
+                .output
+                .into_iter()
+                .next()
+                .ok_or_else(|| "output missing in ExecutionHistoryEntry".to_string())?,
+            error: intermediate_rep.error.into_iter().next(),
+            timestamp: intermediate_rep
+                .timestamp
+                .into_iter()
+                .next()
+                .ok_or_else(|| "timestamp missing in ExecutionHistoryEntry".to_string())?,
+            source: intermediate_rep.source.into_iter().next(),
+            agent: intermediate_rep.agent.into_iter().next(),
+            truncated: intermediate_rep
+                .truncated
+                .into_iter()
+                .next()
+                .ok_or_else(|| "truncated missing in ExecutionHistoryEntry".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ExecutionHistoryEntry> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ExecutionHistoryEntry>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ExecutionHistoryEntry>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+             std::result::Result::Ok(value) => std::result::Result::Ok(value),
+             std::result::Result::Err(e) => std::result::Result::Err(
+                 format!("Invalid header value for ExecutionHistoryEntry - value: {hdr_value} is invalid {e}"))
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<ExecutionHistoryEntry>
+{
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+             std::result::Result::Ok(value) => {
+                    match <ExecutionHistoryEntry as std::str::FromStr>::from_str(value) {
+                        std::result::Result::Ok(value) => std::result::Result::Ok(header::IntoHeaderValue(value)),
+                        std::result::Result::Err(err) => std::result::Result::Err(
+                            format!("Unable to convert header value '{value}' into ExecutionHistoryEntry - {err}"))
+                    }
+             },
+             std::result::Result::Err(e) => std::result::Result::Err(
+                 format!("Unable to convert header: {hdr_value:?} to string: {e}"))
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ExecutionHistoryEntry>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ExecutionHistoryEntry>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ExecutionHistoryEntry>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<ExecutionHistoryEntry> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <ExecutionHistoryEntry as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into ExecutionHistoryEntry - {err}"))
                         }
                     })
                 }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;

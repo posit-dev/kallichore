@@ -8,8 +8,8 @@
 
 //! The MCP tools external agents can call.
 //!
-//! Kernel tools (`list_sessions`, `execute_code`, `evaluate_code`,
-//! `interrupt_session`) are answered entirely inside the supervisor and keep
+//! Kernel tools (`list_sessions`, `get_session_history`, `execute_code`,
+//! `evaluate_code`, `interrupt_session`) are answered entirely inside the supervisor and keep
 //! working when Positron is gone. Command tools (`list_positron_commands`,
 //! `run_positron_command`, `get_plot`) are brokered to a window of the
 //! workspace that owns the calling agent's token; listing works from the cache
@@ -49,6 +49,13 @@ use crate::kernel_session::{ExecuteError, ExecuteOptions, KernelSession};
 /// The most text one tool result may carry. Beyond this the result is trimmed
 /// and flagged, so a runaway cell cannot flood the agent's context.
 const MAX_TEXT_BYTES: usize = 32 * 1024;
+
+/// The most text of recent history each session carries in `list_sessions`.
+const LISTED_HISTORY_BYTES: usize = 4 * 1024;
+
+/// How many executions `get_session_history` returns when the caller doesn't
+/// say.
+const DEFAULT_HISTORY_LIMIT: u32 = 20;
 
 /// The default execution timeout when the caller doesn't give one.
 const DEFAULT_TIMEOUT_S: u32 = 60;
@@ -175,6 +182,20 @@ pub struct InterruptSessionParams {
     pub session_id: Option<String>,
 }
 
+/// Arguments accepted by `get_session_history`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SessionHistoryParams {
+    /// The session whose history to return. Defaults to the foreground
+    /// session, or the only session when there is exactly one.
+    #[serde(default)]
+    pub session_id: Option<String>,
+
+    /// The most executions to return, counting back from the latest. Defaults
+    /// to 20.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
 /// Arguments accepted by `list_positron_commands`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListCommandsParams {
@@ -247,6 +268,8 @@ impl PositronMcpHandler {
         let mut entries = Vec::with_capacity(sessions.len());
         for session in sessions.iter() {
             let active = session.as_active_session().await;
+            let (recent_history, _) =
+                render_history(active.history.unwrap_or_default(), LISTED_HISTORY_BYTES);
             let mut entry = json!({
                 "session_id": active.session_id,
                 "display_name": active.display_name,
@@ -256,6 +279,7 @@ impl PositronMcpHandler {
                 "working_directory": active.working_directory,
                 "queue_length": active.execution_queue.length,
                 "is_foreground": Some(&active.session_id) == foreground.as_ref(),
+                "recent_history": recent_history,
             });
             // Marked only on the one session it applies to, so a listing for an
             // agent outside the kernels looks exactly as it always has.
@@ -281,6 +305,44 @@ impl PositronMcpHandler {
         if elsewhere > 0 {
             body["sessions_in_other_workspaces"] = json!(elsewhere);
         }
+        Ok(self.finish(body, Vec::new()).await)
+    }
+
+    #[tool(
+        name = "get_session_history",
+        description = "Get the code a session ran most recently and what it printed, returned, \
+                       or raised, oldest first, each with the time it ran and, when known, what \
+                       submitted it (source 'agent' marks code run by an agent). Use this to see \
+                       what the user has been doing or why something they ran failed, without \
+                       running anything. Only the last 100 executions are kept, and long input \
+                       and output are clipped in the middle.",
+        annotations(title = "Get session history", read_only_hint = true)
+    )]
+    async fn get_session_history(
+        &self,
+        _context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<SessionHistoryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.state.note_request();
+
+        let session = match self.resolve_session(params.session_id).await {
+            Ok(session) => session,
+            Err(body) => return Ok(self.error(body).await),
+        };
+        let limit = params.limit.unwrap_or(DEFAULT_HISTORY_LIMIT) as usize;
+        let (total, recent) = {
+            let state = session.state.read().await;
+            let entries = state.history.recent(limit);
+            (state.history.count(), entries)
+        };
+        let (entries, truncated) = render_history(recent, MAX_TEXT_BYTES);
+
+        let body = json!({
+            "session_id": session.connection.session_id,
+            "entries": entries,
+            "total": total,
+            "truncated": truncated,
+        });
         Ok(self.finish(body, Vec::new()).await)
     }
 
@@ -559,8 +621,8 @@ impl PositronMcpHandler {
                 "status": "error",
                 "reason": "POSITRON_DISCONNECTED",
                 "message": "Positron is not connected, so IDE commands cannot run. The kernel \
-                            tools (list_sessions, execute_code, evaluate_code, \
-                            interrupt_session) still work. Ask the user to reopen Positron if \
+                            tools (list_sessions, get_session_history, execute_code, \
+                            evaluate_code, interrupt_session) still work. Ask the user to reopen Positron if \
                             you need this command.",
                 "positron_disconnected_since": since,
             })),
@@ -1179,6 +1241,42 @@ fn render_reply(reply: &models::ExecuteReply) -> (Value, Vec<ContentBlock>) {
     });
 
     (body, images)
+}
+
+/// Prepare history entries for an agent: escapes stripped, and all text
+/// sharing one budget that is spent on the newest entries first, so older ones
+/// are dropped before newer ones are cut. Reports whether anything was.
+fn render_history(
+    entries: Vec<models::ExecutionHistoryEntry>,
+    mut budget: usize,
+) -> (Vec<Value>, bool) {
+    let mut truncated = false;
+    let mut rendered = Vec::with_capacity(entries.len());
+    for mut entry in entries.into_iter().rev() {
+        if budget == 0 {
+            truncated = true;
+            break;
+        }
+        let mut take = |text: &str| {
+            let (text, cut) = take_budget(strip_ansi(text), &mut budget);
+            truncated |= cut;
+            text
+        };
+        entry.input = take(&entry.input);
+        if let Some(error) = entry.error.as_mut() {
+            error.message = take(&error.message);
+            error.traceback = error
+                .traceback
+                .iter()
+                .map(|line| take(line))
+                .filter(|line| !line.is_empty())
+                .collect();
+        }
+        entry.output = take(&entry.output);
+        rendered.push(json!(entry));
+    }
+    rendered.reverse();
+    (rendered, truncated)
 }
 
 /// Pull any renderable images out of a MIME bundle.

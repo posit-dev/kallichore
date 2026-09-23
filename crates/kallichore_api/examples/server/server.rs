@@ -100,8 +100,8 @@ use kallichore_api::server::MakeService;
 use kallichore_api::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
     ConnectionInfoResponse, DeleteSessionResponse, DeregisterMcpWorkspaceResponse,
-    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionHistoryResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
     McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
     RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
     ShutdownServerResponse, StartSessionResponse,
@@ -299,6 +299,20 @@ where
     ) -> Result<GetSessionResponse, ApiError> {
         info!(
             "get_session(\"{}\") - X-Span-ID: {:?}",
+            session_id,
+            context.get().0.clone()
+        );
+        Err(ApiError("Api-Error: Operation is NOT implemented".into()))
+    }
+
+    /// Get the session's execution history
+    async fn get_session_history(
+        &self,
+        session_id: String,
+        context: &C,
+    ) -> Result<GetSessionHistoryResponse, ApiError> {
+        info!(
+            "get_session_history(\"{}\") - X-Span-ID: {:?}",
             session_id,
             context.get().0.clone()
         );

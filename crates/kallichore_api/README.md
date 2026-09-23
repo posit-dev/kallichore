@@ -14,7 +14,7 @@ To see how to make this your own, look here:
 [README]((https://openapi-generator.tech))
 
 - API version: 1.0.0
-- Build date: 2026-09-22T15:09:00.222197-07:00[America/Los_Angeles]
+- Build date: 2026-09-22T17:26:36.302813-07:00[America/Los_Angeles]
 - Generator version: 7.17.0
 
 For more information, please visit [https://posit.co](https://posit.co)
@@ -96,6 +96,7 @@ cargo run --example client ConnectionInfo
 cargo run --example client DeleteSession
 cargo run --example client DeregisterMcpWorkspace
 cargo run --example client GetSession
+cargo run --example client GetSessionHistory
 cargo run --example client InterruptSession
 cargo run --example client KillSession
 cargo run --example client McpWorkspaceChannel
@@ -151,6 +152,7 @@ Method | HTTP request | Description
 [**deregister-mcp-workspace**](docs/default_api.md#deregister-mcp-workspace) | **DELETE** /mcp/workspaces/{workspace_id} | Deregister a Positron workspace
 [**execute-code**](docs/default_api.md#execute-code) | **POST** /sessions/{session_id}/execute | Execute code and return results
 [**get-session**](docs/default_api.md#get-session) | **GET** /sessions/{session_id} | Get session details
+[**get-session-history**](docs/default_api.md#get-session-history) | **GET** /sessions/{session_id}/history | Get the session's execution history
 [**interrupt-session**](docs/default_api.md#interrupt-session) | **POST** /sessions/{session_id}/interrupt | Interrupt session
 [**kill-session**](docs/default_api.md#kill-session) | **POST** /sessions/{session_id}/kill | Force quit session
 [**mcp-workspace-channel**](docs/default_api.md#mcp-workspace-channel) | **GET** /mcp/workspaces/{workspace_id}/channel | Upgrade to a WebSocket carrying the MCP frontend channel
@@ -169,6 +171,8 @@ Method | HTTP request | Description
  - [ExecuteReply](docs/ExecuteReply.md)
  - [ExecuteReplyStatus](docs/ExecuteReplyStatus.md)
  - [ExecuteRequest](docs/ExecuteRequest.md)
+ - [ExecutionError](docs/ExecutionError.md)
+ - [ExecutionHistoryEntry](docs/ExecutionHistoryEntry.md)
  - [ExecutionQueue](docs/ExecutionQueue.md)
  - [InterruptMode](docs/InterruptMode.md)
  - [McpClient](docs/McpClient.md)

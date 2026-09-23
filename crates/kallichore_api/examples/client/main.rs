@@ -8,10 +8,10 @@ use kallichore_api::{
     models, AdoptSessionResponse, Api, ApiNoContext, ChannelsUpgradeResponse, Claims, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
     DeregisterMcpWorkspaceResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
-    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
-    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
-    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    GetSessionHistoryResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    ListSessionsResponse, McpWorkspaceChannelResponse, NewSessionResponse,
+    RegisterMcpWorkspaceResponse, RestartSessionResponse, ServerStatusResponse,
+    SetServerConfigurationResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 // NOTE: Set environment variable RUST_LOG to the name of the executable (or "cargo run") to activate console logging for all loglevels.
@@ -59,6 +59,7 @@ fn main() {
                     "DeregisterMcpWorkspace",
                     "ExecuteCode",
                     "GetSession",
+                    "GetSessionHistory",
                     "InterruptSession",
                     "KillSession",
                     "McpWorkspaceChannel",
@@ -260,6 +261,14 @@ fn main() {
         */
         Some("GetSession") => {
             let result = rt.block_on(client.get_session("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
+        Some("GetSessionHistory") => {
+            let result = rt.block_on(client.get_session_history("session_id_example".to_string()));
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,

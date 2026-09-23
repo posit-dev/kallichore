@@ -12,6 +12,7 @@
 pub mod client_session;
 pub mod connection_file;
 pub mod error;
+pub mod execution_history;
 pub mod execution_queue;
 pub mod heartbeat;
 pub mod jupyter_messages;
