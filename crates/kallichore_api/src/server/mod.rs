@@ -28,11 +28,12 @@ type ServiceFuture =
 
 use crate::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
-    ConnectionInfoResponse, DeleteSessionResponse, ExecuteCodeResponse,
-    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, DeregisterMcpWorkspaceResponse,
+    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionHistoryResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
+    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 
 mod server_auth;
@@ -43,6 +44,9 @@ mod paths {
     lazy_static! {
         pub static ref GLOBAL_REGEX_SET: regex::RegexSet = regex::RegexSet::new(vec![
             r"^/client_heartbeat$",
+            r"^/mcp/workspaces$",
+            r"^/mcp/workspaces/(?P<workspace_id>[^/?#]*)$",
+            r"^/mcp/workspaces/(?P<workspace_id>[^/?#]*)/channel$",
             r"^/server_configuration$",
             r"^/sessions$",
             r"^/sessions/(?P<session_id>[^/?#]*)$",
@@ -50,6 +54,7 @@ mod paths {
             r"^/sessions/(?P<session_id>[^/?#]*)/channels$",
             r"^/sessions/(?P<session_id>[^/?#]*)/connection_info$",
             r"^/sessions/(?P<session_id>[^/?#]*)/execute$",
+            r"^/sessions/(?P<session_id>[^/?#]*)/history$",
             r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$",
             r"^/sessions/(?P<session_id>[^/?#]*)/kill$",
             r"^/sessions/(?P<session_id>[^/?#]*)/restart$",
@@ -60,73 +65,95 @@ mod paths {
         .expect("Unable to create global regex set");
     }
     pub(crate) static ID_CLIENT_HEARTBEAT: usize = 0;
-    pub(crate) static ID_SERVER_CONFIGURATION: usize = 1;
-    pub(crate) static ID_SESSIONS: usize = 2;
-    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 3;
+    pub(crate) static ID_MCP_WORKSPACES: usize = 1;
+    pub(crate) static ID_MCP_WORKSPACES_WORKSPACE_ID: usize = 2;
+    lazy_static! {
+        pub static ref REGEX_MCP_WORKSPACES_WORKSPACE_ID: regex::Regex =
+            #[allow(clippy::invalid_regex)]
+            regex::Regex::new(r"^/mcp/workspaces/(?P<workspace_id>[^/?#]*)$")
+                .expect("Unable to create regex for MCP_WORKSPACES_WORKSPACE_ID");
+    }
+    pub(crate) static ID_MCP_WORKSPACES_WORKSPACE_ID_CHANNEL: usize = 3;
+    lazy_static! {
+        pub static ref REGEX_MCP_WORKSPACES_WORKSPACE_ID_CHANNEL: regex::Regex =
+            #[allow(clippy::invalid_regex)]
+            regex::Regex::new(r"^/mcp/workspaces/(?P<workspace_id>[^/?#]*)/channel$")
+                .expect("Unable to create regex for MCP_WORKSPACES_WORKSPACE_ID_CHANNEL");
+    }
+    pub(crate) static ID_SERVER_CONFIGURATION: usize = 4;
+    pub(crate) static ID_SESSIONS: usize = 5;
+    pub(crate) static ID_SESSIONS_SESSION_ID: usize = 6;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_ADOPT: usize = 4;
+    pub(crate) static ID_SESSIONS_SESSION_ID_ADOPT: usize = 7;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_ADOPT: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/adopt$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_ADOPT");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 5;
+    pub(crate) static ID_SESSIONS_SESSION_ID_CHANNELS: usize = 8;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_CHANNELS: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/channels$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CHANNELS");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_CONNECTION_INFO: usize = 6;
+    pub(crate) static ID_SESSIONS_SESSION_ID_CONNECTION_INFO: usize = 9;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_CONNECTION_INFO: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/connection_info$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_CONNECTION_INFO");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_EXECUTE: usize = 7;
+    pub(crate) static ID_SESSIONS_SESSION_ID_EXECUTE: usize = 10;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_EXECUTE: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/execute$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_EXECUTE");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 8;
+    pub(crate) static ID_SESSIONS_SESSION_ID_HISTORY: usize = 11;
+    lazy_static! {
+        pub static ref REGEX_SESSIONS_SESSION_ID_HISTORY: regex::Regex =
+            #[allow(clippy::invalid_regex)]
+            regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/history$")
+                .expect("Unable to create regex for SESSIONS_SESSION_ID_HISTORY");
+    }
+    pub(crate) static ID_SESSIONS_SESSION_ID_INTERRUPT: usize = 12;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_INTERRUPT: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/interrupt$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_INTERRUPT");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 9;
+    pub(crate) static ID_SESSIONS_SESSION_ID_KILL: usize = 13;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_KILL: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/kill$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_KILL");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 10;
+    pub(crate) static ID_SESSIONS_SESSION_ID_RESTART: usize = 14;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_RESTART: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/restart$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_RESTART");
     }
-    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 11;
+    pub(crate) static ID_SESSIONS_SESSION_ID_START: usize = 15;
     lazy_static! {
         pub static ref REGEX_SESSIONS_SESSION_ID_START: regex::Regex =
             #[allow(clippy::invalid_regex)]
             regex::Regex::new(r"^/sessions/(?P<session_id>[^/?#]*)/start$")
                 .expect("Unable to create regex for SESSIONS_SESSION_ID_START");
     }
-    pub(crate) static ID_SHUTDOWN: usize = 12;
-    pub(crate) static ID_STATUS: usize = 13;
+    pub(crate) static ID_SHUTDOWN: usize = 16;
+    pub(crate) static ID_STATUS: usize = 17;
 }
 
 pub struct MakeService<T, C>
@@ -549,6 +576,125 @@ where
                                         *response.body_mut() = body_from_string(body);
                                     }
                                     NewSessionResponse::Unauthorized => {
+                                        *response.status_mut() = StatusCode::from_u16(401)
+                                            .expect("Unable to turn 401 into a StatusCode");
+                                    }
+                                },
+                                Err(_) => {
+                                    // Application code returned an error. This should not happen, as the implementation should
+                                    // return a valid response.
+                                    *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                                    *response.body_mut() =
+                                        body_from_str("An internal error occurred");
+                                }
+                            }
+
+                            Ok(response)
+                        }
+                        Err(e) => Ok(Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(body_from_string(format!(
+                                "Unable to read body: {}",
+                                e.into()
+                            )))
+                            .expect(
+                                "Unable to create Bad Request response due to unable to read body",
+                            )),
+                    }
+                }
+
+                // RegisterMcpWorkspace - POST /mcp/workspaces
+                hyper::Method::POST if path.matched(paths::ID_MCP_WORKSPACES) => {
+                    // Handle body parameters (note that non-required body parameters will ignore garbage
+                    // values, rather than causing a 400 response). Produce warning header and logs for
+                    // any unused fields.
+                    let result = http_body_util::BodyExt::collect(body)
+                        .await
+                        .map(|f| f.to_bytes().to_vec());
+                    match result {
+                        Ok(body) => {
+                            let mut unused_elements: Vec<String> = vec![];
+                            let param_mcp_workspace_registration: Option<
+                                models::McpWorkspaceRegistration,
+                            > = if !body.is_empty() {
+                                let deserializer = &mut serde_json::Deserializer::from_slice(&body);
+                                match serde_ignored::deserialize(deserializer, |path| {
+                                            warn!("Ignoring unknown field in body: {path}");
+                                            unused_elements.push(path.to_string());
+                                    }) {
+                                        Ok(param_mcp_workspace_registration) => param_mcp_workspace_registration,
+                                        Err(e) => return Ok(Response::builder()
+                                                        .status(StatusCode::BAD_REQUEST)
+                                                        .body(BoxBody::new(format!("Couldn't parse body parameter McpWorkspaceRegistration - doesn't match schema: {e}")))
+                                                        .expect("Unable to create Bad Request response for invalid body parameter McpWorkspaceRegistration due to schema")),
+                                    }
+                            } else {
+                                None
+                            };
+                            let param_mcp_workspace_registration = match param_mcp_workspace_registration {
+                                    Some(param_mcp_workspace_registration) => param_mcp_workspace_registration,
+                                    None => return Ok(Response::builder()
+                                                        .status(StatusCode::BAD_REQUEST)
+                                                        .body(BoxBody::new("Missing required body parameter McpWorkspaceRegistration".to_string()))
+                                                        .expect("Unable to create Bad Request response for missing body parameter McpWorkspaceRegistration")),
+                                };
+
+                            let result = api_impl
+                                .register_mcp_workspace(param_mcp_workspace_registration, &context)
+                                .await;
+                            let mut response =
+                                Response::new(BoxBody::new(http_body_util::Empty::new()));
+                            response.headers_mut().insert(
+                                HeaderName::from_static("x-span-id"),
+                                HeaderValue::from_str(
+                                    (&context as &dyn Has<XSpanIdString>)
+                                        .get()
+                                        .0
+                                        .clone()
+                                        .as_str(),
+                                )
+                                .expect("Unable to create X-Span-ID header value"),
+                            );
+
+                            if !unused_elements.is_empty() {
+                                response.headers_mut().insert(
+                                    HeaderName::from_static("warning"),
+                                    HeaderValue::from_str(
+                                        format!(
+                                            "Ignoring unknown fields in body: {unused_elements:?}"
+                                        )
+                                        .as_str(),
+                                    )
+                                    .expect("Unable to create Warning header value"),
+                                );
+                            }
+                            match result {
+                                Ok(rsp) => match rsp {
+                                    RegisterMcpWorkspaceResponse::WorkspaceRegistered(body) => {
+                                        *response.status_mut() = StatusCode::from_u16(200)
+                                            .expect("Unable to turn 200 into a StatusCode");
+                                        response.headers_mut().insert(
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
+                                        // JSON Body
+                                        let body = serde_json::to_string(&body)
+                                            .expect("impossible to fail to serialize");
+                                        *response.body_mut() = body_from_string(body);
+                                    }
+                                    RegisterMcpWorkspaceResponse::InvalidRequest(body) => {
+                                        *response.status_mut() = StatusCode::from_u16(400)
+                                            .expect("Unable to turn 400 into a StatusCode");
+                                        response.headers_mut().insert(
+                                            CONTENT_TYPE,
+                                            HeaderValue::from_static("application/json"),
+                                        );
+                                        // JSON Body
+                                        let body = serde_json::to_string(&body)
+                                            .expect("impossible to fail to serialize");
+                                        *response.body_mut() = body_from_string(body);
+                                    }
+                                    RegisterMcpWorkspaceResponse::Unauthorized => {
                                         *response.status_mut() = StatusCode::from_u16(401)
                                             .expect("Unable to turn 401 into a StatusCode");
                                     }
@@ -1206,6 +1352,73 @@ where
                     Ok(response)
                 }
 
+                // DeregisterMcpWorkspace - DELETE /mcp/workspaces/{workspace_id}
+                hyper::Method::DELETE if path.matched(paths::ID_MCP_WORKSPACES_WORKSPACE_ID) => {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_MCP_WORKSPACES_WORKSPACE_ID
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE MCP_WORKSPACES_WORKSPACE_ID in set but failed match against \"{}\"", path, paths::REGEX_MCP_WORKSPACES_WORKSPACE_ID.as_str())
+                    );
+
+                    let param_workspace_id = match percent_encoding::percent_decode(path_params["workspace_id"].as_bytes()).decode_utf8() {
+                    Ok(param_workspace_id) => match param_workspace_id.parse::<String>() {
+                        Ok(param_workspace_id) => param_workspace_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(body_from_string(format!("Couldn't parse path parameter workspace_id: {e}")))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["workspace_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
+                    let result = api_impl
+                        .deregister_mcp_workspace(param_workspace_id, &context)
+                        .await;
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            DeregisterMcpWorkspaceResponse::WorkspaceDeregistered => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                            }
+                            DeregisterMcpWorkspaceResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            DeregisterMcpWorkspaceResponse::WorkspaceNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = body_from_str("An internal error occurred");
+                        }
+                    }
+
+                    Ok(response)
+                }
+
                 // ExecuteCode - POST /sessions/{session_id}/execute
                 hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_EXECUTE) => {
                     // Path parameters
@@ -1445,6 +1658,81 @@ where
                     Ok(response)
                 }
 
+                // GetSessionHistory - GET /sessions/{session_id}/history
+                hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_HISTORY) => {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_SESSIONS_SESSION_ID_HISTORY
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE SESSIONS_SESSION_ID_HISTORY in set but failed match against \"{}\"", path, paths::REGEX_SESSIONS_SESSION_ID_HISTORY.as_str())
+                    );
+
+                    let param_session_id = match percent_encoding::percent_decode(path_params["session_id"].as_bytes()).decode_utf8() {
+                    Ok(param_session_id) => match param_session_id.parse::<String>() {
+                        Ok(param_session_id) => param_session_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(body_from_string(format!("Couldn't parse path parameter session_id: {e}")))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["session_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
+                    let result = api_impl
+                        .get_session_history(param_session_id, &context)
+                        .await;
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            GetSessionHistoryResponse::ExecutionHistory(body) => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            GetSessionHistoryResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            GetSessionHistoryResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = body_from_str("An internal error occurred");
+                        }
+                    }
+
+                    Ok(response)
+                }
+
                 // InterruptSession - POST /sessions/{session_id}/interrupt
                 hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
                     // Path parameters
@@ -1600,6 +1888,87 @@ where
                                     .expect("Unable to turn 401 into a StatusCode");
                             }
                             KillSessionResponse::SessionNotFound => {
+                                *response.status_mut() = StatusCode::from_u16(404)
+                                    .expect("Unable to turn 404 into a StatusCode");
+                            }
+                        },
+                        Err(_) => {
+                            // Application code returned an error. This should not happen, as the implementation should
+                            // return a valid response.
+                            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                            *response.body_mut() = body_from_str("An internal error occurred");
+                        }
+                    }
+
+                    Ok(response)
+                }
+
+                // McpWorkspaceChannel - GET /mcp/workspaces/{workspace_id}/channel
+                hyper::Method::GET
+                    if path.matched(paths::ID_MCP_WORKSPACES_WORKSPACE_ID_CHANNEL) =>
+                {
+                    // Path parameters
+                    let path: &str = uri.path();
+                    let path_params =
+                    paths::REGEX_MCP_WORKSPACES_WORKSPACE_ID_CHANNEL
+                    .captures(path)
+                    .unwrap_or_else(||
+                        panic!("Path {} matched RE MCP_WORKSPACES_WORKSPACE_ID_CHANNEL in set but failed match against \"{}\"", path, paths::REGEX_MCP_WORKSPACES_WORKSPACE_ID_CHANNEL.as_str())
+                    );
+
+                    let param_workspace_id = match percent_encoding::percent_decode(path_params["workspace_id"].as_bytes()).decode_utf8() {
+                    Ok(param_workspace_id) => match param_workspace_id.parse::<String>() {
+                        Ok(param_workspace_id) => param_workspace_id,
+                        Err(e) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(body_from_string(format!("Couldn't parse path parameter workspace_id: {e}")))
+                                        .expect("Unable to create Bad Request response for invalid path parameter")),
+                    },
+                    Err(_) => return Ok(Response::builder()
+                                        .status(StatusCode::BAD_REQUEST)
+                                        .body(body_from_string(format!("Couldn't percent-decode path parameter as UTF-8: {}", &path_params["workspace_id"])))
+                                        .expect("Unable to create Bad Request response for invalid percent decode"))
+                };
+
+                    let result = api_impl
+                        .mcp_workspace_channel(param_workspace_id, &context)
+                        .await;
+                    let mut response = Response::new(BoxBody::new(http_body_util::Empty::new()));
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-span-id"),
+                        HeaderValue::from_str(
+                            (&context as &dyn Has<XSpanIdString>)
+                                .get()
+                                .0
+                                .clone()
+                                .as_str(),
+                        )
+                        .expect("Unable to create X-Span-ID header value"),
+                    );
+
+                    match result {
+                        Ok(rsp) => match rsp {
+                            McpWorkspaceChannelResponse::UpgradedConnection => {
+                                *response.status_mut() = StatusCode::from_u16(200)
+                                    .expect("Unable to turn 200 into a StatusCode");
+                            }
+                            McpWorkspaceChannelResponse::InvalidRequest(body) => {
+                                *response.status_mut() = StatusCode::from_u16(400)
+                                    .expect("Unable to turn 400 into a StatusCode");
+                                response.headers_mut().insert(
+                                    CONTENT_TYPE,
+                                    HeaderValue::from_static("application/json"),
+                                );
+                                // JSON Body
+                                let body = serde_json::to_string(&body)
+                                    .expect("impossible to fail to serialize");
+                                *response.body_mut() = body_from_string(body);
+                            }
+                            McpWorkspaceChannelResponse::Unauthorized => {
+                                *response.status_mut() = StatusCode::from_u16(401)
+                                    .expect("Unable to turn 401 into a StatusCode");
+                            }
+                            McpWorkspaceChannelResponse::WorkspaceNotFound => {
                                 *response.status_mut() = StatusCode::from_u16(404)
                                     .expect("Unable to turn 404 into a StatusCode");
                             }
@@ -1835,6 +2204,11 @@ where
                 }
 
                 _ if path.matched(paths::ID_CLIENT_HEARTBEAT) => method_not_allowed(),
+                _ if path.matched(paths::ID_MCP_WORKSPACES) => method_not_allowed(),
+                _ if path.matched(paths::ID_MCP_WORKSPACES_WORKSPACE_ID) => method_not_allowed(),
+                _ if path.matched(paths::ID_MCP_WORKSPACES_WORKSPACE_ID_CHANNEL) => {
+                    method_not_allowed()
+                }
                 _ if path.matched(paths::ID_SERVER_CONFIGURATION) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID) => method_not_allowed(),
@@ -1844,6 +2218,7 @@ where
                     method_not_allowed()
                 }
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_EXECUTE) => method_not_allowed(),
+                _ if path.matched(paths::ID_SESSIONS_SESSION_ID_HISTORY) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => method_not_allowed(),
                 _ if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => method_not_allowed(),
@@ -1878,6 +2253,10 @@ impl<T> RequestParser<T> for ApiRequestParser {
             hyper::Method::GET if path.matched(paths::ID_SESSIONS) => Some("ListSessions"),
             // NewSession - PUT /sessions
             hyper::Method::PUT if path.matched(paths::ID_SESSIONS) => Some("NewSession"),
+            // RegisterMcpWorkspace - POST /mcp/workspaces
+            hyper::Method::POST if path.matched(paths::ID_MCP_WORKSPACES) => {
+                Some("RegisterMcpWorkspace")
+            }
             // ServerStatus - GET /status
             hyper::Method::GET if path.matched(paths::ID_STATUS) => Some("ServerStatus"),
             // SetServerConfiguration - POST /server_configuration
@@ -1902,12 +2281,20 @@ impl<T> RequestParser<T> for ApiRequestParser {
             hyper::Method::DELETE if path.matched(paths::ID_SESSIONS_SESSION_ID) => {
                 Some("DeleteSession")
             }
+            // DeregisterMcpWorkspace - DELETE /mcp/workspaces/{workspace_id}
+            hyper::Method::DELETE if path.matched(paths::ID_MCP_WORKSPACES_WORKSPACE_ID) => {
+                Some("DeregisterMcpWorkspace")
+            }
             // ExecuteCode - POST /sessions/{session_id}/execute
             hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_EXECUTE) => {
                 Some("ExecuteCode")
             }
             // GetSession - GET /sessions/{session_id}
             hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID) => Some("GetSession"),
+            // GetSessionHistory - GET /sessions/{session_id}/history
+            hyper::Method::GET if path.matched(paths::ID_SESSIONS_SESSION_ID_HISTORY) => {
+                Some("GetSessionHistory")
+            }
             // InterruptSession - POST /sessions/{session_id}/interrupt
             hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_INTERRUPT) => {
                 Some("InterruptSession")
@@ -1915,6 +2302,10 @@ impl<T> RequestParser<T> for ApiRequestParser {
             // KillSession - POST /sessions/{session_id}/kill
             hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_KILL) => {
                 Some("KillSession")
+            }
+            // McpWorkspaceChannel - GET /mcp/workspaces/{workspace_id}/channel
+            hyper::Method::GET if path.matched(paths::ID_MCP_WORKSPACES_WORKSPACE_ID_CHANNEL) => {
+                Some("McpWorkspaceChannel")
             }
             // RestartSession - POST /sessions/{session_id}/restart
             hyper::Method::POST if path.matched(paths::ID_SESSIONS_SESSION_ID_RESTART) => {

@@ -66,6 +66,13 @@ impl ExecutionQueue {
         }
     }
 
+    /// Remove a pending request. Returns true if it was pending.
+    pub fn remove_pending(&mut self, msg_id: &str) -> bool {
+        let before = self.pending.len();
+        self.pending.retain(|msg| msg.header.msg_id != msg_id);
+        self.pending.len() != before
+    }
+
     /// Gets the next request to execute, if any
     pub fn next_request(&mut self) -> Option<JupyterMessage> {
         let req = self.pending.pop_front();

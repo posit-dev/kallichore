@@ -9,7 +9,7 @@ authors.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hyper = { version = "1.6", features = ["http1", "http2", "server"] }
+hyper = { version = "1.6", features = ["http1", "http2", "server", "client"] }
 http-body-util = "0.1"
 tokio = { version = "1", features = ["full"] }
 kallichore_api = { path = "../kallichore_api", default-features = false, features = [
@@ -51,6 +51,11 @@ percent-encoding = "2.3.1"
 tower = { version = "0.5", features = ["util"] }
 http = "1.2"
 pin-project-lite = "0.2"
+rmcp = { version = "3.3", default-features = false, features = ["server", "transport-streamable-http-server", "schemars", "macros"] }
+tokio-util = "0.7"
+# rmcp reports protocol errors through `tracing`; forward them to `log`. Release
+# builds keep only warnings and errors, since rmcp logs every request at info.
+tracing = { version = "0.1", features = ["log", "release_max_level_warn"] }
 
 [target.'cfg(unix)'.dependencies]
 hyperlocal-next = "0.9"

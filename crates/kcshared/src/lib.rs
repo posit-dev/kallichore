@@ -17,3 +17,6 @@ pub mod handshake_protocol;
 
 /// Port picker for finding free TCP ports
 pub mod port_picker;
+
+/// MCP frontend channel message types
+pub mod mcp_frontend;

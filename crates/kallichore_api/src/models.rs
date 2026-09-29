@@ -96,6 +96,11 @@ pub struct ActiveSession {
     #[serde(rename = "socket_path")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<String>,
+
+    /// The last few executions the session ran, oldest first. The full history is available from the session's history endpoint.
+    #[serde(rename = "history")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<Vec<models::ExecutionHistoryEntry>>,
 }
 
 impl ActiveSession {
@@ -142,6 +147,7 @@ impl ActiveSession {
             idle_seconds,
             busy_seconds,
             socket_path: None,
+            history: None,
         }
     }
 }
@@ -197,6 +203,7 @@ impl std::fmt::Display for ActiveSession {
             self.socket_path
                 .as_ref()
                 .map(|socket_path| ["socket_path".to_string(), socket_path.to_string()].join(",")),
+            // Skipping non-primitive type history in query parameter serialization
         ];
 
         write!(
@@ -240,6 +247,7 @@ impl std::str::FromStr for ActiveSession {
             pub idle_seconds: Vec<i32>,
             pub busy_seconds: Vec<i32>,
             pub socket_path: Vec<String>,
+            pub history: Vec<Vec<models::ExecutionHistoryEntry>>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -360,6 +368,12 @@ impl std::str::FromStr for ActiveSession {
                     "socket_path" => intermediate_rep.socket_path.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    "history" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in ActiveSession"
+                                .to_string(),
+                        )
+                    }
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing ActiveSession".to_string(),
@@ -464,6 +478,7 @@ impl std::str::FromStr for ActiveSession {
                 .next()
                 .ok_or_else(|| "busy_seconds missing in ActiveSession".to_string())?,
             socket_path: intermediate_rep.socket_path.into_iter().next(),
+            history: intermediate_rep.history.into_iter().next(),
         })
     }
 }
@@ -2452,6 +2467,532 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
     }
 }
 
+/// The error an execution raised
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ExecutionError {
+    /// The error's name, such as its exception class
+    #[serde(rename = "name")]
+    pub name: String,
+
+    /// The error message
+    #[serde(rename = "message")]
+    pub message: String,
+
+    /// The traceback, one frame or line per item
+    #[serde(rename = "traceback")]
+    pub traceback: Vec<String>,
+}
+
+impl ExecutionError {
+    #[allow(clippy::new_without_default)]
+    pub fn new(name: String, message: String, traceback: Vec<String>) -> ExecutionError {
+        ExecutionError {
+            name,
+            message,
+            traceback,
+        }
+    }
+}
+
+/// Converts the ExecutionError value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for ExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("name".to_string()),
+            Some(self.name.to_string()),
+            Some("message".to_string()),
+            Some(self.message.to_string()),
+            Some("traceback".to_string()),
+            Some(
+                self.traceback
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ExecutionError value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ExecutionError {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub name: Vec<String>,
+            pub message: Vec<String>,
+            pub traceback: Vec<Vec<String>>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ExecutionError".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "name" => intermediate_rep.name.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "message" => intermediate_rep.message.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    "traceback" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in ExecutionError"
+                                .to_string(),
+                        )
+                    }
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ExecutionError".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ExecutionError {
+            name: intermediate_rep
+                .name
+                .into_iter()
+                .next()
+                .ok_or_else(|| "name missing in ExecutionError".to_string())?,
+            message: intermediate_rep
+                .message
+                .into_iter()
+                .next()
+                .ok_or_else(|| "message missing in ExecutionError".to_string())?,
+            traceback: intermediate_rep
+                .traceback
+                .into_iter()
+                .next()
+                .ok_or_else(|| "traceback missing in ExecutionError".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ExecutionError> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ExecutionError>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ExecutionError>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for ExecutionError - value: {hdr_value} is invalid {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<ExecutionError> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <ExecutionError as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{value}' into ExecutionError - {err}"
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {hdr_value:?} to string: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ExecutionError>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ExecutionError>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ExecutionError>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<ExecutionError> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <ExecutionError as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into ExecutionError - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
+/// Code a session ran and what it produced. Input and output are clipped to a few kilobytes each, keeping their beginning and end.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct ExecutionHistoryEntry {
+    /// The code that was run
+    #[serde(rename = "input")]
+    pub input: String,
+
+    /// The text the code produced: standard output and error, displays, and the result, in the order they arrived
+    #[serde(rename = "output")]
+    pub output: String,
+
+    #[serde(rename = "error")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<models::ExecutionError>,
+
+    /// A Unix timestamp in milliseconds indicating when the code was sent to the kernel
+    #[serde(rename = "timestamp")]
+    pub timestamp: i64,
+
+    /// What submitted the code, when known, such as 'agent', 'interactive', or 'script'
+    #[serde(rename = "source")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
+    /// The name of the agent that submitted the code, when it was an agent
+    #[serde(rename = "agent")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+
+    /// Whether any part of the entry was clipped
+    #[serde(rename = "truncated")]
+    pub truncated: bool,
+}
+
+impl ExecutionHistoryEntry {
+    #[allow(clippy::new_without_default)]
+    pub fn new(
+        input: String,
+        output: String,
+        timestamp: i64,
+        truncated: bool,
+    ) -> ExecutionHistoryEntry {
+        ExecutionHistoryEntry {
+            input,
+            output,
+            error: None,
+            timestamp,
+            source: None,
+            agent: None,
+            truncated,
+        }
+    }
+}
+
+/// Converts the ExecutionHistoryEntry value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for ExecutionHistoryEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("input".to_string()),
+            Some(self.input.to_string()),
+            Some("output".to_string()),
+            Some(self.output.to_string()),
+            // Skipping non-primitive type error in query parameter serialization
+            Some("timestamp".to_string()),
+            Some(self.timestamp.to_string()),
+            self.source
+                .as_ref()
+                .map(|source| ["source".to_string(), source.to_string()].join(",")),
+            self.agent
+                .as_ref()
+                .map(|agent| ["agent".to_string(), agent.to_string()].join(",")),
+            Some("truncated".to_string()),
+            Some(self.truncated.to_string()),
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a ExecutionHistoryEntry value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for ExecutionHistoryEntry {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub input: Vec<String>,
+            pub output: Vec<String>,
+            pub error: Vec<models::ExecutionError>,
+            pub timestamp: Vec<i64>,
+            pub source: Vec<String>,
+            pub agent: Vec<String>,
+            pub truncated: Vec<bool>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing ExecutionHistoryEntry".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "input" => intermediate_rep.input.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "output" => intermediate_rep.output.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "error" => intermediate_rep.error.push(
+                        <models::ExecutionError as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "timestamp" => intermediate_rep.timestamp.push(
+                        <i64 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "source" => intermediate_rep.source.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "agent" => intermediate_rep.agent.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "truncated" => intermediate_rep.truncated.push(
+                        <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing ExecutionHistoryEntry".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(ExecutionHistoryEntry {
+            input: intermediate_rep
+                .input
+                .into_iter()
+                .next()
+                .ok_or_else(|| "input missing in ExecutionHistoryEntry".to_string())?,
+            output: intermediate_rep
+                .output
+                .into_iter()
+                .next()
+                .ok_or_else(|| "output missing in ExecutionHistoryEntry".to_string())?,
+            error: intermediate_rep.error.into_iter().next(),
+            timestamp: intermediate_rep
+                .timestamp
+                .into_iter()
+                .next()
+                .ok_or_else(|| "timestamp missing in ExecutionHistoryEntry".to_string())?,
+            source: intermediate_rep.source.into_iter().next(),
+            agent: intermediate_rep.agent.into_iter().next(),
+            truncated: intermediate_rep
+                .truncated
+                .into_iter()
+                .next()
+                .ok_or_else(|| "truncated missing in ExecutionHistoryEntry".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<ExecutionHistoryEntry> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<ExecutionHistoryEntry>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<ExecutionHistoryEntry>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+             std::result::Result::Ok(value) => std::result::Result::Ok(value),
+             std::result::Result::Err(e) => std::result::Result::Err(
+                 format!("Invalid header value for ExecutionHistoryEntry - value: {hdr_value} is invalid {e}"))
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<ExecutionHistoryEntry>
+{
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+             std::result::Result::Ok(value) => {
+                    match <ExecutionHistoryEntry as std::str::FromStr>::from_str(value) {
+                        std::result::Result::Ok(value) => std::result::Result::Ok(header::IntoHeaderValue(value)),
+                        std::result::Result::Err(err) => std::result::Result::Err(
+                            format!("Unable to convert header value '{value}' into ExecutionHistoryEntry - {err}"))
+                    }
+             },
+             std::result::Result::Err(e) => std::result::Result::Err(
+                 format!("Unable to convert header: {hdr_value:?} to string: {e}"))
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<ExecutionHistoryEntry>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<ExecutionHistoryEntry>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<ExecutionHistoryEntry>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<ExecutionHistoryEntry> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <ExecutionHistoryEntry as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into ExecutionHistoryEntry - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
 /// The execution queue for a session
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
@@ -2812,6 +3353,1263 @@ impl std::convert::TryFrom<hyper::header::HeaderValue>
     }
 }
 
+/// An agent connected to a workspace through the stdio bridge
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct McpClient {
+    /// Identifies the client within its workspace
+    #[serde(rename = "id")]
+    pub id: i32,
+
+    /// The agent's name, from the MCP clientInfo
+    #[serde(rename = "name")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// The agent's version, from the MCP clientInfo
+    #[serde(rename = "version")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+
+    /// The process ID of the bridge
+    #[serde(rename = "pid")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i32>,
+
+    /// The bridge's working directory, normally the agent's
+    #[serde(rename = "working_directory")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+
+    /// The session the client is running inside, for a client in a kernel
+    #[serde(rename = "session_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+
+    /// When the client connected
+    #[serde(rename = "connected_at")]
+    pub connected_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl McpClient {
+    #[allow(clippy::new_without_default)]
+    pub fn new(id: i32, connected_at: chrono::DateTime<chrono::Utc>) -> McpClient {
+        McpClient {
+            id,
+            name: None,
+            version: None,
+            pid: None,
+            working_directory: None,
+            session_id: None,
+            connected_at,
+        }
+    }
+}
+
+/// Converts the McpClient value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for McpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("id".to_string()),
+            Some(self.id.to_string()),
+            self.name
+                .as_ref()
+                .map(|name| ["name".to_string(), name.to_string()].join(",")),
+            self.version
+                .as_ref()
+                .map(|version| ["version".to_string(), version.to_string()].join(",")),
+            self.pid
+                .as_ref()
+                .map(|pid| ["pid".to_string(), pid.to_string()].join(",")),
+            self.working_directory.as_ref().map(|working_directory| {
+                [
+                    "working_directory".to_string(),
+                    working_directory.to_string(),
+                ]
+                .join(",")
+            }),
+            self.session_id
+                .as_ref()
+                .map(|session_id| ["session_id".to_string(), session_id.to_string()].join(",")),
+            // Skipping non-primitive type connected_at in query parameter serialization
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a McpClient value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for McpClient {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub id: Vec<i32>,
+            pub name: Vec<String>,
+            pub version: Vec<String>,
+            pub pid: Vec<i32>,
+            pub working_directory: Vec<String>,
+            pub session_id: Vec<String>,
+            pub connected_at: Vec<chrono::DateTime<chrono::Utc>>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing McpClient".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "id" => intermediate_rep.id.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "name" => intermediate_rep.name.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "version" => intermediate_rep.version.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "pid" => intermediate_rep.pid.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "working_directory" => intermediate_rep.working_directory.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "session_id" => intermediate_rep.session_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "connected_at" => intermediate_rep.connected_at.push(
+                        <chrono::DateTime<chrono::Utc> as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing McpClient".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(McpClient {
+            id: intermediate_rep
+                .id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "id missing in McpClient".to_string())?,
+            name: intermediate_rep.name.into_iter().next(),
+            version: intermediate_rep.version.into_iter().next(),
+            pid: intermediate_rep.pid.into_iter().next(),
+            working_directory: intermediate_rep.working_directory.into_iter().next(),
+            session_id: intermediate_rep.session_id.into_iter().next(),
+            connected_at: intermediate_rep
+                .connected_at
+                .into_iter()
+                .next()
+                .ok_or_else(|| "connected_at missing in McpClient".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<McpClient> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<McpClient>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<McpClient>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for McpClient - value: {hdr_value} is invalid {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<McpClient> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <McpClient as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{value}' into McpClient - {err}"
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {hdr_value:?} to string: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<McpClient>>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<McpClient>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<Vec<McpClient>> {
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<McpClient> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <McpClient as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into McpClient - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct McpStatus {
+    /// Whether the MCP listener is running
+    #[serde(rename = "active")]
+    pub active: bool,
+
+    /// The port the MCP listener is bound to, or 0 when inactive
+    #[serde(rename = "port")]
+    pub port: i32,
+
+    /// The number of MCP tool calls served since the listener started
+    #[serde(rename = "request_count")]
+    pub request_count: i32,
+
+    #[serde(rename = "workspaces")]
+    pub workspaces: Vec<models::McpWorkspaceStatus>,
+}
+
+impl McpStatus {
+    #[allow(clippy::new_without_default)]
+    pub fn new(
+        active: bool,
+        port: i32,
+        request_count: i32,
+        workspaces: Vec<models::McpWorkspaceStatus>,
+    ) -> McpStatus {
+        McpStatus {
+            active,
+            port,
+            request_count,
+            workspaces,
+        }
+    }
+}
+
+/// Converts the McpStatus value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for McpStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("active".to_string()),
+            Some(self.active.to_string()),
+            Some("port".to_string()),
+            Some(self.port.to_string()),
+            Some("request_count".to_string()),
+            Some(self.request_count.to_string()),
+            // Skipping non-primitive type workspaces in query parameter serialization
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a McpStatus value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for McpStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub active: Vec<bool>,
+            pub port: Vec<i32>,
+            pub request_count: Vec<i32>,
+            pub workspaces: Vec<Vec<models::McpWorkspaceStatus>>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing McpStatus".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "active" => intermediate_rep.active.push(
+                        <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "port" => intermediate_rep.port.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "request_count" => intermediate_rep.request_count.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    "workspaces" => {
+                        return std::result::Result::Err(
+                            "Parsing a container in this style is not supported in McpStatus"
+                                .to_string(),
+                        )
+                    }
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing McpStatus".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(McpStatus {
+            active: intermediate_rep
+                .active
+                .into_iter()
+                .next()
+                .ok_or_else(|| "active missing in McpStatus".to_string())?,
+            port: intermediate_rep
+                .port
+                .into_iter()
+                .next()
+                .ok_or_else(|| "port missing in McpStatus".to_string())?,
+            request_count: intermediate_rep
+                .request_count
+                .into_iter()
+                .next()
+                .ok_or_else(|| "request_count missing in McpStatus".to_string())?,
+            workspaces: intermediate_rep
+                .workspaces
+                .into_iter()
+                .next()
+                .ok_or_else(|| "workspaces missing in McpStatus".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<McpStatus> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<McpStatus>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<McpStatus>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for McpStatus - value: {hdr_value} is invalid {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<McpStatus> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <McpStatus as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{value}' into McpStatus - {err}"
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {hdr_value:?} to string: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<McpStatus>>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<McpStatus>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<Vec<McpStatus>> {
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<McpStatus> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <McpStatus as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into McpStatus - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct McpWorkspace {
+    /// The workspace's ID; supply it again to re-register after a reconnect
+    #[serde(rename = "workspace_id")]
+    pub workspace_id: String,
+
+    /// The bearer token agents present to the MCP server. Scoped to this workspace and distinct from the supervisor API token.
+    #[serde(rename = "token")]
+    pub token: String,
+
+    /// The TCP port the MCP listener is bound to on 127.0.0.1
+    #[serde(rename = "port")]
+    pub port: i32,
+
+    /// The full MCP endpoint URL agents should connect to. Unique to this workspace, so an agent configured with it can only reach this workspace's sessions.
+    #[serde(rename = "url")]
+    pub url: String,
+}
+
+impl McpWorkspace {
+    #[allow(clippy::new_without_default)]
+    pub fn new(workspace_id: String, token: String, port: i32, url: String) -> McpWorkspace {
+        McpWorkspace {
+            workspace_id,
+            token,
+            port,
+            url,
+        }
+    }
+}
+
+/// Converts the McpWorkspace value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for McpWorkspace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("workspace_id".to_string()),
+            Some(self.workspace_id.to_string()),
+            Some("token".to_string()),
+            Some(self.token.to_string()),
+            Some("port".to_string()),
+            Some(self.port.to_string()),
+            Some("url".to_string()),
+            Some(self.url.to_string()),
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a McpWorkspace value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for McpWorkspace {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub workspace_id: Vec<String>,
+            pub token: Vec<String>,
+            pub port: Vec<i32>,
+            pub url: Vec<String>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing McpWorkspace".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "workspace_id" => intermediate_rep.workspace_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "token" => intermediate_rep.token.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "port" => intermediate_rep.port.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "url" => intermediate_rep.url.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing McpWorkspace".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(McpWorkspace {
+            workspace_id: intermediate_rep
+                .workspace_id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "workspace_id missing in McpWorkspace".to_string())?,
+            token: intermediate_rep
+                .token
+                .into_iter()
+                .next()
+                .ok_or_else(|| "token missing in McpWorkspace".to_string())?,
+            port: intermediate_rep
+                .port
+                .into_iter()
+                .next()
+                .ok_or_else(|| "port missing in McpWorkspace".to_string())?,
+            url: intermediate_rep
+                .url
+                .into_iter()
+                .next()
+                .ok_or_else(|| "url missing in McpWorkspace".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<McpWorkspace> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<McpWorkspace>> for hyper::header::HeaderValue {
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<McpWorkspace>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for McpWorkspace - value: {hdr_value} is invalid {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue> for header::IntoHeaderValue<McpWorkspace> {
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <McpWorkspace as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{value}' into McpWorkspace - {err}"
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {hdr_value:?} to string: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<McpWorkspace>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<McpWorkspace>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<McpWorkspace>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<McpWorkspace> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <McpWorkspace as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into McpWorkspace - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct McpWorkspaceRegistration {
+    /// A previously issued workspace ID. Omit to have the server generate one from the display name.
+    #[serde(rename = "workspace_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+
+    /// A human-readable name for the workspace, normally the folder the user has open. Shown in logs and status, and used to build the workspace ID.
+    #[serde(rename = "display_name")]
+    pub display_name: String,
+
+    /// The TCP port the MCP listener should bind. Used only when the listener isn't running yet, and ignored when the port is unavailable.
+    #[serde(rename = "preferred_port")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_port: Option<i32>,
+
+    /// A bearer token the server issued for this workspace before. Supplying it again keeps the token agents are configured with valid across a restart of the server, which holds no state of its own. Omit it to have the server issue one, and ignored unless it is well formed.
+    #[serde(rename = "token")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl McpWorkspaceRegistration {
+    #[allow(clippy::new_without_default)]
+    pub fn new(display_name: String) -> McpWorkspaceRegistration {
+        McpWorkspaceRegistration {
+            workspace_id: None,
+            display_name,
+            preferred_port: None,
+            token: None,
+        }
+    }
+}
+
+/// Converts the McpWorkspaceRegistration value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for McpWorkspaceRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            self.workspace_id.as_ref().map(|workspace_id| {
+                ["workspace_id".to_string(), workspace_id.to_string()].join(",")
+            }),
+            Some("display_name".to_string()),
+            Some(self.display_name.to_string()),
+            self.preferred_port.as_ref().map(|preferred_port| {
+                ["preferred_port".to_string(), preferred_port.to_string()].join(",")
+            }),
+            self.token
+                .as_ref()
+                .map(|token| ["token".to_string(), token.to_string()].join(",")),
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a McpWorkspaceRegistration value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for McpWorkspaceRegistration {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub workspace_id: Vec<String>,
+            pub display_name: Vec<String>,
+            pub preferred_port: Vec<i32>,
+            pub token: Vec<String>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing McpWorkspaceRegistration".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "workspace_id" => intermediate_rep.workspace_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "display_name" => intermediate_rep.display_name.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "preferred_port" => intermediate_rep.preferred_port.push(
+                        <i32 as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "token" => intermediate_rep.token.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing McpWorkspaceRegistration".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(McpWorkspaceRegistration {
+            workspace_id: intermediate_rep.workspace_id.into_iter().next(),
+            display_name: intermediate_rep
+                .display_name
+                .into_iter()
+                .next()
+                .ok_or_else(|| "display_name missing in McpWorkspaceRegistration".to_string())?,
+            preferred_port: intermediate_rep.preferred_port.into_iter().next(),
+            token: intermediate_rep.token.into_iter().next(),
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<McpWorkspaceRegistration> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<McpWorkspaceRegistration>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<McpWorkspaceRegistration>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+             std::result::Result::Ok(value) => std::result::Result::Ok(value),
+             std::result::Result::Err(e) => std::result::Result::Err(
+                 format!("Invalid header value for McpWorkspaceRegistration - value: {hdr_value} is invalid {e}"))
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<McpWorkspaceRegistration>
+{
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+             std::result::Result::Ok(value) => {
+                    match <McpWorkspaceRegistration as std::str::FromStr>::from_str(value) {
+                        std::result::Result::Ok(value) => std::result::Result::Ok(header::IntoHeaderValue(value)),
+                        std::result::Result::Err(err) => std::result::Result::Err(
+                            format!("Unable to convert header value '{value}' into McpWorkspaceRegistration - {err}"))
+                    }
+             },
+             std::result::Result::Err(e) => std::result::Result::Err(
+                 format!("Unable to convert header: {hdr_value:?} to string: {e}"))
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<McpWorkspaceRegistration>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<McpWorkspaceRegistration>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<McpWorkspaceRegistration>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<McpWorkspaceRegistration> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <McpWorkspaceRegistration as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into McpWorkspaceRegistration - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
+#[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
+pub struct McpWorkspaceStatus {
+    #[serde(rename = "id")]
+    pub id: String,
+
+    #[serde(rename = "display_name")]
+    pub display_name: String,
+
+    /// Whether any of the workspace's windows is currently connected
+    #[serde(rename = "connected")]
+    pub connected: bool,
+
+    /// The agents connected to the workspace through the stdio bridge
+    #[serde(rename = "clients")]
+    pub clients: Vec<models::McpClient>,
+}
+
+impl McpWorkspaceStatus {
+    #[allow(clippy::new_without_default)]
+    pub fn new(
+        id: String,
+        display_name: String,
+        connected: bool,
+        clients: Vec<models::McpClient>,
+    ) -> McpWorkspaceStatus {
+        McpWorkspaceStatus {
+            id,
+            display_name,
+            connected,
+            clients,
+        }
+    }
+}
+
+/// Converts the McpWorkspaceStatus value to the Query Parameters representation (style=form, explode=false)
+/// specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde serializer
+impl std::fmt::Display for McpWorkspaceStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params: Vec<Option<String>> = vec![
+            Some("id".to_string()),
+            Some(self.id.to_string()),
+            Some("display_name".to_string()),
+            Some(self.display_name.to_string()),
+            Some("connected".to_string()),
+            Some(self.connected.to_string()),
+            // Skipping non-primitive type clients in query parameter serialization
+        ];
+
+        write!(
+            f,
+            "{}",
+            params.into_iter().flatten().collect::<Vec<_>>().join(",")
+        )
+    }
+}
+
+/// Converts Query Parameters representation (style=form, explode=false) to a McpWorkspaceStatus value
+/// as specified in <https://swagger.io/docs/specification/serialization/>
+/// Should be implemented in a serde deserializer
+impl std::str::FromStr for McpWorkspaceStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        /// An intermediate representation of the struct to use for parsing.
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct IntermediateRep {
+            pub id: Vec<String>,
+            pub display_name: Vec<String>,
+            pub connected: Vec<bool>,
+            pub clients: Vec<Vec<models::McpClient>>,
+        }
+
+        let mut intermediate_rep = IntermediateRep::default();
+
+        // Parse into intermediate representation
+        let mut string_iter = s.split(',');
+        let mut key_result = string_iter.next();
+
+        while key_result.is_some() {
+            let val = match string_iter.next() {
+                Some(x) => x,
+                None => {
+                    return std::result::Result::Err(
+                        "Missing value while parsing McpWorkspaceStatus".to_string(),
+                    )
+                }
+            };
+
+            if let Some(key) = key_result {
+                #[allow(clippy::match_single_binding)]
+                match key {
+                    #[allow(clippy::redundant_clone)]
+                    "id" => intermediate_rep.id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "display_name" => intermediate_rep.display_name.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    #[allow(clippy::redundant_clone)]
+                    "connected" => intermediate_rep.connected.push(
+                        <bool as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
+                    "clients" => return std::result::Result::Err(
+                        "Parsing a container in this style is not supported in McpWorkspaceStatus"
+                            .to_string(),
+                    ),
+                    _ => {
+                        return std::result::Result::Err(
+                            "Unexpected key while parsing McpWorkspaceStatus".to_string(),
+                        )
+                    }
+                }
+            }
+
+            // Get the next key
+            key_result = string_iter.next();
+        }
+
+        // Use the intermediate representation to return the struct
+        std::result::Result::Ok(McpWorkspaceStatus {
+            id: intermediate_rep
+                .id
+                .into_iter()
+                .next()
+                .ok_or_else(|| "id missing in McpWorkspaceStatus".to_string())?,
+            display_name: intermediate_rep
+                .display_name
+                .into_iter()
+                .next()
+                .ok_or_else(|| "display_name missing in McpWorkspaceStatus".to_string())?,
+            connected: intermediate_rep
+                .connected
+                .into_iter()
+                .next()
+                .ok_or_else(|| "connected missing in McpWorkspaceStatus".to_string())?,
+            clients: intermediate_rep
+                .clients
+                .into_iter()
+                .next()
+                .ok_or_else(|| "clients missing in McpWorkspaceStatus".to_string())?,
+        })
+    }
+}
+
+// Methods for converting between header::IntoHeaderValue<McpWorkspaceStatus> and hyper::header::HeaderValue
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<header::IntoHeaderValue<McpWorkspaceStatus>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_value: header::IntoHeaderValue<McpWorkspaceStatus>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_value = hdr_value.to_string();
+        match hyper::header::HeaderValue::from_str(&hdr_value) {
+            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Invalid header value for McpWorkspaceStatus - value: {hdr_value} is invalid {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(any(feature = "client", feature = "server"))]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<McpWorkspaceStatus>
+{
+    type Error = String;
+
+    fn try_from(hdr_value: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_value.to_str() {
+            std::result::Result::Ok(value) => {
+                match <McpWorkspaceStatus as std::str::FromStr>::from_str(value) {
+                    std::result::Result::Ok(value) => {
+                        std::result::Result::Ok(header::IntoHeaderValue(value))
+                    }
+                    std::result::Result::Err(err) => std::result::Result::Err(format!(
+                        "Unable to convert header value '{value}' into McpWorkspaceStatus - {err}"
+                    )),
+                }
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert header: {hdr_value:?} to string: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<header::IntoHeaderValue<Vec<McpWorkspaceStatus>>>
+    for hyper::header::HeaderValue
+{
+    type Error = String;
+
+    fn try_from(
+        hdr_values: header::IntoHeaderValue<Vec<McpWorkspaceStatus>>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let hdr_values: Vec<String> = hdr_values
+            .0
+            .into_iter()
+            .map(|hdr_value| hdr_value.to_string())
+            .collect();
+
+        match hyper::header::HeaderValue::from_str(&hdr_values.join(", ")) {
+            std::result::Result::Ok(hdr_value) => std::result::Result::Ok(hdr_value),
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to convert {hdr_values:?} into a header - {e}",
+            )),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl std::convert::TryFrom<hyper::header::HeaderValue>
+    for header::IntoHeaderValue<Vec<McpWorkspaceStatus>>
+{
+    type Error = String;
+
+    fn try_from(hdr_values: hyper::header::HeaderValue) -> std::result::Result<Self, Self::Error> {
+        match hdr_values.to_str() {
+            std::result::Result::Ok(hdr_values) => {
+                let hdr_values : std::vec::Vec<McpWorkspaceStatus> = hdr_values
+                .split(',')
+                .filter_map(|hdr_value| match hdr_value.trim() {
+                    "" => std::option::Option::None,
+                    hdr_value => std::option::Option::Some({
+                        match <McpWorkspaceStatus as std::str::FromStr>::from_str(hdr_value) {
+                            std::result::Result::Ok(value) => std::result::Result::Ok(value),
+                            std::result::Result::Err(err) => std::result::Result::Err(
+                                format!("Unable to convert header value '{hdr_value}' into McpWorkspaceStatus - {err}"))
+                        }
+                    })
+                }).collect::<std::result::Result<std::vec::Vec<_>, String>>()?;
+
+                std::result::Result::Ok(header::IntoHeaderValue(hdr_values))
+            }
+            std::result::Result::Err(e) => std::result::Result::Err(format!(
+                "Unable to parse header: {hdr_values:?} as a string - {e}"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, validator::Validate)]
 #[cfg_attr(feature = "conversion", derive(frunk::LabelledGeneric))]
 pub struct NewSession {
@@ -2879,6 +4677,11 @@ pub struct NewSession {
     #[serde(rename = "startup_environment_arg")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub startup_environment_arg: Option<String>,
+
+    /// The MCP workspace creating the session, if the client has registered one. The session belongs to that workspace: agents reach it through that workspace's MCP endpoint and no other.
+    #[serde(rename = "workspace_id")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 impl NewSession {
@@ -2914,6 +4717,7 @@ impl NewSession {
             protocol_version: Some("5.3".to_string()),
             startup_environment,
             startup_environment_arg: None,
+            workspace_id: None,
         }
     }
 }
@@ -2972,6 +4776,9 @@ impl std::fmt::Display for NewSession {
                     ]
                     .join(",")
                 }),
+            self.workspace_id.as_ref().map(|workspace_id| {
+                ["workspace_id".to_string(), workspace_id.to_string()].join(",")
+            }),
         ];
 
         write!(
@@ -3009,6 +4816,7 @@ impl std::str::FromStr for NewSession {
             pub protocol_version: Vec<String>,
             pub startup_environment: Vec<models::StartupEnvironment>,
             pub startup_environment_arg: Vec<String>,
+            pub workspace_id: Vec<String>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -3101,6 +4909,10 @@ impl std::str::FromStr for NewSession {
                     "startup_environment_arg" => intermediate_rep.startup_environment_arg.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "workspace_id" => intermediate_rep.workspace_id.push(
+                        <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing NewSession".to_string(),
@@ -3179,6 +4991,7 @@ impl std::str::FromStr for NewSession {
                 .next()
                 .ok_or_else(|| "startup_environment missing in NewSession".to_string())?,
             startup_environment_arg: intermediate_rep.startup_environment_arg.into_iter().next(),
+            workspace_id: intermediate_rep.workspace_id.into_iter().next(),
         })
     }
 }
@@ -4393,6 +6206,10 @@ pub struct ServerStatus {
     #[serde(rename = "server_id")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_id: Option<String>,
+
+    #[serde(rename = "mcp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<models::McpStatus>,
 }
 
 impl ServerStatus {
@@ -4419,6 +6236,7 @@ impl ServerStatus {
             process_id,
             started,
             server_id: None,
+            mcp: None,
         }
     }
 }
@@ -4449,6 +6267,7 @@ impl std::fmt::Display for ServerStatus {
             self.server_id
                 .as_ref()
                 .map(|server_id| ["server_id".to_string(), server_id.to_string()].join(",")),
+            // Skipping non-primitive type mcp in query parameter serialization
         ];
 
         write!(
@@ -4480,6 +6299,7 @@ impl std::str::FromStr for ServerStatus {
             pub process_id: Vec<i32>,
             pub started: Vec<chrono::DateTime<chrono::Utc>>,
             pub server_id: Vec<String>,
+            pub mcp: Vec<models::McpStatus>,
         }
 
         let mut intermediate_rep = IntermediateRep::default();
@@ -4542,6 +6362,11 @@ impl std::str::FromStr for ServerStatus {
                     "server_id" => intermediate_rep.server_id.push(
                         <String as std::str::FromStr>::from_str(val).map_err(|x| x.to_string())?,
                     ),
+                    #[allow(clippy::redundant_clone)]
+                    "mcp" => intermediate_rep.mcp.push(
+                        <models::McpStatus as std::str::FromStr>::from_str(val)
+                            .map_err(|x| x.to_string())?,
+                    ),
                     _ => {
                         return std::result::Result::Err(
                             "Unexpected key while parsing ServerStatus".to_string(),
@@ -4602,6 +6427,7 @@ impl std::str::FromStr for ServerStatus {
                 .next()
                 .ok_or_else(|| "started missing in ServerStatus".to_string())?,
             server_id: intermediate_rep.server_id.into_iter().next(),
+            mcp: intermediate_rep.mcp.into_iter().next(),
         })
     }
 }

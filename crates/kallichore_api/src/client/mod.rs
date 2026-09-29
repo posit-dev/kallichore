@@ -50,11 +50,12 @@ const ID_ENCODE_SET: &AsciiSet = &FRAGMENT_ENCODE_SET.add(b'|');
 
 use crate::{
     AdoptSessionResponse, Api, ChannelsUpgradeResponse, ClientHeartbeatResponse,
-    ConnectionInfoResponse, DeleteSessionResponse, ExecuteCodeResponse,
-    GetServerConfigurationResponse, GetSessionResponse, InterruptSessionResponse,
-    KillSessionResponse, ListSessionsResponse, NewSessionResponse, RestartSessionResponse,
-    ServerStatusResponse, SetServerConfigurationResponse, ShutdownServerResponse,
-    StartSessionResponse,
+    ConnectionInfoResponse, DeleteSessionResponse, DeregisterMcpWorkspaceResponse,
+    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionHistoryResponse,
+    GetSessionResponse, InterruptSessionResponse, KillSessionResponse, ListSessionsResponse,
+    McpWorkspaceChannelResponse, NewSessionResponse, RegisterMcpWorkspaceResponse,
+    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
+    ShutdownServerResponse, StartSessionResponse,
 };
 
 /// Convert input into a base path, e.g. "http://example:123". Also checks the scheme as it goes.
@@ -731,6 +732,123 @@ where
                 Ok(NewSessionResponse::InvalidRequest(body))
             }
             401 => Ok(NewSessionResponse::Unauthorized),
+            code => {
+                let headers = response.headers().clone();
+                let body = http_body_util::BodyExt::collect(response.into_body())
+                    .await
+                    .map(|f| f.to_bytes().to_vec());
+                Err(ApiError(format!(
+                    "Unexpected response code {code}:\n{headers:?}\n\n{}",
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {e:?}>"),
+                        },
+                        Err(e) => format!(
+                            "<Failed to read body: {}>",
+                            Into::<crate::ServiceError>::into(e)
+                        ),
+                    }
+                )))
+            }
+        }
+    }
+
+    #[allow(clippy::vec_init_then_push)]
+    async fn register_mcp_workspace(
+        &self,
+        param_mcp_workspace_registration: models::McpWorkspaceRegistration,
+        context: &C,
+    ) -> Result<RegisterMcpWorkspaceResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        #[allow(clippy::uninlined_format_args)]
+        let mut uri = format!("{}/mcp/workspaces", self.base_path);
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {err}"))),
+        };
+
+        let mut request = match Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(BoxBody::new(http_body_util::Empty::new()))
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {e}"))),
+        };
+
+        // Consumes basic body
+        // Body parameter
+        let body = serde_json::to_string(&param_mcp_workspace_registration)
+            .expect("impossible to fail to serialize");
+        *request.body_mut() = body_from_string(body);
+
+        let header = "application/json";
+        request
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static(header));
+
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {e}"
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {e}")))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => {
+                let body = response.into_body();
+                let body = http_body_util::BodyExt::collect(body)
+                    .await
+                    .map(|f| f.to_bytes().to_vec())
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e.into())))?;
+
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {e}")))?;
+                let body = serde_json::from_str::<models::McpWorkspace>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {e}"))
+                })?;
+
+                Ok(RegisterMcpWorkspaceResponse::WorkspaceRegistered(body))
+            }
+            400 => {
+                let body = response.into_body();
+                let body = http_body_util::BodyExt::collect(body)
+                    .await
+                    .map(|f| f.to_bytes().to_vec())
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e.into())))?;
+
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {e}")))?;
+                let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {e}"))
+                })?;
+
+                Ok(RegisterMcpWorkspaceResponse::InvalidRequest(body))
+            }
+            401 => Ok(RegisterMcpWorkspaceResponse::Unauthorized),
             code => {
                 let headers = response.headers().clone();
                 let body = http_body_util::BodyExt::collect(response.into_body())
@@ -1529,6 +1647,88 @@ where
     }
 
     #[allow(clippy::vec_init_then_push)]
+    async fn deregister_mcp_workspace(
+        &self,
+        param_workspace_id: String,
+        context: &C,
+    ) -> Result<DeregisterMcpWorkspaceResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        #[allow(clippy::uninlined_format_args)]
+        let mut uri = format!(
+            "{}/mcp/workspaces/{workspace_id}",
+            self.base_path,
+            workspace_id = utf8_percent_encode(&param_workspace_id.to_string(), ID_ENCODE_SET)
+        );
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {err}"))),
+        };
+
+        let mut request = match Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(BoxBody::new(http_body_util::Empty::new()))
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {e}"))),
+        };
+
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {e}"
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {e}")))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => Ok(DeregisterMcpWorkspaceResponse::WorkspaceDeregistered),
+            401 => Ok(DeregisterMcpWorkspaceResponse::Unauthorized),
+            404 => Ok(DeregisterMcpWorkspaceResponse::WorkspaceNotFound),
+            code => {
+                let headers = response.headers().clone();
+                let body = http_body_util::BodyExt::collect(response.into_body())
+                    .await
+                    .map(|f| f.to_bytes().to_vec());
+                Err(ApiError(format!(
+                    "Unexpected response code {code}:\n{headers:?}\n\n{}",
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {e:?}>"),
+                        },
+                        Err(e) => format!(
+                            "<Failed to read body: {}>",
+                            Into::<crate::ServiceError>::into(e)
+                        ),
+                    }
+                )))
+            }
+        }
+    }
+
+    #[allow(clippy::vec_init_then_push)]
     async fn execute_code(
         &self,
         param_session_id: String,
@@ -1777,6 +1977,103 @@ where
     }
 
     #[allow(clippy::vec_init_then_push)]
+    async fn get_session_history(
+        &self,
+        param_session_id: String,
+        context: &C,
+    ) -> Result<GetSessionHistoryResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        #[allow(clippy::uninlined_format_args)]
+        let mut uri = format!(
+            "{}/sessions/{session_id}/history",
+            self.base_path,
+            session_id = utf8_percent_encode(&param_session_id.to_string(), ID_ENCODE_SET)
+        );
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {err}"))),
+        };
+
+        let mut request = match Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(BoxBody::new(http_body_util::Empty::new()))
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {e}"))),
+        };
+
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {e}"
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {e}")))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => {
+                let body = response.into_body();
+                let body = http_body_util::BodyExt::collect(body)
+                    .await
+                    .map(|f| f.to_bytes().to_vec())
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e.into())))?;
+
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {e}")))?;
+                let body = serde_json::from_str::<Vec<models::ExecutionHistoryEntry>>(body)
+                    .map_err(|e| {
+                        ApiError(format!("Response body did not match the schema: {e}"))
+                    })?;
+
+                Ok(GetSessionHistoryResponse::ExecutionHistory(body))
+            }
+            401 => Ok(GetSessionHistoryResponse::Unauthorized),
+            404 => Ok(GetSessionHistoryResponse::SessionNotFound),
+            code => {
+                let headers = response.headers().clone();
+                let body = http_body_util::BodyExt::collect(response.into_body())
+                    .await
+                    .map(|f| f.to_bytes().to_vec());
+                Err(ApiError(format!(
+                    "Unexpected response code {code}:\n{headers:?}\n\n{}",
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {e:?}>"),
+                        },
+                        Err(e) => format!(
+                            "<Failed to read body: {}>",
+                            Into::<crate::ServiceError>::into(e)
+                        ),
+                    }
+                )))
+            }
+        }
+    }
+
+    #[allow(clippy::vec_init_then_push)]
     async fn interrupt_session(
         &self,
         param_session_id: String,
@@ -1976,6 +2273,103 @@ where
             }
             401 => Ok(KillSessionResponse::Unauthorized),
             404 => Ok(KillSessionResponse::SessionNotFound),
+            code => {
+                let headers = response.headers().clone();
+                let body = http_body_util::BodyExt::collect(response.into_body())
+                    .await
+                    .map(|f| f.to_bytes().to_vec());
+                Err(ApiError(format!(
+                    "Unexpected response code {code}:\n{headers:?}\n\n{}",
+                    match body {
+                        Ok(body) => match String::from_utf8(body) {
+                            Ok(body) => body,
+                            Err(e) => format!("<Body was not UTF8: {e:?}>"),
+                        },
+                        Err(e) => format!(
+                            "<Failed to read body: {}>",
+                            Into::<crate::ServiceError>::into(e)
+                        ),
+                    }
+                )))
+            }
+        }
+    }
+
+    #[allow(clippy::vec_init_then_push)]
+    async fn mcp_workspace_channel(
+        &self,
+        param_workspace_id: String,
+        context: &C,
+    ) -> Result<McpWorkspaceChannelResponse, ApiError> {
+        let mut client_service = self.client_service.clone();
+        #[allow(clippy::uninlined_format_args)]
+        let mut uri = format!(
+            "{}/mcp/workspaces/{workspace_id}/channel",
+            self.base_path,
+            workspace_id = utf8_percent_encode(&param_workspace_id.to_string(), ID_ENCODE_SET)
+        );
+
+        // Query parameters
+        let query_string = {
+            let mut query_string = form_urlencoded::Serializer::new("".to_owned());
+            query_string.finish()
+        };
+        if !query_string.is_empty() {
+            uri += "?";
+            uri += &query_string;
+        }
+
+        let uri = match Uri::from_str(&uri) {
+            Ok(uri) => uri,
+            Err(err) => return Err(ApiError(format!("Unable to build URI: {err}"))),
+        };
+
+        let mut request = match Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(BoxBody::new(http_body_util::Empty::new()))
+        {
+            Ok(req) => req,
+            Err(e) => return Err(ApiError(format!("Unable to create request: {e}"))),
+        };
+
+        let header = HeaderValue::from_str(Has::<XSpanIdString>::get(context).0.as_str());
+        request.headers_mut().insert(
+            HeaderName::from_static("x-span-id"),
+            match header {
+                Ok(h) => h,
+                Err(e) => {
+                    return Err(ApiError(format!(
+                        "Unable to create X-Span ID header value: {e}"
+                    )))
+                }
+            },
+        );
+
+        let response = client_service
+            .call((request, context.clone()))
+            .map_err(|e| ApiError(format!("No response received: {e}")))
+            .await?;
+
+        match response.status().as_u16() {
+            200 => Ok(McpWorkspaceChannelResponse::UpgradedConnection),
+            400 => {
+                let body = response.into_body();
+                let body = http_body_util::BodyExt::collect(body)
+                    .await
+                    .map(|f| f.to_bytes().to_vec())
+                    .map_err(|e| ApiError(format!("Failed to read response: {}", e.into())))?;
+
+                let body = str::from_utf8(&body)
+                    .map_err(|e| ApiError(format!("Response was not valid UTF8: {e}")))?;
+                let body = serde_json::from_str::<models::Error>(body).map_err(|e| {
+                    ApiError(format!("Response body did not match the schema: {e}"))
+                })?;
+
+                Ok(McpWorkspaceChannelResponse::InvalidRequest(body))
+            }
+            401 => Ok(McpWorkspaceChannelResponse::Unauthorized),
+            404 => Ok(McpWorkspaceChannelResponse::WorkspaceNotFound),
             code => {
                 let headers = response.headers().clone();
                 let body = http_body_util::BodyExt::collect(response.into_body())

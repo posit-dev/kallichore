@@ -1,6 +1,6 @@
 # Kallichore <img src="doc/Kallichore.webp" align="right" height=160 />
 
-Kallichore is an experimental, cross-platform, headless supervisor for Jupyter kernels. It [exposes an API](https://github.com/posit-dev/kallichore/blob/main/kallichore.json) that can be used to manage kernel sessions and provides a WebSocket-compatible interface for sending and receiving Jupyter messages to each kernel.
+Kallichore is an experimental, cross-platform, headless supervisor and MCP server for Jupyter kernels. It [exposes an API](https://github.com/posit-dev/kallichore/blob/main/kallichore.json) that can be used to manage kernel sessions and provides a WebSocket-compatible interface for sending and receiving Jupyter messages to each kernel.
 
 ```mermaid
 graph LR

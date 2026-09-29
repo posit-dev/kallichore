@@ -12,12 +12,14 @@
 pub mod client_session;
 pub mod connection_file;
 pub mod error;
+pub mod execution_history;
 pub mod execution_queue;
 pub mod heartbeat;
 pub mod jupyter_messages;
 pub mod kernel_connection;
 pub mod kernel_session;
 pub mod kernel_state;
+pub mod mcp;
 pub mod process_control;
 pub mod process_metrics;
 pub mod process_tree;

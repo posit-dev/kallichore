@@ -8,11 +8,11 @@
 
 #![allow(dead_code)]
 
+pub mod mcp;
 pub mod test_utils;
 pub mod transport;
 
 use kallichore_api::{ApiNoContext, Client, ContextWrapperExt};
-use kcshared::port_picker::pick_unused_tcp_port;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use swagger::{AuthData, ContextBuilder, EmptyContext, Push, XSpanIdString};
@@ -40,14 +40,18 @@ struct ServerConfig {
 }
 
 impl ServerConfig {
-    fn tcp(port: u16) -> Self {
+    fn tcp(handshake_path: &str, extra_args: &[String]) -> Self {
+        let mut args = vec![
+            "--handshake-socket".to_string(),
+            handshake_path.to_string(),
+            "--transport".to_string(),
+            "tcp".to_string(),
+            "--token".to_string(),
+            "none".to_string(),
+        ];
+        args.extend_from_slice(extra_args);
         Self {
-            args: vec![
-                "--port".to_string(),
-                port.to_string(),
-                "--token".to_string(),
-                "none".to_string(),
-            ],
+            args,
             expected_output_pattern: None,
         }
     }
@@ -138,6 +142,12 @@ impl TestServer {
         Self::start_with_mode(TestServerMode::Http).await
     }
 
+    /// Start an HTTP server with additional command-line arguments.
+    pub async fn start_http_with_args(extra_args: &[&str]) -> Self {
+        let extra: Vec<String> = extra_args.iter().map(|a| a.to_string()).collect();
+        Self::start_http(&extra).await
+    }
+
     pub async fn start_with_mode(mode: TestServerMode) -> Self {
         match mode {
             TestServerMode::Http => Self::start_http_server().await,
@@ -149,9 +159,23 @@ impl TestServer {
     }
 
     async fn start_http_server() -> Self {
-        let port = pick_unused_tcp_port().expect("Failed to pick unused port");
-        let config = ServerConfig::tcp(port);
+        Self::start_http(&[]).await
+    }
+
+    async fn start_http(extra_args: &[String]) -> Self {
+        use self::test_utils::HandshakeListener;
+
+        // Let the server pick its own port and report it, so no other process
+        // can take the port between choosing it and binding it.
+        let handshake = HandshakeListener::create().await;
+        let config = ServerConfig::tcp(handshake.path(), extra_args);
         let child = create_server_process(config).await;
+        let port = handshake
+            .recv()
+            .await
+            .expect("Failed to receive handshake payload")
+            .port
+            .expect("Missing port in handshake payload");
         let base_url = format!("http://localhost:{}", port);
 
         let test_server = TestServer {
@@ -212,14 +236,15 @@ impl TestServer {
 
     #[cfg(unix)]
     async fn start_domain_socket_server() -> Self {
-        use tempfile::tempdir;
         use uuid::Uuid;
 
-        // Create a temporary directory for the socket
-        let temp_dir = tempdir().expect("Failed to create temp directory");
-        let socket_path = temp_dir
-            .path()
-            .join(format!("kallichore-test-{}.sock", Uuid::new_v4().simple()));
+        // Unix domain socket paths are capped at around 100 characters, and
+        // the platform temp directory is already most of that on macOS, so
+        // build a deliberately short path under /tmp instead.
+        let socket_path = std::path::PathBuf::from(format!(
+            "/tmp/kc-test-{}.sock",
+            &Uuid::new_v4().simple().to_string()[..8]
+        ));
 
         let config = ServerConfig::unix_socket(socket_path.to_str().unwrap());
         let child = create_server_process(config).await;
@@ -371,26 +396,47 @@ impl TestServer {
     pub fn mode(&self) -> &TestServerMode {
         &self.mode
     }
+
+    /// Register an MCP workspace, starting the MCP listener.
+    pub async fn register_mcp_workspace(
+        &self,
+        display_name: &str,
+        workspace_id: Option<String>,
+    ) -> kallichore_api::models::McpWorkspace {
+        let mut registration =
+            kallichore_api::models::McpWorkspaceRegistration::new(display_name.to_string());
+        registration.workspace_id = workspace_id;
+        self.register_mcp_workspace_as(registration).await
+    }
+
+    /// Register an MCP workspace exactly as described, as a window handing back
+    /// the identity a previous server issued it does.
+    pub async fn register_mcp_workspace_as(
+        &self,
+        registration: kallichore_api::models::McpWorkspaceRegistration,
+    ) -> kallichore_api::models::McpWorkspace {
+        let client = self.create_client().await;
+
+        match client
+            .register_mcp_workspace(registration)
+            .await
+            .expect("Failed to register MCP workspace")
+        {
+            kallichore_api::RegisterMcpWorkspaceResponse::WorkspaceRegistered(workspace) => {
+                workspace
+            }
+            other => panic!("Unexpected registration response: {:?}", other),
+        }
+    }
+
+    /// Whether the process is still running.
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
 }
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        println!("Cleaning up test server (PID: {})", self.child.id());
-
-        // Use kill() which sends SIGTERM on Unix (gentler than SIGKILL)
-        // and terminates gracefully on Windows
-        if let Err(e) = self.child.kill() {
-            println!("Warning: Failed to terminate test server process: {}", e);
-        }
-
-        // Wait for the process to terminate
-        match self.child.wait() {
-            Ok(status) => {
-                println!("Test server process terminated with status: {}", status);
-            }
-            Err(e) => {
-                println!("Warning: Failed to wait for test server process: {}", e);
-            }
-        }
+        test_utils::stop_server(&mut self.child);
     }
 }

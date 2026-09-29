@@ -14,7 +14,7 @@ mod common;
 
 use common::test_utils::{
     create_execute_request, create_session_with_client, create_shutdown_request,
-    create_test_session, get_python_executable, is_ipykernel_available,
+    create_test_session, get_python_executable, is_ipykernel_available, stop_server,
 };
 use common::transport::{
     run_communication_test, CommunicationChannel, CommunicationTestResults, TransportType,
@@ -339,6 +339,7 @@ async fn test_multiple_kernel_sessions() {
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
             notebook_uri: None,
+            workspace_id: None,
             session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),
@@ -587,13 +588,7 @@ async fn run_python_kernel_test_domain_socket(python_cmd: &str) {
     }
 
     // Terminate the server process
-    if let Err(e) = child.kill() {
-        println!("Warning: Failed to terminate Unix socket server: {}", e);
-    }
-
-    if let Err(e) = child.wait() {
-        println!("Warning: Failed to wait for Unix socket server: {}", e);
-    }
+    stop_server(&mut child);
 
     // Clean up socket file if it still exists
     if socket_path.exists() {
@@ -1438,6 +1433,7 @@ async fn test_kernel_starts_with_bad_shell_env_var() {
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
             notebook_uri: None,
+            workspace_id: None,
             session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),
@@ -1582,6 +1578,7 @@ async fn test_startup_environment_functionality() {
                 continuation_prompt: "   ...: ".to_string(),
                 session_mode: SessionMode::Console,
                 notebook_uri: None,
+                workspace_id: None,
                 argv: vec![
                     python_cmd.to_string(),
                     "-m".to_string(),
@@ -1645,8 +1642,7 @@ async fn test_startup_environment_functionality() {
             tokio::time::sleep(Duration::from_millis(500)).await;
 
             // Execute Python script to check for shell-specific environment and behaviors
-            let test_script_path = std::env::current_dir()
-                .unwrap()
+            let test_script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests")
                 .join("shell_test.py");
 
@@ -1895,6 +1891,7 @@ async fn test_startup_environment_command_mode() {
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
             notebook_uri: None,
+            workspace_id: None,
             session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),
@@ -2097,6 +2094,7 @@ async fn test_startup_environment_script_mode() {
             input_prompt: "In [{}]: ".to_string(),
             continuation_prompt: "   ...: ".to_string(),
             notebook_uri: None,
+            workspace_id: None,
             session_mode: SessionMode::Console,
             argv: vec![
                 python_cmd.clone(),

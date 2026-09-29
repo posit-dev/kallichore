@@ -7,10 +7,11 @@ use futures::{future, stream, Stream};
 use kallichore_api::{
     models, AdoptSessionResponse, Api, ApiNoContext, ChannelsUpgradeResponse, Claims, Client,
     ClientHeartbeatResponse, ConnectionInfoResponse, ContextWrapperExt, DeleteSessionResponse,
-    ExecuteCodeResponse, GetServerConfigurationResponse, GetSessionResponse,
-    InterruptSessionResponse, KillSessionResponse, ListSessionsResponse, NewSessionResponse,
-    RestartSessionResponse, ServerStatusResponse, SetServerConfigurationResponse,
-    ShutdownServerResponse, StartSessionResponse,
+    DeregisterMcpWorkspaceResponse, ExecuteCodeResponse, GetServerConfigurationResponse,
+    GetSessionHistoryResponse, GetSessionResponse, InterruptSessionResponse, KillSessionResponse,
+    ListSessionsResponse, McpWorkspaceChannelResponse, NewSessionResponse,
+    RegisterMcpWorkspaceResponse, RestartSessionResponse, ServerStatusResponse,
+    SetServerConfigurationResponse, ShutdownServerResponse, StartSessionResponse,
 };
 
 // NOTE: Set environment variable RUST_LOG to the name of the executable (or "cargo run") to activate console logging for all loglevels.
@@ -47,6 +48,7 @@ fn main() {
                     "GetServerConfiguration",
                     "ListSessions",
                     "NewSession",
+                    "RegisterMcpWorkspace",
                     "ServerStatus",
                     "SetServerConfiguration",
                     "ShutdownServer",
@@ -54,10 +56,13 @@ fn main() {
                     "ChannelsUpgrade",
                     "ConnectionInfo",
                     "DeleteSession",
+                    "DeregisterMcpWorkspace",
                     "ExecuteCode",
                     "GetSession",
+                    "GetSessionHistory",
                     "InterruptSession",
                     "KillSession",
+                    "McpWorkspaceChannel",
                     "RestartSession",
                     "StartSession",
                 ])
@@ -171,6 +176,14 @@ fn main() {
             info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
         },
         */
+        /* Disabled because there's no example.
+        Some("RegisterMcpWorkspace") => {
+            let result = rt.block_on(client.register_mcp_workspace(
+                  ???
+            ));
+            info!("{:?} (X-Span-ID: {:?})", result, (client.context() as &dyn Has<XSpanIdString>).get().clone());
+        },
+        */
         Some("ServerStatus") => {
             let result = rt.block_on(client.server_status());
             info!(
@@ -228,6 +241,15 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
+        Some("DeregisterMcpWorkspace") => {
+            let result =
+                rt.block_on(client.deregister_mcp_workspace("workspace_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
         /* Disabled because there's no example.
         Some("ExecuteCode") => {
             let result = rt.block_on(client.execute_code(
@@ -245,6 +267,14 @@ fn main() {
                 (client.context() as &dyn Has<XSpanIdString>).get().clone()
             );
         }
+        Some("GetSessionHistory") => {
+            let result = rt.block_on(client.get_session_history("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
         Some("InterruptSession") => {
             let result = rt.block_on(client.interrupt_session("session_id_example".to_string()));
             info!(
@@ -255,6 +285,15 @@ fn main() {
         }
         Some("KillSession") => {
             let result = rt.block_on(client.kill_session("session_id_example".to_string()));
+            info!(
+                "{:?} (X-Span-ID: {:?})",
+                result,
+                (client.context() as &dyn Has<XSpanIdString>).get().clone()
+            );
+        }
+        Some("McpWorkspaceChannel") => {
+            let result =
+                rt.block_on(client.mcp_workspace_channel("workspace_id_example".to_string()));
             info!(
                 "{:?} (X-Span-ID: {:?})",
                 result,
