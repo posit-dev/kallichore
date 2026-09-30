@@ -149,8 +149,9 @@ pub struct ExecuteCodeParams {
     /// The code to run, in the session's language.
     pub code: String,
 
-    /// The session to run in. Defaults to the foreground session, or the only
-    /// session when there is exactly one.
+    /// The session_id (from list_sessions) of the session to run in. Defaults
+    /// to the foreground session, or the only session when there is exactly
+    /// one.
     #[serde(default)]
     pub session_id: Option<String>,
 
@@ -176,8 +177,9 @@ pub struct EvaluateCodeParams {
 /// Arguments accepted by `interrupt_session`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct InterruptSessionParams {
-    /// The session to interrupt. Defaults to the foreground session, or the
-    /// only session when there is exactly one.
+    /// The session_id (from list_sessions) of the session to interrupt.
+    /// Defaults to the foreground session, or the only session when there is
+    /// exactly one.
     #[serde(default)]
     pub session_id: Option<String>,
 }
@@ -185,8 +187,9 @@ pub struct InterruptSessionParams {
 /// Arguments accepted by `get_session_history`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SessionHistoryParams {
-    /// The session whose history to return. Defaults to the foreground
-    /// session, or the only session when there is exactly one.
+    /// The session_id (from list_sessions) of the session whose history to
+    /// return. Defaults to the foreground session, or the only session when
+    /// there is exactly one.
     #[serde(default)]
     pub session_id: Option<String>,
 
@@ -248,7 +251,9 @@ impl PositronMcpHandler {
                        right session. Sessions belonging to the user's other workspaces are not \
                        listed and cannot be reached. A session marked is_your_own_session is the \
                        one you are running inside, which is the one session you cannot run code \
-                       in. Never starts a session.",
+                       in. Never starts a session. A session_id is an internal handle for tool \
+                       calls that the user never sees; when you mention a session to the user, \
+                       call it by its display_name, which is what Positron shows them.",
         annotations(title = "List sessions", read_only_hint = true)
     )]
     async fn list_sessions(
@@ -339,6 +344,7 @@ impl PositronMcpHandler {
 
         let body = json!({
             "session_id": session.connection.session_id,
+            "display_name": session.model.display_name,
             "entries": entries,
             "total": total,
             "truncated": truncated,
@@ -410,10 +416,15 @@ impl PositronMcpHandler {
             Err(body) => return Ok(self.error(body).await),
         };
         let session_id = session.connection.session_id.clone();
+        let display_name = session.model.display_name.clone();
 
         match session.interrupt().await {
             Ok(_) => {
-                let body = json!({ "status": "ok", "session_id": session_id });
+                let body = json!({
+                    "status": "ok",
+                    "session_id": session_id,
+                    "display_name": display_name,
+                });
                 Ok(self.finish(body, Vec::new()).await)
             }
             Err(e) => {
@@ -421,6 +432,7 @@ impl PositronMcpHandler {
                     "status": "error",
                     "code": "INTERRUPT_FAILED",
                     "session_id": session_id,
+                    "display_name": display_name,
                     "message": e.to_string(),
                 });
                 Ok(self.error(body).await)
@@ -671,6 +683,7 @@ impl PositronMcpHandler {
             Err(body) => return Ok(self.error(body).await),
         };
         let session_id = session.connection.session_id.clone();
+        let display_name = session.model.display_name.clone();
 
         // Running code is the one thing a client inside a kernel cannot ask of
         // its own session: that session is executing the call it is waiting on,
@@ -682,11 +695,12 @@ impl PositronMcpHandler {
                 "status": "error",
                 "code": "SESSION_IS_CALLER",
                 "session_id": session_id,
+                "display_name": display_name,
                 "message": format!(
-                    "Session '{}' is the one you are running in, so it is busy waiting for this \
-                     call and cannot run your code. Run the code inline instead, or name another \
+                    "{} is the session you are running in, so it is busy waiting for this call \
+                     and cannot run your code. Run the code inline instead, or name another \
                      session; list_sessions marks this one is_your_own_session.",
-                    session_id
+                    display_name
                 ),
             });
             return Ok(self.error(body).await);
@@ -701,8 +715,12 @@ impl PositronMcpHandler {
                     "status": "error",
                     "code": "RUNTIME_BUSY",
                     "session_id": session_id,
-                    "message": "The session is busy. Pass wait=true to queue behind the running \
-                                code, or use execute_code, which always queues.",
+                    "display_name": display_name,
+                    "message": format!(
+                        "{} is busy. Pass wait=true to queue behind the running code, or use \
+                         execute_code, which always queues.",
+                        display_name
+                    ),
                 });
                 return Ok(self.error(body).await);
             }
@@ -801,6 +819,7 @@ impl PositronMcpHandler {
 
         if let Some(object) = body.as_object_mut() {
             object.insert("session_id".into(), json!(session_id));
+            object.insert("display_name".into(), json!(display_name));
             object.insert("elapsed_ms".into(), json!(elapsed_ms));
         }
 
@@ -841,17 +860,18 @@ impl PositronMcpHandler {
                 json!({
                     "status": "error",
                     "code": "SESSION_NOT_VISIBLE",
-                    "message": format!(
-                        "Session '{}' belongs to one of the user's other Positron workspaces. \
-                         You can only reach the sessions of the workspace you are attached to.",
-                        session_id
-                    ),
+                    "session_id": session_id,
+                    "message": "That session belongs to one of the user's other Positron \
+                                workspaces. You can only reach the sessions of the workspace you \
+                                are attached to.",
                 })
             } else {
                 json!({
                     "status": "error",
                     "code": "SESSION_NOT_FOUND",
-                    "message": format!("No session with ID '{}'", session_id),
+                    "session_id": session_id,
+                    "message": "No session has that session_id. Call list_sessions to see the \
+                                sessions that are running.",
                 })
             });
         }
