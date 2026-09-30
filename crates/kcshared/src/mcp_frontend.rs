@@ -9,9 +9,12 @@
 //! Messages exchanged over the MCP frontend channel, the WebSocket that
 //! connects a registered Positron window to the supervisor's MCP server.
 //!
-//! The frontend pushes its command catalog and foreground session over this
-//! channel; the supervisor brokers agent command requests back over it, and
-//! tells the frontend which agents are connected.
+//! The frontend pushes its command catalog, the guide to those commands, and
+//! its foreground session over this channel; the supervisor brokers agent
+//! command requests back over it, and tells the frontend which agents are
+//! connected.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +67,10 @@ pub struct FrontendHello {
     #[serde(default)]
     pub commands: Vec<AgentCommand>,
 
+    /// The guide to those commands; see [`CommandsChanged::guide`].
+    #[serde(default)]
+    pub guide: BTreeMap<String, String>,
+
     /// The sessions this window holds. Agents reach only these, so that code
     /// never runs somewhere the user cannot see it.
     #[serde(default)]
@@ -90,6 +97,12 @@ pub struct SessionsChanged {
 pub struct CommandsChanged {
     /// The complete new catalog; replaces the cached one.
     pub commands: Vec<AgentCommand>,
+
+    /// The guide to the catalog, as markdown pages keyed by their path within
+    /// it. `SKILL.md` is the index, and pages link to each other by these
+    /// paths, e.g. `references/files.md`. Replaces the cached one.
+    #[serde(default)]
+    pub guide: BTreeMap<String, String>,
 }
 
 /// A change of foreground session.

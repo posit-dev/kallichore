@@ -26,7 +26,7 @@
 //! that started it, and holds a presence connection open for that long; see
 //! [`WorkspaceRegistry::add_client`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -132,6 +132,7 @@ struct Workspace {
     token: String,
     positron_version: Option<String>,
     commands: Vec<AgentCommand>,
+    guide: BTreeMap<String, String>,
 
     /// The sessions this workspace says it holds. Sessions it created name it
     /// as their owner and need no claim; this covers the rest, such as sessions
@@ -329,6 +330,7 @@ impl WorkspaceRegistry {
                 token: token.clone(),
                 positron_version: None,
                 commands: Vec::new(),
+                guide: BTreeMap::new(),
                 session_ids: Vec::new(),
                 foreground_session_id: None,
                 disconnected_since: None,
@@ -560,6 +562,7 @@ impl WorkspaceRegistry {
                 );
                 workspace.positron_version = hello.positron_version;
                 workspace.commands = hello.commands;
+                workspace.guide = hello.guide;
                 workspace.session_ids = hello.session_ids;
                 workspace.foreground_session_id = hello.foreground_session_id;
                 if hello.focused {
@@ -573,6 +576,7 @@ impl WorkspaceRegistry {
                     changed.commands.len()
                 );
                 workspace.commands = changed.commands;
+                workspace.guide = changed.guide;
             }
             FrontendMessage::ForegroundChanged(changed) => {
                 workspace.foreground_session_id = changed.session_id;
@@ -607,6 +611,16 @@ impl WorkspaceRegistry {
             .await
             .get(workspace_id)
             .map(|f| f.commands.clone())
+            .unwrap_or_default()
+    }
+
+    /// The cached guide to a workspace's command catalog, keyed by page path.
+    pub async fn guide(&self, workspace_id: &str) -> BTreeMap<String, String> {
+        self.workspaces
+            .read()
+            .await
+            .get(workspace_id)
+            .map(|f| f.guide.clone())
             .unwrap_or_default()
     }
 
@@ -1059,6 +1073,7 @@ mod tests {
                 FrontendMessage::Hello(FrontendHello {
                     positron_version: Some("2026.10.0".to_string()),
                     commands: Vec::new(),
+                    guide: BTreeMap::new(),
                     session_ids: vec!["python-1".to_string()],
                     foreground_session_id: Some("python-1".to_string()),
                     focused: true,

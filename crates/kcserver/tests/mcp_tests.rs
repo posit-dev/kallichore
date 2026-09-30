@@ -17,6 +17,7 @@
 #[path = "common/mod.rs"]
 mod common;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use futures::SinkExt;
@@ -35,12 +36,13 @@ use kcshared::mcp_frontend::{
 use serde_json::{json, Value};
 
 /// The tools the server is expected to publish.
-const EXPECTED_TOOLS: [&str; 8] = [
+const EXPECTED_TOOLS: [&str; 9] = [
     "list_sessions",
     "get_session_history",
     "execute_code",
     "evaluate_code",
     "interrupt_session",
+    "get_positron_command_guide",
     "list_positron_commands",
     "run_positron_command",
     "get_plot",
@@ -530,6 +532,7 @@ async fn test_command_catalog_survives_the_window_disconnecting() {
     // A refreshed catalog replaces the cached one.
     channel.send(FrontendMessage::CommandsChanged(CommandsChanged {
         commands: vec![fake_catalog().remove(2)],
+        guide: BTreeMap::new(),
     }));
     tokio::time::sleep(Duration::from_millis(300)).await;
     let result = agent.call_tool("list_positron_commands", json!({})).await;
@@ -541,6 +544,67 @@ async fn test_command_catalog_survives_the_window_disconnecting() {
     assert_eq!(result.field("total"), &json!(1));
     assert_eq!(result.field("positron_connected"), &json!(false));
     assert!(result.structured["positron_disconnected_since"].is_string());
+}
+
+#[tokio::test]
+async fn test_command_guide_survives_the_window_disconnecting() {
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("Test Workspace", None).await;
+    let mut agent = McpAgent::new(
+        workspace.port as u16,
+        &workspace.workspace_id,
+        &workspace.token,
+    );
+    agent.initialize().await;
+
+    let result = agent
+        .call_tool("get_positron_command_guide", json!({}))
+        .await;
+    assert!(result.is_error, "{:?}", result);
+    assert_eq!(result.field("code"), &json!("NO_COMMAND_GUIDE"));
+
+    let channel = SimulatedFrontend::connect(server.base_url(), &workspace.workspace_id).await;
+    channel.send(FrontendMessage::Hello(FrontendHello {
+        guide: BTreeMap::from([
+            (
+                "SKILL.md".to_string(),
+                "See references/files.md".to_string(),
+            ),
+            (
+                "references/files.md".to_string(),
+                "Use vscode.open".to_string(),
+            ),
+        ]),
+        ..Default::default()
+    }));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let result = agent
+        .call_tool("get_positron_command_guide", json!({}))
+        .await;
+    assert!(!result.is_error, "{:?}", result);
+    assert_eq!(result.field("text"), &json!("See references/files.md"));
+
+    let result = agent
+        .call_tool(
+            "get_positron_command_guide",
+            json!({ "page": "references/nope.md" }),
+        )
+        .await;
+    assert_eq!(result.field("code"), &json!("UNKNOWN_GUIDE_PAGE"));
+    assert_eq!(
+        result.field("pages"),
+        &json!(["SKILL.md", "references/files.md"])
+    );
+
+    channel.disconnect().await;
+    let result = agent
+        .call_tool(
+            "get_positron_command_guide",
+            json!({ "page": "references/files.md" }),
+        )
+        .await;
+    assert_eq!(result.field("text"), &json!("Use vscode.open"));
 }
 
 #[tokio::test]

@@ -10,10 +10,10 @@
 //!
 //! Kernel tools (`list_sessions`, `get_session_history`, `execute_code`,
 //! `evaluate_code`, `interrupt_session`) are answered entirely inside the supervisor and keep
-//! working when Positron is gone. Command tools (`list_positron_commands`,
-//! `run_positron_command`, `get_plot`) are brokered to a window of the
-//! workspace that owns the calling agent's token; listing works from the cache
-//! while disconnected, the rest do not.
+//! working when Positron is gone. Command tools (`get_positron_command_guide`,
+//! `list_positron_commands`, `run_positron_command`, `get_plot`) are brokered
+//! to a window of the workspace that owns the calling agent's token; the guide
+//! and listing work from the cache while disconnected, the rest do not.
 //!
 //! Every tool is scoped to one workspace: a handler is built per workspace
 //! endpoint, and it sees only that workspace's sessions. A supervisor shared by
@@ -90,6 +90,9 @@ const FRONTEND_REPLY_WAIT: Duration = Duration::from_secs(45);
 /// data URI. Not in the command catalog: `get_plot` is its only caller.
 const CURRENT_PLOT_COMMAND: &str = "positron.mcp.getCurrentPlot";
 
+/// The guide page `get_positron_command_guide` returns when none is named.
+const GUIDE_INDEX: &str = "SKILL.md";
+
 /// The implementation name agents see, which the server card's reverse-DNS name
 /// qualifies rather than replaces.
 pub const SERVER_NAME: &str = "positron";
@@ -114,9 +117,9 @@ evaluate_code to inspect state; it stays out of the session's history. Use \
 execute_code for anything with side effects. Output can legitimately be empty, \
 so never retry a state-changing call because nothing came back.
 
-For IDE actions, find a command with list_positron_commands and run it with \
-run_positron_command. These need Positron connected; the kernel tools do not. \
-No tool starts an interpreter.";
+For IDE actions, look the command up in get_positron_command_guide before \
+calling run_positron_command. Commands need Positron connected; the kernel \
+tools do not. No tool starts an interpreter.";
 
 /// Added for a client running inside one of the workspace's own kernels, which
 /// is the one thing about its situation it cannot work out for itself.
@@ -197,6 +200,15 @@ pub struct SessionHistoryParams {
     /// to 20.
     #[serde(default)]
     pub limit: Option<u32>,
+}
+
+/// Arguments accepted by `get_positron_command_guide`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CommandGuideParams {
+    /// The page to read, as the guide's links name it, e.g.
+    /// references/files.md. Omit for the index, which links to every page.
+    #[serde(default)]
+    pub page: Option<String>,
 }
 
 /// Arguments accepted by `list_positron_commands`.
@@ -444,6 +456,51 @@ impl PositronMcpHandler {
                 Ok(self.error(body).await)
             }
         }
+    }
+
+    #[tool(
+        name = "get_positron_command_guide",
+        description = "Read Positron's guide to its IDE commands: which command does what the \
+                       user asked, how to fill its arguments, and what to do when it fails. Read \
+                       the index, then the page for the task, before calling \
+                       run_positron_command. A command ID recalled from VS Code usually exists, \
+                       but often opens a dialog and hands the task back to the user. Works from \
+                       cache even when Positron is disconnected.",
+        annotations(title = "Read the Positron command guide", read_only_hint = true)
+    )]
+    async fn get_positron_command_guide(
+        &self,
+        _context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<CommandGuideParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.state.note_request();
+
+        let mut guide = self.state.registry.guide(&self.workspace_id).await;
+        if guide.is_empty() {
+            return Ok(self
+                .error(json!({
+                    "status": "error",
+                    "code": "NO_COMMAND_GUIDE",
+                    "message": "Positron has not shared a command guide. Use \
+                                list_positron_commands to find commands instead.",
+                }))
+                .await);
+        }
+        let page = params.page.unwrap_or_else(|| GUIDE_INDEX.to_string());
+        let Some(text) = guide.remove(&page) else {
+            return Ok(self
+                .error(json!({
+                    "status": "error",
+                    "code": "UNKNOWN_GUIDE_PAGE",
+                    "page": page,
+                    "pages": guide.into_keys().collect::<Vec<_>>(),
+                    "message": "The guide has no such page.",
+                }))
+                .await);
+        };
+        Ok(self
+            .finish(json!({ "page": page, "text": text }), Vec::new())
+            .await)
     }
 
     #[tool(
