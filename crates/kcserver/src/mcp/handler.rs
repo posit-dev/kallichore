@@ -507,7 +507,11 @@ impl PositronMcpHandler {
                        Positron to be connected; waits briefly for a window that is reloading. \
                        Use this for IDE actions such as starting a session, which the kernel \
                        tools deliberately never do.",
-        annotations(title = "Run a Positron command", open_world_hint = true)
+        annotations(
+            title = "Run a Positron command",
+            destructive_hint = true,
+            open_world_hint = true
+        )
     )]
     async fn run_positron_command(
         &self,
