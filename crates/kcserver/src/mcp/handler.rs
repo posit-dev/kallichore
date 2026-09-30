@@ -253,7 +253,9 @@ impl PositronMcpHandler {
                        one you are running inside, which is the one session you cannot run code \
                        in. Never starts a session. A session_id is an internal handle for tool \
                        calls that the user never sees; when you mention a session to the user, \
-                       call it by its display_name, which is what Positron shows them.",
+                       call it by its display_name, which is what Positron shows them. Each \
+                       session's recent_history carries a source per entry, explained under \
+                       get_session_history.",
         annotations(title = "List sessions", read_only_hint = true)
     )]
     async fn list_sessions(
@@ -317,7 +319,11 @@ impl PositronMcpHandler {
         name = "get_session_history",
         description = "Get the code a session ran most recently and what it printed, returned, \
                        or raised, oldest first, each with the time it ran and, when known, what \
-                       submitted it (source 'agent' marks code run by an agent). Use this to see \
+                       submitted it. The user ran code with source 'interactive' (typed in the \
+                       console), 'paste', 'script' (run from an editor), or 'notebook'; 'agent' \
+                       is an external agent like you, named in 'agent'; 'assistant' is \
+                       Positron Assistant; 'extension' is a Positron extension. With no source, \
+                       the submitter is unknown. Use this to see \
                        what the user has been doing or why something they ran failed, without \
                        running anything. Only the last 100 executions are kept, and long input \
                        and output are clipped in the middle.",
