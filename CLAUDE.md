@@ -212,12 +212,14 @@ separate from the main API transport, because agents need a URL.
   request's `metadata.attribution` when present. The last few entries are in the session's `history`
   field and in `list_sessions`; all of them are at `GET /sessions/{id}/history` and
   `get_session_history`.
-- Command tools (`list_positron_commands`, `run_positron_command`, `get_plot`) are brokered to a
-  window over `GET /mcp/workspaces/{id}/channel`, a WebSocket that works on all three transports. The command
-  catalog is cached, so searching works while disconnected; running does not. Positron keeps the
-  workspace ID in workspace-scoped state, so two windows onto one workspace share a record and
-  attach a frontend channel each; commands go to whichever of them reported focus last, and move
-  to a sibling if that window disappears mid-request.
+- Command tools (`get_positron_command_guide`, `list_positron_commands`, `run_positron_command`,
+  `get_plot`) are brokered to a window over `GET /mcp/workspaces/{id}/channel`, a WebSocket that works
+  on all three transports. The command catalog and its guide (Positron's `positron-commands` skill,
+  sent as markdown pages keyed by path) are cached, so reading and searching work while
+  disconnected; running does not. Positron keeps the workspace ID in workspace-scoped state, so two
+  windows onto one workspace share a record and attach a frontend channel each; commands go to
+  whichever of them reported focus last, and move to a sibling if that window disappears
+  mid-request.
 - Agent executions go through the same execution queue and WebSocket mirror as Positron's own, and
   are preceded by a `KernelMessage::ExecutionRequested` event naming the agent. That event buffers
   while no client is connected, so a window that reopens learns who ran the code it is seeing.

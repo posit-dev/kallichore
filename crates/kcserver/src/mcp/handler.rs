@@ -10,10 +10,10 @@
 //!
 //! Kernel tools (`list_sessions`, `get_session_history`, `execute_code`,
 //! `evaluate_code`, `interrupt_session`) are answered entirely inside the supervisor and keep
-//! working when Positron is gone. Command tools (`list_positron_commands`,
-//! `run_positron_command`, `get_plot`) are brokered to a window of the
-//! workspace that owns the calling agent's token; listing works from the cache
-//! while disconnected, the rest do not.
+//! working when Positron is gone. Command tools (`get_positron_command_guide`,
+//! `list_positron_commands`, `run_positron_command`, `get_plot`) are brokered
+//! to a window of the workspace that owns the calling agent's token; the guide
+//! and listing work from the cache while disconnected, the rest do not.
 //!
 //! Every tool is scoped to one workspace: a handler is built per workspace
 //! endpoint, and it sees only that workspace's sessions. A supervisor shared by
@@ -90,6 +90,9 @@ const FRONTEND_REPLY_WAIT: Duration = Duration::from_secs(45);
 /// data URI. Not in the command catalog: `get_plot` is its only caller.
 const CURRENT_PLOT_COMMAND: &str = "positron.mcp.getCurrentPlot";
 
+/// The guide page `get_positron_command_guide` returns when none is named.
+const GUIDE_INDEX: &str = "SKILL.md";
+
 /// The implementation name agents see, which the server card's reverse-DNS name
 /// qualifies rather than replaces.
 pub const SERVER_NAME: &str = "positron";
@@ -114,9 +117,9 @@ evaluate_code to inspect state; it stays out of the session's history. Use \
 execute_code for anything with side effects. Output can legitimately be empty, \
 so never retry a state-changing call because nothing came back.
 
-For IDE actions, find a command with list_positron_commands and run it with \
-run_positron_command. These need Positron connected; the kernel tools do not. \
-No tool starts an interpreter.";
+For IDE actions, look the command up in get_positron_command_guide before \
+calling run_positron_command. Commands need Positron connected; the kernel \
+tools do not. No tool starts an interpreter.";
 
 /// Added for a client running inside one of the workspace's own kernels, which
 /// is the one thing about its situation it cannot work out for itself.
@@ -149,8 +152,9 @@ pub struct ExecuteCodeParams {
     /// The code to run, in the session's language.
     pub code: String,
 
-    /// The session to run in. Defaults to the foreground session, or the only
-    /// session when there is exactly one.
+    /// The session_id (from list_sessions) of the session to run in. Defaults
+    /// to the foreground session, or the only session when there is exactly
+    /// one.
     #[serde(default)]
     pub session_id: Option<String>,
 
@@ -176,8 +180,9 @@ pub struct EvaluateCodeParams {
 /// Arguments accepted by `interrupt_session`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct InterruptSessionParams {
-    /// The session to interrupt. Defaults to the foreground session, or the
-    /// only session when there is exactly one.
+    /// The session_id (from list_sessions) of the session to interrupt.
+    /// Defaults to the foreground session, or the only session when there is
+    /// exactly one.
     #[serde(default)]
     pub session_id: Option<String>,
 }
@@ -185,8 +190,9 @@ pub struct InterruptSessionParams {
 /// Arguments accepted by `get_session_history`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SessionHistoryParams {
-    /// The session whose history to return. Defaults to the foreground
-    /// session, or the only session when there is exactly one.
+    /// The session_id (from list_sessions) of the session whose history to
+    /// return. Defaults to the foreground session, or the only session when
+    /// there is exactly one.
     #[serde(default)]
     pub session_id: Option<String>,
 
@@ -194,6 +200,15 @@ pub struct SessionHistoryParams {
     /// to 20.
     #[serde(default)]
     pub limit: Option<u32>,
+}
+
+/// Arguments accepted by `get_positron_command_guide`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CommandGuideParams {
+    /// The page to read, as the guide's links name it, e.g.
+    /// references/files.md. Omit for the index, which links to every page.
+    #[serde(default)]
+    pub page: Option<String>,
 }
 
 /// Arguments accepted by `list_positron_commands`.
@@ -248,7 +263,11 @@ impl PositronMcpHandler {
                        right session. Sessions belonging to the user's other workspaces are not \
                        listed and cannot be reached. A session marked is_your_own_session is the \
                        one you are running inside, which is the one session you cannot run code \
-                       in. Never starts a session.",
+                       in. Never starts a session. A session_id is an internal handle for tool \
+                       calls that the user never sees; when you mention a session to the user, \
+                       call it by its display_name, which is what Positron shows them. Each \
+                       session's recent_history carries a source per entry, explained under \
+                       get_session_history.",
         annotations(title = "List sessions", read_only_hint = true)
     )]
     async fn list_sessions(
@@ -312,7 +331,11 @@ impl PositronMcpHandler {
         name = "get_session_history",
         description = "Get the code a session ran most recently and what it printed, returned, \
                        or raised, oldest first, each with the time it ran and, when known, what \
-                       submitted it (source 'agent' marks code run by an agent). Use this to see \
+                       submitted it. The user ran code with source 'interactive' (typed in the \
+                       console), 'paste', 'script' (run from an editor), or 'notebook'; 'agent' \
+                       is an external agent like you, named in 'agent'; 'assistant' is \
+                       Positron Assistant; 'extension' is a Positron extension. With no source, \
+                       the submitter is unknown. Use this to see \
                        what the user has been doing or why something they ran failed, without \
                        running anything. Only the last 100 executions are kept, and long input \
                        and output are clipped in the middle.",
@@ -339,6 +362,7 @@ impl PositronMcpHandler {
 
         let body = json!({
             "session_id": session.connection.session_id,
+            "display_name": session.model.display_name,
             "entries": entries,
             "total": total,
             "truncated": truncated,
@@ -410,10 +434,15 @@ impl PositronMcpHandler {
             Err(body) => return Ok(self.error(body).await),
         };
         let session_id = session.connection.session_id.clone();
+        let display_name = session.model.display_name.clone();
 
         match session.interrupt().await {
             Ok(_) => {
-                let body = json!({ "status": "ok", "session_id": session_id });
+                let body = json!({
+                    "status": "ok",
+                    "session_id": session_id,
+                    "display_name": display_name,
+                });
                 Ok(self.finish(body, Vec::new()).await)
             }
             Err(e) => {
@@ -421,11 +450,57 @@ impl PositronMcpHandler {
                     "status": "error",
                     "code": "INTERRUPT_FAILED",
                     "session_id": session_id,
+                    "display_name": display_name,
                     "message": e.to_string(),
                 });
                 Ok(self.error(body).await)
             }
         }
+    }
+
+    #[tool(
+        name = "get_positron_command_guide",
+        description = "Read Positron's guide to its IDE commands: which command does what the \
+                       user asked, how to fill its arguments, and what to do when it fails. Read \
+                       the index, then the page for the task, before calling \
+                       run_positron_command. A command ID recalled from VS Code usually exists, \
+                       but often opens a dialog and hands the task back to the user. Works from \
+                       cache even when Positron is disconnected.",
+        annotations(title = "Read the Positron command guide", read_only_hint = true)
+    )]
+    async fn get_positron_command_guide(
+        &self,
+        _context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<CommandGuideParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.state.note_request();
+
+        let mut guide = self.state.registry.guide(&self.workspace_id).await;
+        if guide.is_empty() {
+            return Ok(self
+                .error(json!({
+                    "status": "error",
+                    "code": "NO_COMMAND_GUIDE",
+                    "message": "Positron has not shared a command guide. Use \
+                                list_positron_commands to find commands instead.",
+                }))
+                .await);
+        }
+        let page = params.page.unwrap_or_else(|| GUIDE_INDEX.to_string());
+        let Some(text) = guide.remove(&page) else {
+            return Ok(self
+                .error(json!({
+                    "status": "error",
+                    "code": "UNKNOWN_GUIDE_PAGE",
+                    "page": page,
+                    "pages": guide.into_keys().collect::<Vec<_>>(),
+                    "message": "The guide has no such page.",
+                }))
+                .await);
+        };
+        Ok(self
+            .finish(json!({ "page": page, "text": text }), Vec::new())
+            .await)
     }
 
     #[tool(
@@ -489,7 +564,11 @@ impl PositronMcpHandler {
                        Positron to be connected; waits briefly for a window that is reloading. \
                        Use this for IDE actions such as starting a session, which the kernel \
                        tools deliberately never do.",
-        annotations(title = "Run a Positron command", open_world_hint = true)
+        annotations(
+            title = "Run a Positron command",
+            destructive_hint = true,
+            open_world_hint = true
+        )
     )]
     async fn run_positron_command(
         &self,
@@ -671,6 +750,7 @@ impl PositronMcpHandler {
             Err(body) => return Ok(self.error(body).await),
         };
         let session_id = session.connection.session_id.clone();
+        let display_name = session.model.display_name.clone();
 
         // Running code is the one thing a client inside a kernel cannot ask of
         // its own session: that session is executing the call it is waiting on,
@@ -682,11 +762,12 @@ impl PositronMcpHandler {
                 "status": "error",
                 "code": "SESSION_IS_CALLER",
                 "session_id": session_id,
+                "display_name": display_name,
                 "message": format!(
-                    "Session '{}' is the one you are running in, so it is busy waiting for this \
-                     call and cannot run your code. Run the code inline instead, or name another \
+                    "{} is the session you are running in, so it is busy waiting for this call \
+                     and cannot run your code. Run the code inline instead, or name another \
                      session; list_sessions marks this one is_your_own_session.",
-                    session_id
+                    display_name
                 ),
             });
             return Ok(self.error(body).await);
@@ -701,8 +782,12 @@ impl PositronMcpHandler {
                     "status": "error",
                     "code": "RUNTIME_BUSY",
                     "session_id": session_id,
-                    "message": "The session is busy. Pass wait=true to queue behind the running \
-                                code, or use execute_code, which always queues.",
+                    "display_name": display_name,
+                    "message": format!(
+                        "{} is busy. Pass wait=true to queue behind the running code, or use \
+                         execute_code, which always queues.",
+                        display_name
+                    ),
                 });
                 return Ok(self.error(body).await);
             }
@@ -801,6 +886,7 @@ impl PositronMcpHandler {
 
         if let Some(object) = body.as_object_mut() {
             object.insert("session_id".into(), json!(session_id));
+            object.insert("display_name".into(), json!(display_name));
             object.insert("elapsed_ms".into(), json!(elapsed_ms));
         }
 
@@ -841,17 +927,18 @@ impl PositronMcpHandler {
                 json!({
                     "status": "error",
                     "code": "SESSION_NOT_VISIBLE",
-                    "message": format!(
-                        "Session '{}' belongs to one of the user's other Positron workspaces. \
-                         You can only reach the sessions of the workspace you are attached to.",
-                        session_id
-                    ),
+                    "session_id": session_id,
+                    "message": "That session belongs to one of the user's other Positron \
+                                workspaces. You can only reach the sessions of the workspace you \
+                                are attached to.",
                 })
             } else {
                 json!({
                     "status": "error",
                     "code": "SESSION_NOT_FOUND",
-                    "message": format!("No session with ID '{}'", session_id),
+                    "session_id": session_id,
+                    "message": "No session has that session_id. Call list_sessions to see the \
+                                sessions that are running.",
                 })
             });
         }
