@@ -7,7 +7,6 @@
 //
 
 use std::sync::Arc;
-use std::usize;
 
 use kallichore_api::models::Status;
 use tokio::sync::RwLock;
