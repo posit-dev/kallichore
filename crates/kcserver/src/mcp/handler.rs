@@ -86,8 +86,8 @@ const FRONTEND_CONNECT_WAIT: Duration = Duration::from_secs(15);
 /// How long a window has to answer a command request once delivered.
 const FRONTEND_REPLY_WAIT: Duration = Duration::from_secs(45);
 
-/// The request the frontend answers with the Plots pane's current plot, as a
-/// data URI. Not in the command catalog: `get_plot` is its only caller.
+/// The request the frontend answers with the Plots pane's current plot, as an
+/// `AgentCommandImage`. Not in the command catalog: `get_plot` is its only caller.
 const CURRENT_PLOT_COMMAND: &str = "positron.mcp.getCurrentPlot";
 
 /// The guide page `get_positron_command_guide` returns when none is named.
@@ -589,16 +589,24 @@ impl PositronMcpHandler {
 
         Ok(match outcome {
             Ok(result) => {
-                self.finish(
-                    json!({
-                        "status": "ok",
-                        "command_id": params.command_id,
-                        "result": result,
-                        "elapsed_ms": elapsed_ms,
-                    }),
-                    Vec::new(),
-                )
-                .await
+                let mut body = json!({
+                    "status": "ok",
+                    "command_id": params.command_id,
+                    "elapsed_ms": elapsed_ms,
+                });
+                let images = match result.as_ref().and_then(command_image) {
+                    Some((image, note)) => {
+                        if let Some(note) = note {
+                            body["note"] = json!(note);
+                        }
+                        vec![image]
+                    }
+                    None => {
+                        body["result"] = json!(result);
+                        Vec::new()
+                    }
+                };
+                self.finish(body, images).await
             }
             Err(mut body) => {
                 body["command_id"] = json!(params.command_id);
@@ -623,18 +631,14 @@ impl PositronMcpHandler {
     ) -> Result<CallToolResult, ErrorData> {
         self.state.note_request();
 
-        let uri = match self
+        let result = match self
             .broker(&context, CURRENT_PLOT_COMMAND, Vec::new())
             .await
         {
             Ok(result) => result,
             Err(body) => return Ok(self.error(body).await),
         };
-        let Some((mime_type, data)) = uri
-            .as_ref()
-            .and_then(Value::as_str)
-            .and_then(decode_data_uri)
-        else {
+        let Some((image, _)) = result.as_ref().and_then(command_image) else {
             return Ok(self
                 .finish(
                     json!({
@@ -646,12 +650,7 @@ impl PositronMcpHandler {
                 .await);
         };
 
-        Ok(self
-            .finish(
-                json!({ "status": "ok", "mime_type": mime_type }),
-                vec![ContentBlock::image(data.to_string(), mime_type.to_string())],
-            )
-            .await)
+        Ok(self.finish(json!({ "status": "ok" }), vec![image]).await)
     }
 }
 
@@ -1383,9 +1382,19 @@ fn strip_ansi(text: &str) -> String {
     ANSI_ESCAPE.replace_all(text, "").into_owned()
 }
 
-/// Split a base64 data URI into its MIME type and payload.
-fn decode_data_uri(uri: &str) -> Option<(&str, &str)> {
-    uri.strip_prefix("data:")?.split_once(";base64,")
+/// Read a command result shaped like Positron's `AgentCommandImage`
+/// (`{ kind: "image", mimeType, data, note? }`) as an image block and its note.
+fn command_image(result: &Value) -> Option<(ContentBlock, Option<&str>)> {
+    if result.get("kind")?.as_str()? != "image" {
+        return None;
+    }
+    let mime_type = result.get("mimeType")?.as_str()?;
+    let data = result.get("data")?.as_str()?;
+    let note = result.get("note").and_then(Value::as_str);
+    Some((
+        ContentBlock::image(data.to_string(), mime_type.to_string()),
+        note,
+    ))
 }
 
 /// Trim `text` to what is left of the budget, reporting whether it was cut.
