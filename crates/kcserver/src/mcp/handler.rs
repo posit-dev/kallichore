@@ -563,7 +563,8 @@ impl PositronMcpHandler {
         description = "Run one of the IDE commands returned by list_positron_commands. Requires \
                        Positron to be connected; waits briefly for a window that is reloading. \
                        Use this for IDE actions such as starting a session, which the kernel \
-                       tools deliberately never do.",
+                       tools deliberately never do. A command that returns an image comes back \
+                       as an image block, with an optional note, instead of a result field.",
         annotations(
             title = "Run a Positron command",
             destructive_hint = true,
@@ -638,7 +639,7 @@ impl PositronMcpHandler {
             Ok(result) => result,
             Err(body) => return Ok(self.error(body).await),
         };
-        let Some((image, _)) = result.as_ref().and_then(command_image) else {
+        let Some((image, note)) = result.as_ref().and_then(command_image) else {
             return Ok(self
                 .finish(
                     json!({
@@ -650,7 +651,11 @@ impl PositronMcpHandler {
                 .await);
         };
 
-        Ok(self.finish(json!({ "status": "ok" }), vec![image]).await)
+        let mut body = json!({ "status": "ok" });
+        if let Some(note) = note {
+            body["note"] = json!(note);
+        }
+        Ok(self.finish(body, vec![image]).await)
     }
 }
 
@@ -1371,10 +1376,14 @@ fn collect_images(
     images: &mut Vec<ContentBlock>,
 ) {
     for (mime, value) in data {
-        if mime == "image/png" || mime == "image/jpeg" {
+        if is_renderable_image(mime) {
             images.push(ContentBlock::image(value.clone(), mime.clone()));
         }
     }
+}
+
+fn is_renderable_image(mime: &str) -> bool {
+    mime == "image/png" || mime == "image/jpeg"
 }
 
 /// Remove terminal escape sequences from text.
@@ -1388,7 +1397,10 @@ fn command_image(result: &Value) -> Option<(ContentBlock, Option<&str>)> {
     if result.get("kind")?.as_str()? != "image" {
         return None;
     }
-    let mime_type = result.get("mimeType")?.as_str()?;
+    let mime_type = result
+        .get("mimeType")?
+        .as_str()
+        .filter(|mime| is_renderable_image(mime))?;
     let data = result.get("data")?.as_str()?;
     let note = result.get("note").and_then(Value::as_str);
     Some((
