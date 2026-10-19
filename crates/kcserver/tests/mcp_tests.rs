@@ -657,6 +657,44 @@ async fn test_run_positron_command_is_brokered_to_a_window() {
     assert!(!result.is_error, "{:?}", result);
     assert_eq!(result.field("result"), &json!({ "opened": true }));
 
+    // A command that returns an image.
+    let call = tokio::spawn(async move {
+        let result = agent
+            .call_tool(
+                "run_positron_command",
+                json!({ "command_id": "positronViewer.screenshot" }),
+            )
+            .await;
+        (agent, result)
+    });
+
+    let request = channel.next_command(Duration::from_secs(10)).await;
+    channel.reply(CommandReply {
+        id: request.id,
+        ok: true,
+        result: Some(json!({
+            "kind": "image",
+            "mimeType": "image/png",
+            "data": "iVBORw0KGgo=",
+            "note": "800x600",
+        })),
+        reason: None,
+        message: None,
+    });
+
+    let (mut agent, result) = call.await.expect("Tool call panicked");
+    assert!(!result.is_error, "{:?}", result);
+    let images = result.blocks("image");
+    assert_eq!(images.len(), 1, "{:?}", result);
+    assert_eq!(images[0]["mimeType"], json!("image/png"));
+    assert_eq!(images[0]["data"], json!("iVBORw0KGgo="));
+    assert_eq!(result.field("note"), &json!("800x600"));
+    assert!(
+        result.structured.get("result").is_none(),
+        "The image should not also be sent as text: {:?}",
+        result
+    );
+
     // A command the window refuses.
     let call = tokio::spawn(async move {
         let result = agent
@@ -707,7 +745,7 @@ async fn test_get_plot_returns_the_current_plot_as_an_image() {
     channel.reply(CommandReply {
         id: request.id,
         ok: true,
-        result: Some(json!("data:image/png;base64,iVBORw0KGgo=")),
+        result: Some(json!({ "kind": "image", "mimeType": "image/png", "data": "iVBORw0KGgo=" })),
         reason: None,
         message: None,
     });
