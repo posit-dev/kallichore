@@ -11,9 +11,10 @@
 //! Almost every MCP client can start a server as a child process and talk to
 //! it over stdin and stdout, and a client configured that way needs nothing
 //! but a command line: no URL, no token, nothing that goes stale when the
-//! supervisor restarts. `kcserver mcp-stdio` is that command, as is a copy of
-//! `kcserver` named `positron-mcp`, which Positron keeps in the connections
-//! directory so the command never moves. It holds no sessions of its own; it
+//! supervisor restarts. `kcserver mcp-stdio` is that command. Positron keeps a
+//! `positron-mcp` launcher in the connections directory so the command never
+//! moves: a script that runs `kcserver mcp-stdio`, or on Windows, where clients
+//! cannot start a script without a shell, a copy of `kcserver`. It holds no sessions of its own; it
 //! finds the endpoint of the workspace the client is working in and relays
 //! each JSON-RPC message to it over HTTP, so the server the client ends up
 //! talking to is the same one every other agent reaches.
@@ -71,7 +72,7 @@ use super::{MCP_TOKEN_VAR, MCP_URL_VAR};
 const INDEX_FILE: &str = "connections.json";
 
 /// The name of the copy of this binary Positron keeps in the connections
-/// directory's `bin` folder, which runs only the bridge.
+/// directory's `bin` folder on Windows, which runs only the bridge.
 const LAUNCHER_NAME: &str = "positron-mcp";
 
 /// The version of the index and descriptors the bridge understands.
