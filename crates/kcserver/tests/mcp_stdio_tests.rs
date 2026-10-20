@@ -278,12 +278,17 @@ async fn test_bridge_finds_the_connections_directory_without_arguments() {
     );
 
     // From where the launcher is kept: a copy named positron-mcp in the
-    // connections directory's bin folder.
+    // connections directory's bin folder, which beats the environment.
     let bin = connections.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let launcher = bin.join(format!("positron-mcp{}", std::env::consts::EXE_SUFFIX));
     std::fs::copy(env!("CARGO_BIN_EXE_kcserver"), &launcher).unwrap();
-    let mut agent = StdioAgent::spawn_launcher(&launcher, &[], &folder);
+    let elsewhere = root.path().join("elsewhere");
+    let mut agent = StdioAgent::spawn_launcher(
+        &launcher,
+        &[("POSITRON_MCP_CONNECTIONS", elsewhere.to_str().unwrap())],
+        &folder,
+    );
     agent.initialize().await;
     assert_eq!(
         attached_workspace(&mut agent).await,

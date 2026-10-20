@@ -65,7 +65,7 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use super::handler::{server_info, PositronMcpHandler, INSTRUCTIONS};
 use super::listener::{CALLER_PATH_SEGMENT, MCP_PATH_PREFIX, PRESENCE_PATH_SUFFIX};
-use super::{MCP_CONNECTIONS_VAR, MCP_TOKEN_VAR, MCP_URL_VAR};
+use super::{MCP_TOKEN_VAR, MCP_URL_VAR};
 
 /// The index Positron keeps in the connections directory.
 const INDEX_FILE: &str = "connections.json";
@@ -118,26 +118,14 @@ pub struct BridgeOptions {
     pub workspace: Option<String>,
 }
 
-/// Whether this binary was started as the `positron-mcp` launcher.
-pub fn invoked_as_launcher() -> bool {
-    std::env::args_os()
-        .next()
-        .map(PathBuf::from)
-        .and_then(|arg0| arg0.file_stem().map(|stem| stem == LAUNCHER_NAME))
-        .unwrap_or(false)
-}
-
-/// The connections directory when none is named on the command line:
-/// `POSITRON_MCP_CONNECTIONS`, else, for the launcher, the directory above the
-/// `bin` folder it is kept in.
-pub fn default_connections() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os(MCP_CONNECTIONS_VAR) {
-        return Some(PathBuf::from(dir));
-    }
-    if !invoked_as_launcher() {
+/// When this binary is the `positron-mcp` launcher, the connections directory
+/// it is kept in: the one above its `bin` folder.
+pub fn launcher_connections() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let stem = exe.file_stem()?.to_str()?;
+    if !stem.eq_ignore_ascii_case(LAUNCHER_NAME) {
         return None;
     }
-    let exe = std::env::current_exe().ok()?;
     Some(exe.parent()?.parent()?.to_path_buf())
 }
 

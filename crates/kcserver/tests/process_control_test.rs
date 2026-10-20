@@ -14,8 +14,7 @@
 mod common;
 
 use common::test_utils::{
-    create_session_with_client, create_test_session, get_python_executable,
-    is_ipykernel_available,
+    create_session_with_client, create_test_session, get_python_executable, is_ipykernel_available,
 };
 use common::TestServer;
 use kcshared::jupyter_message::{JupyterChannel, JupyterMessage, JupyterMessageHeader};
@@ -52,8 +51,11 @@ async fn test_kill_session_terminates_process() {
         let client = server.create_client().await;
 
         let session_id = format!("kill-test-{}", Uuid::new_v4());
-        create_session_with_client(&client, create_test_session(session_id.clone(), &python_cmd))
-            .await;
+        create_session_with_client(
+            &client,
+            create_test_session(session_id.clone(), &python_cmd),
+        )
+        .await;
 
         match client.start_session(session_id.clone()).await {
             Ok(kallichore_api::StartSessionResponse::Started(_)) => {}
@@ -64,8 +66,10 @@ async fn test_kill_session_terminates_process() {
         }
 
         // Find the PID the supervisor is tracking for this session.
-        let kallichore_api::ListSessionsResponse::ListOfActiveSessions(list) =
-            client.list_sessions().await.expect("failed to list sessions");
+        let kallichore_api::ListSessionsResponse::ListOfActiveSessions(list) = client
+            .list_sessions()
+            .await
+            .expect("failed to list sessions");
         let pid = list
             .sessions
             .iter()

@@ -23,8 +23,8 @@ use common::test_utils::{
 };
 use common::TestServer;
 use futures::{SinkExt, StreamExt};
-use kallichore_api::models::{ExecuteRequest, InterruptMode};
 use kallichore_api::models::Status;
+use kallichore_api::models::{ExecuteRequest, InterruptMode};
 use kallichore_api::{
     ApiNoContext, GetSessionHistoryResponse, GetSessionResponse, StartSessionResponse,
 };

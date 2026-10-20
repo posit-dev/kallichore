@@ -117,7 +117,10 @@ async fn test_handshake_startup(
 
     // Verify the connection info
     assert_eq!(connection_info.transport, expected_transport);
-    assert!(connection_info.server_pid > 0, "PID should be greater than 0");
+    assert!(
+        connection_info.server_pid > 0,
+        "PID should be greater than 0"
+    );
     assert!(
         !connection_info.server_id.is_empty(),
         "server_id should be present"

@@ -8,10 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    jupyter_message::JupyterMessage, 
-    kernel_message::KernelMessage,
-};
+use crate::{jupyter_message::JupyterMessage, kernel_message::KernelMessage};
 
 /// A message sent over a WebSocket connection. This message can be either a
 /// Jupyter message (conforming roughly to the Jupyter kernel protocol) or a

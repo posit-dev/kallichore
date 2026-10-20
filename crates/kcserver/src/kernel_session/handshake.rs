@@ -294,7 +294,8 @@ impl HandshakeCoordinator {
                 if let Some(cmd) = &self.startup_command {
                     error_context.push_str(&format!("Startup command: {}\n", cmd));
                 }
-                error_context.push_str("The kernel exited before a connection could be established");
+                error_context
+                    .push_str("The kernel exited before a connection could be established");
 
                 log::error!(
                     "[session {}] Kernel exited during handshake with code {}: {}",

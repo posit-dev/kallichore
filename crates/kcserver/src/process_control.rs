@@ -43,8 +43,7 @@ pub fn is_running(pid: u32) -> bool {
         // Signal 0 runs kill()'s existence and permission checks without
         // sending anything. EPERM means the process is there but owned by
         // somebody else, which still counts as running.
-        signal(pid, 0)
-            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        signal(pid, 0) || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
     #[cfg(windows)]

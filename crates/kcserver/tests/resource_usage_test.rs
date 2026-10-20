@@ -13,8 +13,7 @@
 mod common;
 
 use common::test_utils::{
-    create_session_with_client, create_test_session, get_python_executable,
-    is_ipykernel_available,
+    create_session_with_client, create_test_session, get_python_executable, is_ipykernel_available,
 };
 use common::transport::CommunicationChannel;
 use common::TestServer;
@@ -536,9 +535,7 @@ async fn test_multi_session_cpu_tracking() {
         );
 
         println!("Multi-session CPU tracking test passed!");
-        println!(
-            "Both sessions showed reasonable CPU usage without artificial spikes."
-        );
+        println!("Both sessions showed reasonable CPU usage without artificial spikes.");
 
         // Clean up
         let _ = comm_1.close().await;

@@ -235,8 +235,8 @@ enum Command {
 #[derive(clap::Args, Debug)]
 struct McpStdioArgs {
     /// Positron's MCP connections directory, which holds connections.json.
-    /// Defaults to POSITRON_MCP_CONNECTIONS, else, when run as positron-mcp,
-    /// the directory above the one this binary is in
+    /// Defaults to the one positron-mcp is kept in, else
+    /// POSITRON_MCP_CONNECTIONS
     #[arg(long)]
     connections: Option<PathBuf>,
 
@@ -276,9 +276,11 @@ async fn run_mcp_stdio(args: McpStdioArgs) {
     );
 
     let options = mcp::stdio_bridge::BridgeOptions {
-        connections: args
-            .connections
-            .or_else(mcp::stdio_bridge::default_connections),
+        connections: args.connections.or_else(|| {
+            std::env::var_os(mcp::MCP_CONNECTIONS_VAR)
+                .filter(|dir| !dir.is_empty())
+                .map(PathBuf::from)
+        }),
         workspace: args.workspace,
     };
     if let Err(e) = mcp::stdio_bridge::run(options).await {
@@ -291,8 +293,10 @@ async fn run_mcp_stdio(args: McpStdioArgs) {
 /// and pass it to the web server.
 #[tokio::main]
 async fn main() {
-    if mcp::stdio_bridge::invoked_as_launcher() {
-        run_mcp_stdio(LauncherArgs::parse().mcp).await;
+    if let Some(dir) = mcp::stdio_bridge::launcher_connections() {
+        let mut args = LauncherArgs::parse().mcp;
+        args.connections.get_or_insert(dir);
+        run_mcp_stdio(args).await;
         return;
     }
 
@@ -505,7 +509,10 @@ async fn main() {
             );
             std::process::exit(1);
         }
-        log::info!("Reported connection details over handshake socket {}", handshake_path);
+        log::info!(
+            "Reported connection details over handshake socket {}",
+            handshake_path
+        );
     }
 
     log::debug!("Starting Kallichore");
