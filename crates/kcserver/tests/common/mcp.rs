@@ -397,8 +397,8 @@ fn tool_call(result: Value) -> ToolCall {
     }
 }
 
-/// An agent that starts `kcserver mcp-stdio` or `positron-mcp` as its MCP
-/// server and talks to it over the child's stdin and stdout.
+/// An agent that starts `kcserver mcp-stdio` as its MCP server and talks to it
+/// over the child's stdin and stdout.
 ///
 /// Every line the child writes to stdout must be a JSON-RPC message, so reading
 /// one that is not fails the test.
@@ -419,28 +419,9 @@ impl StdioAgent {
     /// working directory. The Positron variables are cleared first, so the
     /// bridge sees only what the test gives it.
     pub fn spawn(args: &[&str], env: &[(&str, &str)], working_dir: &std::path::Path) -> Self {
-        let program = std::path::Path::new(env!("CARGO_BIN_EXE_kcserver"));
-        Self::spawn_program(program, &[&["mcp-stdio"], args].concat(), env, working_dir)
-    }
-
-    /// Start a copy of the binary that runs as the `positron-mcp` launcher,
-    /// with no arguments.
-    pub fn spawn_launcher(
-        launcher: &std::path::Path,
-        env: &[(&str, &str)],
-        working_dir: &std::path::Path,
-    ) -> Self {
-        Self::spawn_program(launcher, &[], env, working_dir)
-    }
-
-    fn spawn_program(
-        program: &std::path::Path,
-        args: &[&str],
-        env: &[(&str, &str)],
-        working_dir: &std::path::Path,
-    ) -> Self {
-        let mut command = tokio::process::Command::new(program);
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_kcserver"));
         command
+            .arg("mcp-stdio")
             .args(args)
             .current_dir(working_dir)
             .env_remove("POSITRON_MCP_URL")
