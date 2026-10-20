@@ -11,10 +11,12 @@
 //! Almost every MCP client can start a server as a child process and talk to
 //! it over stdin and stdout, and a client configured that way needs nothing
 //! but a command line: no URL, no token, nothing that goes stale when the
-//! supervisor restarts. `kcserver mcp-stdio` is that command. It holds no
-//! sessions of its own; it finds the endpoint of the workspace the client is
-//! working in and relays each JSON-RPC message to it over HTTP, so the server
-//! the client ends up talking to is the same one every other agent reaches.
+//! supervisor restarts. `kcserver mcp-stdio` is that command, as is a copy of
+//! `kcserver` named `positron-mcp`, which Positron keeps in the connections
+//! directory so the command never moves. It holds no sessions of its own; it
+//! finds the endpoint of the workspace the client is working in and relays
+//! each JSON-RPC message to it over HTTP, so the server the client ends up
+//! talking to is the same one every other agent reaches.
 //!
 //! The endpoint is found in this order:
 //!
@@ -63,10 +65,14 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use super::handler::{server_info, PositronMcpHandler, INSTRUCTIONS};
 use super::listener::{CALLER_PATH_SEGMENT, MCP_PATH_PREFIX, PRESENCE_PATH_SUFFIX};
-use super::{MCP_TOKEN_VAR, MCP_URL_VAR};
+use super::{MCP_CONNECTIONS_VAR, MCP_TOKEN_VAR, MCP_URL_VAR};
 
 /// The index Positron keeps in the connections directory.
 const INDEX_FILE: &str = "connections.json";
+
+/// The name of the copy of this binary Positron keeps in the connections
+/// directory's `bin` folder, which runs only the bridge.
+const LAUNCHER_NAME: &str = "positron-mcp";
 
 /// The version of the index and descriptors the bridge understands.
 const CONNECTIONS_VERSION: u32 = 1;
@@ -110,6 +116,29 @@ pub struct BridgeOptions {
     /// A workspace ID to use regardless of the environment and working
     /// directory, for clients whose working directory means nothing.
     pub workspace: Option<String>,
+}
+
+/// Whether this binary was started as the `positron-mcp` launcher.
+pub fn invoked_as_launcher() -> bool {
+    std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .and_then(|arg0| arg0.file_stem().map(|stem| stem == LAUNCHER_NAME))
+        .unwrap_or(false)
+}
+
+/// The connections directory when none is named on the command line:
+/// `POSITRON_MCP_CONNECTIONS`, else, for the launcher, the directory above the
+/// `bin` folder it is kept in.
+pub fn default_connections() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os(MCP_CONNECTIONS_VAR) {
+        return Some(PathBuf::from(dir));
+    }
+    if !invoked_as_launcher() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.parent()?.to_path_buf())
 }
 
 /// Serve MCP over stdin and stdout until stdin closes.

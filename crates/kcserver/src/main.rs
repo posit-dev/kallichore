@@ -229,20 +229,38 @@ enum Command {
     /// processes. The workspace is the one named with --workspace, else the one
     /// in POSITRON_MCP_URL and POSITRON_MCP_TOKEN, else the one in the
     /// connections directory whose folder contains the working directory.
-    McpStdio {
-        /// Positron's MCP connections directory, which holds connections.json
-        #[arg(long)]
-        connections: Option<PathBuf>,
+    McpStdio(McpStdioArgs),
+}
 
-        /// The ID of the workspace to connect to
-        #[arg(long)]
-        workspace: Option<String>,
-    },
+#[derive(clap::Args, Debug)]
+struct McpStdioArgs {
+    /// Positron's MCP connections directory, which holds connections.json.
+    /// Defaults to POSITRON_MCP_CONNECTIONS, else, when run as positron-mcp,
+    /// the directory above the one this binary is in
+    #[arg(long)]
+    connections: Option<PathBuf>,
+
+    /// The ID of the workspace to connect to
+    #[arg(long)]
+    workspace: Option<String>,
+}
+
+/// The arguments when run as the `positron-mcp` launcher Positron keeps in its
+/// connections directory, which is only ever the stdio bridge.
+#[derive(Parser, Debug)]
+#[command(
+    name = "positron-mcp",
+    version,
+    about = "Serve Positron's MCP server over stdin and stdout"
+)]
+struct LauncherArgs {
+    #[command(flatten)]
+    mcp: McpStdioArgs,
 }
 
 /// Run the stdio MCP bridge. Stdout carries the protocol, so logs go to stderr
 /// and nothing else may print.
-async fn run_mcp_stdio(connections: Option<PathBuf>, workspace: Option<String>) {
+async fn run_mcp_stdio(args: McpStdioArgs) {
     let level = match std::env::var("RUST_LOG").as_deref() {
         Ok("trace") => LevelFilter::Trace,
         Ok("debug") => LevelFilter::Debug,
@@ -258,8 +276,10 @@ async fn run_mcp_stdio(connections: Option<PathBuf>, workspace: Option<String>) 
     );
 
     let options = mcp::stdio_bridge::BridgeOptions {
-        connections,
-        workspace,
+        connections: args
+            .connections
+            .or_else(mcp::stdio_bridge::default_connections),
+        workspace: args.workspace,
     };
     if let Err(e) = mcp::stdio_bridge::run(options).await {
         log::error!("MCP stdio bridge failed: {}", e);
@@ -271,15 +291,16 @@ async fn run_mcp_stdio(connections: Option<PathBuf>, workspace: Option<String>) 
 /// and pass it to the web server.
 #[tokio::main]
 async fn main() {
+    if mcp::stdio_bridge::invoked_as_launcher() {
+        run_mcp_stdio(LauncherArgs::parse().mcp).await;
+        return;
+    }
+
     // Parse command line arguments
     let args = Args::parse();
 
-    if let Some(Command::McpStdio {
-        connections,
-        workspace,
-    }) = args.command
-    {
-        run_mcp_stdio(connections, workspace).await;
+    if let Some(Command::McpStdio(mcp_args)) = args.command {
+        run_mcp_stdio(mcp_args).await;
         return;
     }
 

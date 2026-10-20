@@ -59,6 +59,10 @@ pub const MCP_URL_VAR: &str = "POSITRON_MCP_URL";
 /// The variable a kernel reads its workspace's bearer token from.
 pub const MCP_TOKEN_VAR: &str = "POSITRON_MCP_TOKEN";
 
+/// The variable naming Positron's MCP connections directory, which Positron
+/// publishes to its terminals.
+pub const MCP_CONNECTIONS_VAR: &str = "POSITRON_MCP_CONNECTIONS";
+
 /// One workspace's MCP endpoint.
 type WorkspaceService = StreamableHttpService<PositronMcpHandler, LocalSessionManager>;
 

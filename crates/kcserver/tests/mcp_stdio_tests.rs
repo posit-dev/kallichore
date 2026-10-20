@@ -252,6 +252,46 @@ async fn test_bridge_finds_the_workspace_by_folder() {
 }
 
 #[tokio::test]
+async fn test_bridge_finds_the_connections_directory_without_arguments() {
+    let server = TestServer::start().await;
+    let workspace = server.register_mcp_workspace("Workspace", None).await;
+
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let connections = root.path().join("connections");
+    write_connections(
+        &connections,
+        &[Listed::registered(&workspace, vec![&folder])],
+    );
+
+    // From the environment Positron gives its terminals.
+    let mut agent = StdioAgent::spawn(
+        &[],
+        &[("POSITRON_MCP_CONNECTIONS", connections.to_str().unwrap())],
+        &folder,
+    );
+    agent.initialize().await;
+    assert_eq!(
+        attached_workspace(&mut agent).await,
+        json!(workspace.workspace_id)
+    );
+
+    // From where the launcher is kept: a copy named positron-mcp in the
+    // connections directory's bin folder.
+    let bin = connections.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let launcher = bin.join(format!("positron-mcp{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(env!("CARGO_BIN_EXE_kcserver"), &launcher).unwrap();
+    let mut agent = StdioAgent::spawn_launcher(&launcher, &[], &folder);
+    agent.initialize().await;
+    assert_eq!(
+        attached_workspace(&mut agent).await,
+        json!(workspace.workspace_id)
+    );
+}
+
+#[tokio::test]
 async fn test_bridge_forwards_the_agents_name_and_runs_requests_concurrently() {
     let server = TestServer::start().await;
     let workspace = server.register_mcp_workspace("Busy Workspace", None).await;
