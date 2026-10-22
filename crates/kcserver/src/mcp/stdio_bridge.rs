@@ -11,10 +11,13 @@
 //! Almost every MCP client can start a server as a child process and talk to
 //! it over stdin and stdout, and a client configured that way needs nothing
 //! but a command line: no URL, no token, nothing that goes stale when the
-//! supervisor restarts. `kcserver mcp-stdio` is that command. It holds no
-//! sessions of its own; it finds the endpoint of the workspace the client is
-//! working in and relays each JSON-RPC message to it over HTTP, so the server
-//! the client ends up talking to is the same one every other agent reaches.
+//! supervisor restarts. `kcserver mcp-stdio` is that command; Positron
+//! configures agents with a `positron-mcp` script in the connections directory
+//! that runs it, so the command line does not move when Positron is updated.
+//! It holds no sessions of its own; it finds the endpoint of the workspace the
+//! client is working in and relays each JSON-RPC message to it over HTTP, so
+//! the server the client ends up talking to is the same one every other agent
+//! reaches.
 //!
 //! The endpoint is found in this order:
 //!

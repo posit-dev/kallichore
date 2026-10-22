@@ -267,9 +267,7 @@ mod macos {
 
         Some(ProcessSample {
             pid,
-            cpu_time_ns: mach_time_to_ns(
-                rusage.ri_user_time.saturating_add(rusage.ri_system_time),
-            ),
+            cpu_time_ns: mach_time_to_ns(rusage.ri_user_time.saturating_add(rusage.ri_system_time)),
             memory_bytes: rusage.ri_phys_footprint,
             thread_count: thread_count(pid),
         })

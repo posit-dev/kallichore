@@ -426,6 +426,7 @@ impl StdioAgent {
             .current_dir(working_dir)
             .env_remove("POSITRON_MCP_URL")
             .env_remove("POSITRON_MCP_TOKEN")
+            .env_remove("POSITRON_MCP_CONNECTIONS")
             .env("RUST_LOG", "debug")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

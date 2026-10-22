@@ -230,7 +230,8 @@ enum Command {
     /// in POSITRON_MCP_URL and POSITRON_MCP_TOKEN, else the one in the
     /// connections directory whose folder contains the working directory.
     McpStdio {
-        /// Positron's MCP connections directory, which holds connections.json
+        /// Positron's MCP connections directory, which holds connections.json.
+        /// Defaults to POSITRON_MCP_CONNECTIONS
         #[arg(long)]
         connections: Option<PathBuf>,
 
@@ -258,7 +259,11 @@ async fn run_mcp_stdio(connections: Option<PathBuf>, workspace: Option<String>) 
     );
 
     let options = mcp::stdio_bridge::BridgeOptions {
-        connections,
+        connections: connections.or_else(|| {
+            std::env::var_os(mcp::MCP_CONNECTIONS_VAR)
+                .filter(|dir| !dir.is_empty())
+                .map(PathBuf::from)
+        }),
         workspace,
     };
     if let Err(e) = mcp::stdio_bridge::run(options).await {
@@ -484,7 +489,10 @@ async fn main() {
             );
             std::process::exit(1);
         }
-        log::info!("Reported connection details over handshake socket {}", handshake_path);
+        log::info!(
+            "Reported connection details over handshake socket {}",
+            handshake_path
+        );
     }
 
     log::debug!("Starting Kallichore");

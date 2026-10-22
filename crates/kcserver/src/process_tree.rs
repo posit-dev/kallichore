@@ -30,8 +30,8 @@ pub fn get_process_tree(session_id: &str, root_pid: u32) -> HashSet<u32> {
     // the job already knows the whole tree and there is nothing to walk.
     #[cfg(target_os = "windows")]
     {
-        let mut tree = crate::kernel_session::job_object::session_process_ids(session_id)
-            .unwrap_or_default();
+        let mut tree =
+            crate::kernel_session::job_object::session_process_ids(session_id).unwrap_or_default();
         tree.insert(root_pid);
         tree
     }

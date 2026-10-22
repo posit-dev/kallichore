@@ -213,9 +213,7 @@ async fn test_execute_code_error() {
                 let error_outputs: Vec<_> = reply
                     .output
                     .iter()
-                    .filter(|o| {
-                        o.r#type == kallichore_api::models::ExecuteOutputType::Error
-                    })
+                    .filter(|o| o.r#type == kallichore_api::models::ExecuteOutputType::Error)
                     .collect();
                 assert!(
                     !error_outputs.is_empty(),
@@ -310,8 +308,7 @@ async fn test_execute_code_timeout() {
         let (client, session_id) = setup_kernel_session(&server, &python_cmd).await;
 
         // Execute code that takes longer than the timeout
-        let mut request =
-            ExecuteRequest::new("import time; time.sleep(10)".to_string());
+        let mut request = ExecuteRequest::new("import time; time.sleep(10)".to_string());
         request.timeout_seconds = Some(1);
         let response = client
             .execute_code(session_id.clone(), request)

@@ -333,7 +333,10 @@ mod tests {
     #[test]
     fn first_sample_reports_nothing() {
         let mut tracker = CpuTracker::default();
-        assert_eq!(tracker.usage_percent(&[sample(1, 5_000_000)], Instant::now()), 0);
+        assert_eq!(
+            tracker.usage_percent(&[sample(1, 5_000_000)], Instant::now()),
+            0
+        );
     }
 
     #[test]
@@ -344,7 +347,10 @@ mod tests {
 
         // One second of CPU over one second of wall time
         let later = start + Duration::from_secs(1);
-        assert_eq!(tracker.usage_percent(&[sample(1, 1_000_000_000)], later), 100);
+        assert_eq!(
+            tracker.usage_percent(&[sample(1, 1_000_000_000)], later),
+            100
+        );
     }
 
     #[test]
