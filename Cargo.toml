@@ -12,5 +12,5 @@ resolver = "2"
 [workspace.package]
 rust-version = "1.88"
 edition = "2021"
-license = "MIT"
+license = "Elastic"
 authors = ["Posit Software, PBC"]
