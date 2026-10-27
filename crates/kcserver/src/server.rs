@@ -2567,7 +2567,7 @@ impl<C> Server<C> {
         };
         let socket_path = self
             .get_socket_directory()
-            .join(format!("kc-{:x}.sock", hash));
+            .join(format!("kcs-{:x}.sock", hash));
 
         let path_str = socket_path.to_string_lossy();
         if path_str.len() > crate::transport::UNIX_SOCKET_PATH_MAX {
