@@ -71,6 +71,7 @@ mod unix_socket_tests {
                 ]);
                 c
             };
+            cmd.args(&["--socket-dir", temp_dir.path().to_str().unwrap()]);
 
             // Reduce logging noise for faster startup
             cmd.stdout(Stdio::null());
