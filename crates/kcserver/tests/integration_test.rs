@@ -122,6 +122,24 @@ mod unix_socket_tests {
         pub fn socket_path(&self) -> &std::path::Path {
             &self.socket_path
         }
+
+        /// Send an HTTP request and return the response body
+        fn request(&self, method: &str, path: &str, body: &str) -> String {
+            let mut stream = UnixStream::connect(&self.socket_path).unwrap();
+            write!(
+                stream,
+                "{} {} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                method,
+                path,
+                body.len(),
+                body
+            )
+            .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 200"), "{}", response);
+            response.split("\r\n\r\n").nth(1).unwrap().to_string()
+        }
     }
 
     impl Drop for UnixSocketTestServer {
@@ -174,6 +192,39 @@ mod unix_socket_tests {
             .expect("Should be able to connect to the Unix socket");
 
         println!("Unix socket file creation test successful!");
+    }
+
+    #[tokio::test]
+    async fn test_unix_socket_channels_are_unique_per_session() {
+        let server = UnixSocketTestServer::start().await;
+
+        // Session IDs that share a long common prefix, as notebook IDs do
+        let session_ids = ["python-notebook-1111aaaa", "python-notebook-2222bbbb"];
+        let paths: Vec<String> = session_ids
+            .iter()
+            .map(|id| {
+                let session = serde_json::json!({
+                    "session_id": id,
+                    "display_name": id,
+                    "language": "python",
+                    "username": "test",
+                    "input_prompt": ">>> ",
+                    "continuation_prompt": "... ",
+                    "argv": ["python", "-m", "ipykernel", "-f", "{connection_file}"],
+                    "working_directory": ".",
+                    "env": [],
+                    "connection_timeout": 60,
+                    "interrupt_mode": "message",
+                    "protocol_version": "5.3",
+                    "session_mode": "notebook",
+                "startup_environment": "none",
+                });
+                server.request("PUT", "/sessions", &session.to_string());
+                server.request("GET", &format!("/sessions/{}/channels", id), "")
+            })
+            .collect();
+
+        assert_ne!(paths[0], paths[1]);
     }
 
     #[tokio::test]

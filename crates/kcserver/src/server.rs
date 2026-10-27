@@ -2554,49 +2554,34 @@ impl<C> Server<C> {
             session_id
         );
 
-        // Get the socket directory from the server config
-        let socket_directory = self.get_socket_directory();
-        let server_pid = std::process::id();
-
-        // Truncate session_id to 8 characters to keep socket path short
-        let short_session_id = if session_id.len() > 8 {
-            &session_id[..8]
-        } else {
-            &session_id
-        };
-
-        let socket_name = format!("kc-{}.{}.sock", server_pid, short_session_id);
-        let mut socket_path = socket_directory.join(socket_name);
-
-        // Ensure the socket path doesn't exceed the Unix domain socket limit
-        if socket_path.to_string_lossy().len() > crate::transport::UNIX_SOCKET_PATH_MAX {
-            // Fallback to an even shorter name using just a hash
+        // Name the socket after a hash of the full session ID and server PID, so
+        // that it is unique per session, short, and safe as a file name
+        let hash = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
 
             let mut hasher = DefaultHasher::new();
             session_id.hash(&mut hasher);
-            server_pid.hash(&mut hasher);
-            let hash = hasher.finish();
+            std::process::id().hash(&mut hasher);
+            hasher.finish()
+        };
+        let socket_path = self
+            .get_socket_directory()
+            .join(format!("kc-{:x}.sock", hash));
 
-            let socket_name = format!("kc-{:x}.sock", hash);
-            socket_path = socket_directory.join(socket_name);
-
-            // Final validation - if even the hashed path is too long, return an error
-            let final_path_str = socket_path.to_string_lossy();
-            if final_path_str.len() > crate::transport::UNIX_SOCKET_PATH_MAX {
-                let error_msg = format!(
-                    "Cannot create session socket: even shortened path is too long ({} chars): {}",
-                    final_path_str.len(),
-                    final_path_str
-                );
-                log::error!("create_domain_socket_channel: {}", error_msg);
-                return Ok(ChannelsUpgradeResponse::InvalidRequest(models::Error {
-                    message: error_msg,
-                    code: "socket_path_too_long".to_string(),
-                    details: None,
-                }));
-            }
+        let path_str = socket_path.to_string_lossy();
+        if path_str.len() > crate::transport::UNIX_SOCKET_PATH_MAX {
+            let error_msg = format!(
+                "Cannot create session socket: path is too long ({} chars): {}",
+                path_str.len(),
+                path_str
+            );
+            log::error!("create_domain_socket_channel: {}", error_msg);
+            return Ok(ChannelsUpgradeResponse::InvalidRequest(models::Error {
+                message: error_msg,
+                code: "socket_path_too_long".to_string(),
+                details: None,
+            }));
         }
 
         info!(
