@@ -890,6 +890,7 @@ mod tests {
                 name: None,
                 version: None,
             },
+            privileged: true,
         }
     }
 
