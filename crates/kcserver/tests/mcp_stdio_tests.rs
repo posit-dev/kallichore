@@ -157,7 +157,7 @@ async fn test_bridge_relays_using_the_environment() {
     );
 
     let tools = agent.tool_names().await;
-    assert_eq!(tools.len(), 9, "{:?}", tools);
+    assert_eq!(tools.len(), 10, "{:?}", tools);
 
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert!(!result.is_error, "{:?}", result);
@@ -230,7 +230,7 @@ async fn test_bridge_finds_the_workspace_by_folder() {
     // says why nothing works rather than failing to start.
     let mut agent = StdioAgent::spawn(&args, &[], &elsewhere);
     agent.initialize().await;
-    assert_eq!(agent.tool_names().await.len(), 9);
+    assert_eq!(agent.tool_names().await.len(), 10);
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert!(result.is_error, "{:?}", result);
     assert_eq!(result.field("code"), &json!("NO_WORKSPACE"));
@@ -304,7 +304,7 @@ async fn test_bridge_forwards_the_agents_name_and_runs_requests_concurrently() {
     let command = agent
         .send_request(
             "tools/call",
-            json!({ "name": "run_positron_command",
+            json!({ "name": "run_privileged_positron_command",
                     "arguments": { "command_id": "vscode.open", "args": ["file:///x.R"] } }),
         )
         .await;
@@ -478,7 +478,7 @@ async fn test_bridge_started_before_positron_connects_when_it_arrives() {
         "{}",
         info
     );
-    assert_eq!(agent.tool_names().await.len(), 9);
+    assert_eq!(agent.tool_names().await.len(), 10);
     let result = agent.call_tool("list_sessions", json!({})).await;
     assert!(result.is_error, "{:?}", result);
     assert_eq!(result.field("code"), &json!("POSITRON_NOT_RUNNING"));

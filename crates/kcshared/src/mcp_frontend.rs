@@ -54,6 +54,11 @@ pub struct AgentCommand {
     /// A description of what the command returns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub returns: Option<String>,
+
+    /// Whether the command only reads or shows state, and so runs through
+    /// `run_positron_command` rather than `run_privileged_positron_command`.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 /// The frontend's opening frame, sent immediately after the channel connects.
@@ -187,6 +192,12 @@ pub struct CommandRequest {
 
     /// The agent that asked for the command.
     pub agent: AgentIdentity,
+
+    /// Whether the request came from `run_privileged_positron_command`. The
+    /// frontend runs read-only commands only when this is false, and every
+    /// other command only when it is true.
+    #[serde(default)]
+    pub privileged: bool,
 }
 
 /// The agents connected to the workspace, sent when a window attaches and
