@@ -2525,3 +2525,45 @@ print("All iterations completed!")
         }
     }
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn test_kernel_starts_in_long_working_directory() {
+    let Some(python_cmd) = get_python_executable().await else {
+        println!("Skipping test: No Python executable found");
+        return;
+    };
+    if !is_ipykernel_available().await {
+        println!("Skipping test: ipykernel not available for {}", python_cmd);
+        return;
+    }
+
+    // A working directory longer than MAX_PATH (260 characters)
+    let root = tempfile::tempdir().unwrap();
+    let mut long_dir = root.path().to_path_buf();
+    while long_dir.as_os_str().len() <= 300 {
+        long_dir.push("a-rather-long-directory-name");
+    }
+    std::fs::create_dir_all(&long_dir).unwrap();
+
+    let server = TestServer::start().await;
+    let client = server.create_client().await;
+
+    let session_id = format!("long-cwd-test-session-{}", Uuid::new_v4());
+    let mut new_session = create_test_session(session_id.clone(), &python_cmd);
+    new_session.working_directory = long_dir.to_string_lossy().to_string();
+    create_session_with_client(&client, new_session).await;
+
+    let start_response = client
+        .start_session(session_id)
+        .await
+        .expect("Failed to start session");
+    assert!(
+        matches!(
+            start_response,
+            kallichore_api::StartSessionResponse::Started(_)
+        ),
+        "Kernel failed to start in a long working directory: {:?}",
+        start_response
+    );
+}

@@ -241,7 +241,16 @@ impl StartupCoordinator {
             match fs::metadata(working_directory) {
                 Ok(metadata) => {
                     if metadata.is_dir() {
-                        cmd.current_dir(working_directory);
+                        #[cfg(target_os = "windows")]
+                        let Some(working_directory) = spawnable_working_dir(working_directory) else {
+                            log::warn!(
+                                "[session {}] Requested working directory '{}' is too long to start a process in and has no short name; using current directory",
+                                self.session_id,
+                                working_directory
+                            );
+                            return Ok(cmd);
+                        };
+                        cmd.current_dir(&working_directory);
                         log::trace!(
                             "[session {}] Set working directory to '{}'",
                             self.session_id,
@@ -653,4 +662,37 @@ impl StartupCoordinator {
 
         Ok(file_path)
     }
+}
+
+/// Returns a form of `dir` that `CreateProcess` accepts as a working
+/// directory. Unlike other paths, a process's working directory is limited to
+/// MAX_PATH even when long paths are enabled, so longer directories are
+/// replaced by their 8.3 short name, when the volume has one.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+fn spawnable_working_dir(dir: &str) -> Option<String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    // MAX_PATH less the trailing backslash and the null terminator
+    const MAX_DIR_LEN: usize = 258;
+    let fits = |d: &str| d.encode_utf16().count() <= MAX_DIR_LEN;
+    if fits(dir) {
+        return Some(dir.to_string());
+    }
+
+    // The verbatim (`\\?\`) form lets us name a path longer than MAX_PATH
+    let long = HSTRING::from(fs::canonicalize(dir).ok()?.as_os_str());
+    let mut buf = vec![0u16; 32768];
+    // SAFETY: `long` is null-terminated and `buf` is a valid output buffer.
+    let len = unsafe { GetShortPathNameW(&long, Some(&mut buf)) } as usize;
+    if len == 0 || len > buf.len() {
+        return None;
+    }
+    let short = String::from_utf16(&buf[..len]).ok()?;
+    let short = match short.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{}", rest),
+        None => short.strip_prefix(r"\\?\").unwrap_or(&short).to_string(),
+    };
+    fits(&short).then_some(short)
 }
