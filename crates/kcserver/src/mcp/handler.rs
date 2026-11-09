@@ -11,8 +11,9 @@
 //! Kernel tools (`list_sessions`, `get_session_history`, `execute_code`,
 //! `evaluate_code`, `interrupt_session`) are answered entirely inside the supervisor and keep
 //! working when Positron is gone. Command tools (`get_positron_command_guide`,
-//! `list_positron_commands`, `run_positron_command`, `get_plot`) are brokered
-//! to a window of the workspace that owns the calling agent's token; the guide
+//! `list_positron_commands`, `run_positron_command`,
+//! `run_privileged_positron_command`, `get_plot`) are brokered to a window of
+//! the workspace that owns the calling agent's token; the guide
 //! and listing work from the cache while disconnected, the rest do not.
 //!
 //! Every tool is scoped to one workspace: a handler is built per workspace
@@ -78,7 +79,7 @@ static ANSI_ESCAPE: Lazy<Regex> = Lazy::new(|| {
         .expect("ANSI escape pattern is valid")
 });
 
-/// How long `run_positron_command` waits for a frontend channel to appear.
+/// How long a command waits for a frontend channel to appear.
 /// Long enough to cover a window reload, short enough to stay inside the
 /// per-tool timeouts agents impose.
 const FRONTEND_CONNECT_WAIT: Duration = Duration::from_secs(15);
@@ -117,9 +118,9 @@ evaluate_code to inspect state; it stays out of the session's history. Use \
 execute_code for anything with side effects. Output can legitimately be empty, \
 so never retry a state-changing call because nothing came back.
 
-For IDE actions, look the command up in get_positron_command_guide before \
-calling run_positron_command. Commands need Positron connected; the kernel \
-tools do not. No tool starts an interpreter.";
+For IDE actions, consult get_positron_command_guide, then run the command \
+with the tool list_positron_commands names. Commands need Positron; kernel \
+tools don't, and none starts an interpreter.";
 
 /// Added for a client running inside one of the workspace's own kernels, which
 /// is the one thing about its situation it cannot work out for itself.
@@ -224,7 +225,8 @@ pub struct ListCommandsParams {
     pub limit: Option<u32>,
 }
 
-/// Arguments accepted by `run_positron_command`.
+/// Arguments accepted by `run_positron_command` and
+/// `run_privileged_positron_command`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RunCommandParams {
     /// The command ID, exactly as reported by list_positron_commands.
@@ -462,8 +464,8 @@ impl PositronMcpHandler {
         name = "get_positron_command_guide",
         description = "Read Positron's guide to its IDE commands: which command does what the \
                        user asked, how to fill its arguments, and what to do when it fails. Read \
-                       the index, then the page for the task, before calling \
-                       run_positron_command. A command ID recalled from VS Code usually exists, \
+                       the index, then the page for the task, before running a \
+                       command. A command ID recalled from VS Code usually exists, \
                        but often opens a dialog and hands the task back to the user. Works from \
                        cache even when Positron is disconnected.",
         annotations(title = "Read the Positron command guide", read_only_hint = true)
@@ -508,8 +510,9 @@ impl PositronMcpHandler {
         description = "Search the Positron IDE commands the user has allowed agents to run: \
                        opening files, starting and restarting sessions, listing and installing \
                        packages, reading settings, focusing panes. Returns each command's ID, \
-                       description, and argument schema, which you then pass to \
-                       run_positron_command. Works from cache even when Positron is disconnected.",
+                       description, argument schema, and the tool that runs it: \
+                       run_positron_command or run_privileged_positron_command. Works from \
+                       cache even when Positron is disconnected.",
         annotations(title = "Search Positron commands", read_only_hint = true)
     )]
     async fn list_positron_commands(
@@ -545,6 +548,11 @@ impl PositronMcpHandler {
                         "schema": arg.schema,
                     })).collect::<Vec<_>>(),
                     "returns": command.returns,
+                    "tool": if command.read_only {
+                        "run_positron_command"
+                    } else {
+                        "run_privileged_positron_command"
+                    },
                 })
             })
             .collect();
@@ -560,61 +568,44 @@ impl PositronMcpHandler {
 
     #[tool(
         name = "run_positron_command",
-        description = "Run one of the IDE commands returned by list_positron_commands. Requires \
-                       Positron to be connected; waits briefly for a window that is reloading. \
-                       Use this for IDE actions such as starting a session, which the kernel \
-                       tools deliberately never do. A command that returns an image comes back \
-                       as an image block, with an optional note, instead of a result field.",
-        annotations(
-            title = "Run a Positron command",
-            destructive_hint = true,
-            open_world_hint = true
-        )
+        description = "Run one of the IDE commands list_positron_commands marks for this tool: \
+                       commands that only read or show state, such as listing packages or \
+                       focusing a pane. Other commands are refused; run them with \
+                       run_privileged_positron_command. Requires Positron to be connected; waits \
+                       briefly for a window that is reloading. A command that returns an image \
+                       comes back as an image block, with an optional note, instead of a result \
+                       field.",
+        annotations(title = "Run a Positron command", read_only_hint = true)
     )]
     async fn run_positron_command(
         &self,
         context: RequestContext<RoleServer>,
         Parameters(params): Parameters<RunCommandParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.state.note_request();
+        Ok(self.run_command(&context, params, false).await)
+    }
 
-        let started = std::time::Instant::now();
-        let outcome = self
-            .broker(
-                &context,
-                &params.command_id,
-                params.args.unwrap_or_default(),
-            )
-            .await;
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-
-        Ok(match outcome {
-            Ok(result) => {
-                let mut body = json!({
-                    "status": "ok",
-                    "command_id": params.command_id,
-                    "elapsed_ms": elapsed_ms,
-                });
-                let images = match result.as_ref().and_then(command_image) {
-                    Some((image, note)) => {
-                        if let Some(note) = note {
-                            body["note"] = json!(note);
-                        }
-                        vec![image]
-                    }
-                    None => {
-                        body["result"] = json!(result);
-                        Vec::new()
-                    }
-                };
-                self.finish(body, images).await
-            }
-            Err(mut body) => {
-                body["command_id"] = json!(params.command_id);
-                body["elapsed_ms"] = json!(elapsed_ms);
-                self.error(body).await
-            }
-        })
+    #[tool(
+        name = "run_privileged_positron_command",
+        description = "Run one of the IDE commands list_positron_commands marks for this tool: \
+                       commands that can change files, sessions, packages, or settings, such as \
+                       starting a session, which the kernel tools deliberately never do. \
+                       Commands that only read or show state are refused; run them with \
+                       run_positron_command. Requires Positron to be connected; waits briefly \
+                       for a window that is reloading. A command that returns an image comes \
+                       back as an image block, with an optional note, instead of a result field.",
+        annotations(
+            title = "Run a privileged Positron command",
+            destructive_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn run_privileged_positron_command(
+        &self,
+        context: RequestContext<RoleServer>,
+        Parameters(params): Parameters<RunCommandParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Ok(self.run_command(&context, params, true).await)
     }
 
     #[tool(
@@ -633,7 +624,7 @@ impl PositronMcpHandler {
         self.state.note_request();
 
         let result = match self
-            .broker(&context, CURRENT_PLOT_COMMAND, Vec::new())
+            .broker(&context, CURRENT_PLOT_COMMAND, Vec::new(), false)
             .await
         {
             Ok(result) => result,
@@ -660,6 +651,57 @@ impl PositronMcpHandler {
 }
 
 impl PositronMcpHandler {
+    /// Shared body of `run_positron_command` and
+    /// `run_privileged_positron_command`. The window refuses a command that
+    /// belongs to the other tool.
+    async fn run_command(
+        &self,
+        context: &RequestContext<RoleServer>,
+        params: RunCommandParams,
+        privileged: bool,
+    ) -> CallToolResult {
+        self.state.note_request();
+
+        let started = std::time::Instant::now();
+        let outcome = self
+            .broker(
+                context,
+                &params.command_id,
+                params.args.unwrap_or_default(),
+                privileged,
+            )
+            .await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        match outcome {
+            Ok(result) => {
+                let mut body = json!({
+                    "status": "ok",
+                    "command_id": params.command_id,
+                    "elapsed_ms": elapsed_ms,
+                });
+                let images = match result.as_ref().and_then(command_image) {
+                    Some((image, note)) => {
+                        if let Some(note) = note {
+                            body["note"] = json!(note);
+                        }
+                        vec![image]
+                    }
+                    None => {
+                        body["result"] = json!(result);
+                        Vec::new()
+                    }
+                };
+                self.finish(body, images).await
+            }
+            Err(mut body) => {
+                body["command_id"] = json!(params.command_id);
+                body["elapsed_ms"] = json!(elapsed_ms);
+                self.error(body).await
+            }
+        }
+    }
+
     /// Broker a command to a window of the workspace.
     ///
     /// Returns the command's result, or the error body to report.
@@ -668,12 +710,14 @@ impl PositronMcpHandler {
         context: &RequestContext<RoleServer>,
         command_id: &str,
         args: Vec<Value>,
+        privileged: bool,
     ) -> Result<Option<Value>, Value> {
         let request = CommandRequest {
             id: uuid::Uuid::new_v4().to_string(),
             command_id: command_id.to_string(),
             args,
             agent: agent_identity(context),
+            privileged,
         };
 
         log::info!(
@@ -969,11 +1013,11 @@ impl PositronMcpHandler {
                 "message": if elsewhere > 0 {
                     "This Positron workspace has no interpreter sessions running; the ones in \
                      the user's other workspaces are not yours to use. Start one with \
-                     run_positron_command using \
+                     run_privileged_positron_command using \
                      workbench.action.language.runtime.startNewConsoleSession."
                 } else {
-                    "No interpreter sessions are running. Start one with run_positron_command \
-                     using workbench.action.language.runtime.startNewConsoleSession."
+                    "No interpreter sessions are running. Start one with \
+                     run_privileged_positron_command using workbench.action.language.runtime.startNewConsoleSession."
                 },
                 "candidates": [],
             })),
@@ -1441,6 +1485,7 @@ mod tests {
                 schema: None,
             }],
             returns: None,
+            read_only: true,
         }
     }
 

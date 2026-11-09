@@ -36,7 +36,7 @@ use kcshared::mcp_frontend::{
 use serde_json::{json, Value};
 
 /// The tools the server is expected to publish.
-const EXPECTED_TOOLS: [&str; 9] = [
+const EXPECTED_TOOLS: [&str; 10] = [
     "list_sessions",
     "get_session_history",
     "execute_code",
@@ -45,6 +45,7 @@ const EXPECTED_TOOLS: [&str; 9] = [
     "get_positron_command_guide",
     "list_positron_commands",
     "run_positron_command",
+    "run_privileged_positron_command",
     "get_plot",
 ];
 
@@ -61,12 +62,14 @@ fn fake_catalog() -> Vec<AgentCommand> {
                 schema: Some(json!({ "type": "string" })),
             }],
             returns: Some("An array of package descriptions".to_string()),
+            read_only: true,
         },
         AgentCommand {
             id: "workbench.action.language.runtime.startNewConsoleSession".to_string(),
             description: "Start a new console session".to_string(),
             args: vec![],
             returns: None,
+            read_only: false,
         },
         AgentCommand {
             id: "vscode.open".to_string(),
@@ -78,6 +81,7 @@ fn fake_catalog() -> Vec<AgentCommand> {
                 schema: Some(json!({ "type": "string" })),
             }],
             returns: None,
+            read_only: false,
         },
     ]
 }
@@ -517,11 +521,16 @@ async fn test_command_catalog_survives_the_window_disconnecting() {
         commands[0]["returns"],
         json!("An array of package descriptions")
     );
+    assert_eq!(commands[0]["tool"], json!("run_positron_command"));
 
     let result = agent
         .call_tool("list_positron_commands", json!({ "query": "uri" }))
         .await;
     assert_eq!(result.field("matched"), &json!(1));
+    assert_eq!(
+        result.field("commands")[0]["tool"],
+        json!("run_privileged_positron_command")
+    );
 
     let result = agent
         .call_tool("list_positron_commands", json!({ "limit": 2 }))
@@ -630,7 +639,7 @@ async fn test_run_positron_command_is_brokered_to_a_window() {
     let call = tokio::spawn(async move {
         let result = agent
             .call_tool(
-                "run_positron_command",
+                "run_privileged_positron_command",
                 json!({ "command_id": "vscode.open", "args": ["file:///tmp/x.R"] }),
             )
             .await;
@@ -639,6 +648,7 @@ async fn test_run_positron_command_is_brokered_to_a_window() {
 
     let request = channel.next_command(Duration::from_secs(10)).await;
     assert_eq!(request.command_id, "vscode.open");
+    assert!(request.privileged);
     assert_eq!(request.args, vec![json!("file:///tmp/x.R")]);
     assert_eq!(
         request.agent.name.as_deref(),
@@ -708,6 +718,7 @@ async fn test_run_positron_command_is_brokered_to_a_window() {
 
     let request = channel.next_command(Duration::from_secs(10)).await;
     assert!(request.args.is_empty());
+    assert!(!request.privileged);
     channel.reply(CommandReply {
         id: request.id,
         ok: false,
@@ -787,7 +798,7 @@ async fn test_run_positron_command_waits_for_a_reloading_window() {
     let call = tokio::spawn(async move {
         let result = agent
             .call_tool(
-                "run_positron_command",
+                "run_privileged_positron_command",
                 json!({ "command_id": "vscode.open" }),
             )
             .await;
@@ -829,7 +840,7 @@ async fn test_run_positron_command_reports_a_disconnected_window() {
     let started = std::time::Instant::now();
     let result = agent
         .call_tool(
-            "run_positron_command",
+            "run_privileged_positron_command",
             json!({ "command_id": "vscode.open" }),
         )
         .await;
@@ -918,7 +929,7 @@ async fn test_the_window_the_user_focused_serves_commands() {
     let call = tokio::spawn(async move {
         let result = agent
             .call_tool(
-                "run_positron_command",
+                "run_privileged_positron_command",
                 json!({ "command_id": "vscode.open" }),
             )
             .await;
@@ -945,7 +956,7 @@ async fn test_the_window_the_user_focused_serves_commands() {
     let call = tokio::spawn(async move {
         let result = agent
             .call_tool(
-                "run_positron_command",
+                "run_privileged_positron_command",
                 json!({ "command_id": "vscode.open" }),
             )
             .await;
