@@ -13,7 +13,7 @@ on:
 jobs:
   build_linux:
     name: Build Linux
-    runs-on: ${{ matrix.arch == 'x64' && 'ubuntu-22.04' || 'ubuntu-22.04-arm64-4-core' }}
+    runs-on: ${{ matrix.arch == 'x64' && 'ubuntu-24.04' || 'ubuntu-24-arm64-4-core' }}
     timeout-minutes: 60
 
     env:
@@ -39,8 +39,10 @@ jobs:
       - name: Setup Zig Build Environment
         run: |
           cargo install --locked cargo-zigbuild
-          sudo apt install python3-pip
-          pip3 install ziglang
+          sudo apt-get install -y python3-pip
+          # Ubuntu 24.04 marks the system Python as externally managed (PEP 668);
+          # this runner is ephemeral, so installing into it directly is fine.
+          pip3 install --break-system-packages ziglang
 
       - name: Setup Build Environment for arm64
         if: matrix.arch == 'arm64'
