@@ -82,18 +82,14 @@ jobs:
                       rust_target_prefix: x86_64
 
         steps:
-            - name: Install Rust toolchain
-              run: |
-                rustup update --no-self-update stable
-                rustup default stable
-
-            - name: Install x86 Rust target
-              if: matrix.arch == 'x64'
-              run: rustup target add x86_64-apple-darwin
-
             # Checkout sources
             - name: Checkout sources
               uses: actions/checkout@v4
+
+            # Installs the target for the toolchain pinned in rust-toolchain.toml
+            - name: Install x86 Rust target
+              if: matrix.arch == 'x64'
+              run: rustup target add x86_64-apple-darwin
 
             # Compile
             - name: Compile Kallichore (${{ matrix.arch }})
