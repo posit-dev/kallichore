@@ -900,3 +900,35 @@ async fn test_mcp_tool_calls_postpone_idle_shutdown() {
         "The tool call should have reset the idle timer"
     );
 }
+
+#[tokio::test]
+async fn test_restart_logs_env_names_only() {
+    let python_cmd = require_ipykernel!();
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("kcserver.log");
+    let server = TestServer::start_http_with_args(&[
+        "--log-level",
+        "trace",
+        "--log-file",
+        log.to_str().unwrap(),
+    ])
+    .await;
+    let client = server.create_client().await;
+    let session_id = start_session(&client, &python_cmd).await;
+
+    let secret = Uuid::new_v4().to_string();
+    let restart = kallichore_api::models::RestartSession {
+        working_directory: None,
+        env: Some(vec![kallichore_api::models::VarAction {
+            action: kallichore_api::models::VarActionType::Replace,
+            name: "TEST_SECRET".to_string(),
+            value: secret.clone(),
+        }]),
+    };
+    let restarted = client.restart_session(session_id, Some(restart)).await;
+    assert!(restarted.is_ok(), "{:?}", restarted);
+
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert!(text.contains("Will restart with environment variables: TEST_SECRET"));
+    assert!(!text.contains(&secret));
+}

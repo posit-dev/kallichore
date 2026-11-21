@@ -199,9 +199,12 @@ impl LifecycleManager {
             // Set the environment variables, if supplied
             if let Some(env) = env {
                 log::debug!(
-                    "[session {}] Will restart with environment variables: {:?}",
+                    "[session {}] Will restart with environment variables: {}",
                     self.session_id,
-                    env
+                    env.iter()
+                        .map(|var| var.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
                 state.env_vars = env;
             }
