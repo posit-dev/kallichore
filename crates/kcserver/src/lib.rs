@@ -20,6 +20,7 @@ pub mod kernel_connection;
 pub mod kernel_session;
 pub mod kernel_state;
 pub mod mcp;
+pub mod private_file;
 pub mod process_control;
 pub mod process_metrics;
 pub mod process_tree;
