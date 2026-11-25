@@ -8,7 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fs::File;
 use std::path::Path;
 
 /// The contents of the Registration File as specified in JEP 66.
@@ -46,7 +45,7 @@ impl RegistrationFile {
 
     /// Write the registration file to disk
     pub fn to_file<P: AsRef<Path>>(&self, file_path: P) -> Result<(), Box<dyn Error>> {
-        let file = File::create(file_path)?;
+        let file = crate::private_file::create(file_path)?;
         serde_json::to_writer_pretty(file, &self)?;
         Ok(())
     }

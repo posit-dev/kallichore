@@ -10,7 +10,6 @@
 
 #![allow(missing_docs)]
 
-use std::fs::File;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -30,6 +29,7 @@ mod kernel_connection;
 mod kernel_session;
 mod kernel_state;
 mod mcp;
+mod private_file;
 mod process_control;
 mod process_metrics;
 mod process_tree;
@@ -343,7 +343,7 @@ async fn main() {
                 WriteLogger::new(
                     log_level,
                     Config::default(),
-                    File::create(log_file).unwrap(),
+                    private_file::create(log_file).unwrap(),
                 ),
             ]) {
                 // Consider it a fatal error if we can't initialize logging
